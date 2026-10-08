@@ -5,27 +5,33 @@
 /* ---------- theme ---------- */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   /* neutrals */
-  --bg: #f6f7f9;       /* the page; table heads */
-  --surface: #fff;     /* panels */
-  --subtle: #f0f2f5;   /* code, hovered and open rows */
-  --line: #e4e7ec;     /* borders and rules */
-  --ink: #1a2230;      /* text */
-  --muted: #5d6879;    /* secondary text and labels */
-  /* meanings: used for text and borders, and mixed into --surface for fills */
-  --accent: #3b55d0;   /* links, ids, the chosen filter */
-  --active: #9a5b00;   /* work under way */
-  --done: #177a4d;     /* finished */
-  --blocked: #b8382a;  /* stopped: needs something first */
-  --tint: 12%;         /* how much of a meaning a fill takes */
-  --shadow: 0 1px 2px rgb(16 24 40 / .05);
+  --bg: #e9ebee;       /* the page; table heads */
+  --surface: #f6f7f8;  /* panels */
+  --subtle: #e1e5e9;   /* code, hovered and open rows */
+  --line: #cdd2d8;     /* borders and rules */
+  --ink: #22272e;      /* text */
+  --muted: #59636f;    /* secondary text and labels */
+  /* Meaning colours share the tag palette; light-mode text uses darker shades for contrast. */
+  --accent: var(--ready); /* links, ids, the chosen filter */
+  --ready: color-mix(in srgb, var(--tag-ready) 35%, var(--tag-ink));
+  --active: color-mix(in srgb, var(--tag-active) 35%, var(--tag-ink));
+  --done: color-mix(in srgb, var(--tag-done) 35%, var(--tag-ink));
+  --blocked: color-mix(in srgb, var(--tag-blocked) 35%, var(--tag-ink));
+  --tint: 7%;          /* how much of a meaning a fill takes */
+  /* Solid pastel tags keep the same colours in both themes. */
+  --tag-ready: #9fc2ff;
+  --tag-active: #ffcc80;
+  --tag-done: #83e2ad;
+  --tag-blocked: #ff9b91;
+  --tag-neutral: #c5cdd8;
+  --tag-ink: #192330;
 
   --border: 1px solid var(--line);
-  --radius: 10px;      /* panels */
-  --radius-s: 6px;     /* code, focus rings */
-  --pill: 999px;       /* chips, filters, the live indicator */
-  --pad: 16px;         /* a row's side padding */
+  --radius: 6px;       /* panels */
+  --radius-s: 4px;     /* code, chips, controls, focus rings */
+  --pad: 18px;         /* a row's side padding */
   --agent: 14px;       /* an agent icon, left of a Now row */
   --agent-gap: 20px;   /* between an agent icon and its row */
   --ease: .15s;
@@ -37,21 +43,19 @@
   --fs-xs: 11.5px;     /* chips, labels, column heads */
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f1318;
-    --surface: #161b22;
-    --subtle: #1e252e;
-    --line: #29313c;
-    --ink: #e6eaf0;
-    --muted: #8e99a8;
-    --accent: #8fa3ff;
-    --active: #e0b04a;
-    --done: #54c28f;
-    --blocked: #f0826f;
-    --tint: 18%;
-    --shadow: none;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0f12;
+  --surface: #14171c;
+  --subtle: #1d2229;
+  --line: #2b313a;
+  --ink: #dfe3e9;
+  --muted: #9da6b3;
+  --ready: var(--tag-ready);
+  --active: var(--tag-active);
+  --done: var(--tag-done);
+  --blocked: var(--tag-blocked);
+  --tint: 10%;
 }
 
 /* ---------- status colours ----------
@@ -59,13 +63,13 @@
    s-<stage> and s-<decision status>, from the dependencies s-ready, s-stack (waits only on work under way, so it
    can stack on it) and s-blocked, and from a ticket's move s-you (your move) and s-them (another's). */
 
-.s-todo, .s-dropped { --tone: var(--muted); }
-.s-ready { --tone: var(--accent); }
-.s-in-progress, .s-in-review, .s-open, .s-stack { --tone: var(--active); }
-.s-merged, .s-done, .s-closed { --tone: var(--done); }
-.s-blocked { --tone: var(--blocked); }
-.s-you { --tone: var(--accent); }
-.s-them { --tone: var(--muted); }
+.s-todo, .s-dropped { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
+.s-ready { --tone: var(--ready); --tag-tone: var(--tag-ready); }
+.s-in-progress, .s-in-review, .s-open, .s-stack { --tone: var(--active); --tag-tone: var(--tag-active); }
+.s-merged, .s-done, .s-closed { --tone: var(--done); --tag-tone: var(--tag-done); }
+.s-blocked { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
+.s-you { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
+.s-them { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
 #live { --tone: var(--done); }
 #live.off { --tone: var(--blocked); }
 .filters [aria-pressed="true"] { --tone: var(--accent); }
@@ -77,13 +81,13 @@
 .tone:is(.s-stack, .s-blocked) { font-weight: 600; }
 
 /* A fill of its status colour. */
-.chip, #live.off, .filters button[aria-pressed="true"] {
+#live.off, .filters button[aria-pressed="true"] {
   color: var(--tone, var(--muted));
   background: color-mix(in srgb, var(--tone, var(--muted)) var(--tint), var(--surface));
 }
 
-/* A status dot. */
-.chip::before, #live::before {
+/* The live connection indicator. */
+#live::before {
   content: "";
   flex: none;
   width: 6px;
@@ -93,12 +97,14 @@
 }
 
 .chip {
+  color: var(--tag-ink);
+  background: var(--tag-tone, var(--tag-neutral));
   display: inline-flex;
   align-items: center;
   gap: 5px;
   font: 600 var(--fs-xs)/1.5 var(--sans);
-  padding: 0 8px;
-  border-radius: var(--pill);
+  padding: 2px 7px;
+  border-radius: var(--radius-s);
   white-space: nowrap;
 }
 
@@ -120,31 +126,36 @@ body {
 main {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 44px calc(var(--agent) + var(--agent-gap) + 6px) 96px; /* the sides: room for the agent icons */
+  padding: 64px calc(var(--agent) + var(--agent-gap) + 6px) 96px; /* the sides: room for the agent icons */
   overflow-wrap: anywhere;
 }
 
-h1 { font-size: 30px; letter-spacing: -.02em; line-height: 1.2; margin: 0 0 6px; }
+h1 { font-size: 30px; font-weight: 650; letter-spacing: -.035em; line-height: 1.2; margin: 0 0 12px; }
 p, li { max-width: 75ch; }
 b, strong { font-weight: 600; }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
-.id { font: 600 .9em var(--mono); color: var(--accent); }
+.id { font: 500 .9em var(--mono); color: var(--accent); }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-s); }
 ::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 
 /* Labels: section heads, column heads, property names. */
-h2, th, .seq-head > span, .props dt {
+th, .seq-head > span, .props dt {
   font-size: var(--fs-xs);
   font-weight: 600;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  letter-spacing: .01em;
   color: var(--muted);
 }
 
-h2 { font-size: var(--fs-s); margin: 40px 0 12px; }
+h2 {
+  font-size: var(--fs-m);
+  font-weight: 600;
+  letter-spacing: -.01em;
+  margin: 36px 0 12px;
+  color: var(--ink);
+}
 
 /* Body headings: each starts a part of an opened ticket, decision or note. */
 h3 { font-size: var(--fs); margin: 20px 0 8px; padding-top: 16px; border-top: var(--border); }
@@ -163,35 +174,40 @@ pre code { font-size: inherit; background: none; padding: 0; }
 
 li { margin: 2px 0; }
 
-.sub { color: var(--muted); font-size: var(--fs-m); margin: 0 0 24px; }
+.sub { color: var(--muted); font-size: var(--fs-s); line-height: 1.8; margin: 0 0 28px; }
+.sub code { background: none; padding: 0; }
 .meta, .nx { font-size: var(--fs-s); color: var(--muted); }
 
 /* ---------- live indicator ---------- */
 
 #bar { /* the live line and Refresh, top right */
-  position: fixed;
-  top: 12px;
+  position: absolute;
+  top: 16px;
   right: var(--pad);
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-#refresh, #live {
+#refresh, #live, #theme {
   font: inherit;
   font-size: var(--fs-xs);
-  padding: 2px 10px;
-  border-radius: var(--pill);
+  padding: 5px 10px;
+  border-radius: var(--radius-s);
   background: var(--surface);
   border: var(--border);
-  box-shadow: var(--shadow);
 }
 
-#refresh { color: var(--ink); cursor: pointer; }
-#refresh:hover { background: var(--subtle); }
+#refresh, #theme { color: var(--ink); cursor: pointer; flex-shrink: 0; }
+#refresh:hover, #theme:hover { background: var(--subtle); }
 #refresh:disabled { opacity: .6; cursor: progress; }
 
-#live { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+#theme { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; }
+#theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#theme .sun, :root[data-theme="dark"] #theme .moon { display: none; }
+:root[data-theme="dark"] #theme .sun { display: block; }
+
+#live { display: flex; align-items: center; gap: 6px; color: var(--muted); background: none; border-color: transparent; }
 
 #live:empty { display: none; }
 
@@ -201,7 +217,6 @@ details, .nowlist, .seq, .tbl {
   background: var(--surface);
   border: var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
 }
 
 details { margin: 8px 0; }
@@ -215,7 +230,7 @@ summary {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 2px 10px;
-  padding: 10px var(--pad);
+  padding: 12px var(--pad);
   border-radius: inherit;
   transition: background-color var(--ease);
 }
@@ -230,11 +245,28 @@ details[open] > summary > .nx { display: none; }
 
 details > div { padding: 2px var(--pad) 14px; border-top: var(--border); font-size: var(--fs-m); }
 
+/* Detail panels keep a visible disclosure cue. Sequence rows use their existing grid. */
+details:not(.sec) > summary { position: relative; }
+details:not(.sec):not(.seq > details) > summary { padding-right: calc(var(--pad) + 20px); }
+details:not(.sec):not(.seq > details) > summary::after {
+  content: "";
+  position: absolute;
+  right: var(--pad);
+  top: 20px;
+  width: 6px;
+  height: 6px;
+  border: solid var(--muted);
+  border-width: 0 1px 1px 0;
+  transform: rotate(-45deg);
+  transition: transform var(--ease);
+}
+details[open]:not(.sec):not(.seq > details) > summary::after { transform: rotate(45deg); }
+
 /* A section: its h2 is the head, with a chevron that turns when it opens. */
 details.sec { background: none; border: 0; border-radius: 0; box-shadow: none; margin: 0; }
 details.sec > summary { display: block; padding: 0; background: none; }
 details.sec > div { padding: 0; border: 0; font-size: inherit; }
-details.sec > summary:hover h2 { color: var(--ink); }
+details.sec > summary:hover h2 { color: var(--accent); }
 details.sec > summary h2 { display: flex; align-items: center; gap: 10px; }
 
 details.sec > summary h2::before {
@@ -280,7 +312,6 @@ details.sec[open] > summary h2::before { transform: rotate(45deg) translate(-2px
 /* ---------- now: work under way, handoffs, agents, the watch ---------- */
 
 .nowlist > .handoff { box-shadow: inset 3px 0 var(--active); }
-.nowlist > .mine { box-shadow: inset 3px 0 var(--accent); }
 .nowlist > .idle { max-width: none; padding: 10px var(--pad); box-shadow: inset 3px 0 var(--blocked); }
 .nowlist > .watch { max-width: none; padding: 8px var(--pad); font-size: var(--fs-s); color: var(--muted); }
 .nowlist > .watch.ended { box-shadow: inset 3px 0 var(--blocked); }
@@ -314,7 +345,10 @@ details.sec[open] > summary h2::before { transform: rotate(45deg) translate(-2px
 }
 
 @keyframes spin { to { transform: rotate(1turn); } }
-@media (prefers-reduced-motion: reduce) { .agent.busy::before { animation-duration: 3s; } }
+@media (prefers-reduced-motion: reduce) {
+  :root { --ease: 0s; }
+  .agent.busy::before { animation: none; }
+}
 
 /* ---------- tables ---------- */
 
@@ -357,8 +391,8 @@ tr:last-child > td { border-bottom: 0; }
 .seq summary > span:has(> .chip) { display: flex; align-items: center; }
 .seq summary > :first-child { color: var(--muted); font-variant-numeric: tabular-nums; }
 .seq details.rep > summary > :first-child { visibility: hidden; } /* the step shows on its first row only */
-.seq details.closed:not([open]) > summary { opacity: .5; }
-.seq .tk .id { font-weight: 700; }
+.seq details.closed:not([open]) > summary { color: var(--muted); }
+.seq .tk .id { font-weight: 500; }
 .seq details > div { padding-left: calc(var(--pad) + var(--step) + var(--gap)); }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
@@ -381,19 +415,30 @@ tr:last-child > td { border-bottom: 0; }
 
 /* ---------- filters ---------- */
 
-.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.filters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
 
 .filters button {
   font: 500 var(--fs-s) var(--sans);
-  color: var(--ink);
-  background: var(--surface);
-  border: var(--border);
-  border-radius: var(--pill);
-  padding: 3px 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  padding: 6px 10px;
   cursor: pointer;
   transition: background-color var(--ease), border-color var(--ease);
 }
 
 .filters button:not([aria-pressed="true"]):hover { background: var(--subtle); }
-.filters button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--tone) 40%, var(--surface)); }
+.filters button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--tone) 25%, var(--surface)); }
 .filters .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 3px; }
+
+@media (max-width: 600px) {
+  :root { --pad: 12px; --agent-gap: 8px; }
+  main { padding-top: 68px; padding-bottom: 48px; }
+  h1 { font-size: 26px; }
+  #bar { left: var(--pad); right: var(--pad); justify-content: flex-end; }
+  #live { min-width: 0; overflow-wrap: anywhere; }
+  .props { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .props dt:not(:first-child) { margin-top: 10px; }
+  .props dt.gap + dd { margin-top: 0; }
+}

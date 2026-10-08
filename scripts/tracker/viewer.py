@@ -650,7 +650,7 @@ CODE_ID = code_id()
 TOKEN = secrets.token_urlsafe(16)  # in each page; a Refresh must send it, which another site's page cannot read
 REFRESH_SYNC_S = 15  # a Refresh syncs GitHub unless a sync ran this recently
 VIEWER_SYNC_S = int(os.environ.get("TRACKER_VIEWER_SYNC", "120"))  # GitHub sync while a page is open
-# Only app.js runs: no inline script or handler, if tracker text ever gets past Html's escaping.
+# Only same-origin scripts run: no inline script or handler, if tracker text gets past Html's escaping.
 PAGE_CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'"
 RESTART_WAIT_S = 10  # how long `open` waits for a viewer on this code to restart onto a new version of it
 

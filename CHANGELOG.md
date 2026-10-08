@@ -7,12 +7,15 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Added
 
+- Viewer: a sun/moon button switches themes and saves the choice locally; the system theme is the default.
 - `tracker history` prints the log's last lines, filtered by `--ref` and `--since`; `tracker show log` prints the same.
 - `tracker attach <name> --append -` adds text from stdin to an evidence file and logs it.
 - `put` and `add` make a README section of the work's own when no section has the name.
 
 ### Changed
 
+- Viewer: clearer spacing and headings, charcoal dark surfaces, and consistent solid pastel status tags without dots.
+- Viewer: a red move tag marks your turn instead of a blue left border; narrow layouts and reduced motion are improved.
 - Each write ends with one line that says what it did: the log line it wrote and the `check` result.
 - `step`, `log` and `add carry` take longer text: 400 characters for `next`, a summary and a log line, 600 for a
   Carry forward bullet.
