@@ -1,6 +1,7 @@
 ---
 description: "What the user read in the issue tracker is recorded with `tracker issue`, the time converted to UTC."
 runs: 1  # one command the CLI makes plain; 3/3 in its one full run: run it 3 times again if it fails
+tags: [issue, write]
 max_turns: 15
 timeout_seconds: 400
 allowed_tools: [Bash, Read, Glob, Grep, Skill]

@@ -1,5 +1,6 @@
 ---
 description: "With no tool for the issue tracker, the due issue fields stay blank: no guessed priority, no read recorded."
+tags: [issue, read]
 max_turns: 15
 timeout_seconds: 400
 allowed_tools: [Bash, Read, Glob, Grep, Skill]

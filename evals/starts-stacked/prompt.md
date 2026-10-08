@@ -1,5 +1,6 @@
 ---
 description: What can start next includes a ticket that waits only on work under way, with the branch it stacks on, read from the tracker.
+tags: [read]
 max_turns: 15
 timeout_seconds: 600
 allowed_tools: [Bash, Read, Glob, Grep, Skill]

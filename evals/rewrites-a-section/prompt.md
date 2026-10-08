@@ -1,6 +1,7 @@
 ---
 description: A whole section is replaced through the CLI (`put`, or `drop` and `add`), with backticks intact, not by editing the file.
 runs: 1  # one command the CLI makes plain; 3/3 in each of 5 full runs
+tags: [write]
 max_turns: 25
 timeout_seconds: 600
 allowed_tools: [Bash, Read, Glob, Grep, Skill]

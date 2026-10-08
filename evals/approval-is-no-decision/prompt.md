@@ -1,5 +1,6 @@
 ---
 description: A settled direction choice becomes one decision with its answer; an approval to go ahead does not.
+tags: [decision, write]
 max_turns: 25
 timeout_seconds: 600
 allowed_tools: [Bash, Read, Glob, Grep, Skill]

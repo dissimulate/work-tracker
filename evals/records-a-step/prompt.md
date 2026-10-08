@@ -1,5 +1,6 @@
 ---
 description: A step finished before the session - its commit is logged once, by the hooks or `step`, not again in a message, no log line repeats the push or the test run, and the new `next` is recorded with `tracker step`.
+tags: [write, log]
 max_turns: 25
 timeout_seconds: 600
 allowed_tools: [Bash, Read, Glob, Grep, Skill]
