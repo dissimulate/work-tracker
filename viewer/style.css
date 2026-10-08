@@ -335,10 +335,10 @@ tr:last-child > td { border-bottom: 0; }
 /* ---------- sequence ---------- */
 
 /* Each ticket is a row that opens to the whole ticket. The server sets --cols, and --cols-mid and --cols-narrow for
-   the columns a narrower page keeps; it marks the others hide-mid or hide-narrow (Column in viewer.py). A column is as
-   wide as its longest text, so rows line up; the ticket column takes the rest, and every cell truncates. The head's
-   font size is the rows', so ch is the same width in both. */
-.seq { --step: 5ch; --gap: 14px; font-size: var(--fs-m); }
+   the columns a narrower sequence keeps; it marks the others hide-mid or hide-narrow (Column in viewer.py). A column
+   is as wide as its longest text, so rows line up; the ticket column takes the rest, and every cell truncates. The
+   head's font size is the rows', so ch is the same width in both. */
+.seq { --step: 5ch; --gap: 14px; font-size: var(--fs-m); container-type: inline-size; }
 
 .seq-head, .seq summary {
   display: grid;
@@ -369,14 +369,15 @@ tr:last-child > td { border-bottom: 0; }
 .seq .tk .id { font-weight: 700; }
 .seq details > div { padding-left: calc(var(--pad) + var(--step) + var(--gap)); }
 
-/* Narrower: fewer columns, so the ticket keeps its room; the opened ticket has the rest. */
-@media (max-width: 1000px) {
+/* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
+   ticket has the rest. */
+@container (max-width: 920px) {
   .seq-head, .seq summary { grid-template-columns: var(--cols-mid); }
   :is(.seq-head, .seq summary) > .hide-mid { display: none; }
 }
 
 /* Phone width: step, ticket and status only. */
-@media (max-width: 700px) {
+@container (max-width: 620px) {
   .seq-head, .seq summary { grid-template-columns: var(--cols-narrow); }
   :is(.seq-head, .seq summary) > .hide-narrow { display: none; }
   .seq details > div { padding-left: var(--pad); }

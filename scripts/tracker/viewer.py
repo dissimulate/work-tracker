@@ -223,7 +223,7 @@ def version(tr: Tracker) -> str:
 
 LIST_CH = 24  # the viewer's sequence: a list column shows the items that fit, then `+n`
 STALE_MARK_S = 86400  # the viewer's Now: a branch whose commits were last logged before this shows it unopened
-HIDES = ("mid", "narrow")  # the page widths a sequence column can leave from, widest first (viewer/style.css)
+HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
 
 
 class Cell(NamedTuple):
@@ -236,7 +236,7 @@ class Cell(NamedTuple):
 class Column(NamedTuple):
     """A column of the sequence. `sorts`: a heading button per (key, label, what the page says it sorts by, value per
     ticket); a row carries each value as data-sort-<key>, which viewer/app.js sorts by. `width`: CSS, or the fewest ch
-    of a column as wide as its longest text. `hide`: the page width (HIDES) it leaves from; "" to always show."""
+    of a column as wide as its longest text. `hide`: the sequence width (HIDES) it leaves from; "" to always show."""
     sorts: tuple[tuple[str, str, str, Callable[[Record], object]], ...]
     cell: Callable[[Record], Cell]
     width: str | int
