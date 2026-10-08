@@ -975,6 +975,7 @@ class IssueFields(unittest.TestCase):
         run(*t, "add", "T-1", "link", "Issue: [SC-1 Story one](https://issues.example/story/1)")
         run(*t, "add", "T-3", "link", "Issue: [SC-3 Story three](https://issues.example/story/3)")
         run(*t, "set", "T-3", "status=done", "summary=shipped")
+        model.Tracker(model.HOME / s).lookup("T-3").save({"started_at": "2026-09-01T00:00:00Z"})  # it has a wait time
         return s, t
 
     def read_at(self, s: str, ident: str, at: float) -> None:
@@ -989,6 +990,10 @@ class IssueFields(unittest.TestCase):
         self.assertIn("T-1  https://issues.example/story/1", due)  # never read
         self.assertIn("T-3  https://issues.example/story/3", due)  # closed, but never read: its creation time
         self.assertNotIn("T-2", due)  # no Issue link: nothing to read
+        run(*t, "new", "T-9", "--title", "Closed before starts were recorded")
+        run(*t, "add", "T-9", "link", "Issue: [SC-9 Story nine](https://issues.example/story/9)")
+        run(*t, "set", "T-9", "status=done", "summary=shipped")
+        self.assertNotIn("T-9", run(*t, "issue", "--due"))  # no start: its issue's creation time gives no span
 
         out = run(*t, "issue", "T-1", "--priority", "High", "--created", "2026-10-01T09:30:00.123+10:00")
         self.assertIn("T-1: priority=High, issue_created=2026-09-30T23:30:00Z", out)

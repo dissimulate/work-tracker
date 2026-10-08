@@ -106,9 +106,10 @@ STATE_RULES = {
     "reviews": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state; each sync "
                "replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
-              "viewer's Refresh asked for them again. A ticket with an Issue link is due when never read, or when "
-              "open and read more than a day ago or before the request; the brief and the prompt hook list the due "
-              "ones for the model, which reads them with the issue tracker's tool",
+              "viewer's Refresh asked for them again. A ticket with an Issue link is due when open and never read, "
+              "read more than a day ago or read before the request; when closed, only when never read and it has a "
+              "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
+              "due ones for the model, which reads them with the issue tracker's tool",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
                f"branch's tickets are closed, and a mark, or a handoff on a branch no ticket is on, {STATE_KEEP_DAYS} "
                f"days after it was set. `use` keeps only unfinished tickets",
@@ -706,8 +707,9 @@ class Tracker:
         issues = self.raw_state().get("issues", {})
         read, asked = issues.get("read", {}), issues.get("requested", 0)
         now = time.time() if now is None else now
-        return [t for t in self.tickets if t.aliases and (not read.get(t.id) or t.stage not in CLOSED_TICKET and (
-            now - read[t.id] > ISSUE_STALE_S or read[t.id] < asked))]
+        return [t for t in self.tickets if t.aliases and (t.stage not in CLOSED_TICKET and (
+            not read.get(t.id) or now - read[t.id] > ISSUE_STALE_S or read[t.id] < asked)
+            or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
     def save_state(self, state: dict) -> None:
         atomic_write(self.root / ".state.json", json.dumps(state, indent=2) + "\n")

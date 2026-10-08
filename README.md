@@ -67,7 +67,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other.
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
-- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (an MCP server you have signed in to, such as Shortcut's, Jira's or Linear's) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: never read, or open and read more than a day ago or before the viewer's last Refresh. With no such tool the agent leaves them blank.
+- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (an MCP server you have signed in to, such as Shortcut's, Jira's or Linear's) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: open and never read, read more than a day ago or read before the viewer's last Refresh; closed, only once and only with a recorded start, for its wait time. With no such tool the agent leaves them blank.
 
 ### Tickets, branches and sessions
 
