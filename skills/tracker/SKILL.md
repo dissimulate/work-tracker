@@ -17,7 +17,7 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 | File | Holds |
 |---|---|
 | `README.md` | the work: Context (the documents it answers to), Goal, Scope; ≤ ~2K tokens, rewritten, never appended to |
-| `tickets/<ID>.md` | frontmatter = state (`status`, `branch`, `next`, `summary`, `depends_on`, PR keys); body = Plan, Carry forward, Links |
+| `tickets/<ID>.md` | frontmatter = state (`status`, `branch`, `next`, `summary`, `depends_on`, PR keys, issue keys); body = Plan, Carry forward, Links |
 | `decisions/D-<n>.md` | a direction decision: Question, Options, and once closed, Resolution |
 | `log.md` | dated one-line history, append-only |
 | `evidence/` | files the records cite: runs, measurements, scripts |
@@ -32,6 +32,8 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 - **Whose move**: computed for each ticket under way from its PR's reviews, checks and merge state (`sync`) and its open decisions and external blockers; the brief's `move:` line, `tracker index` and the viewer show it. `next` holds your own next action: do not write a wait on a reviewer into it.
 - **A decision's answer**: its Resolution. Tickets show it through `context`.
 - **Issue-tracker id**: the ticket's `- Issue: [PROJ-12 Title](url)` line; the id also finds the ticket.
+- **Issue fields** (`priority`, `issue_created`): the issue tracker holds them; `tracker issue` records what you read there. The tracker cannot read an issue tracker, so the brief, or a prompt after the viewer's Refresh, names the tickets whose fields are due.
+- **Wait and cycle time**: computed from each ticket's times. Wait: issue created → started (`started_at`, which `set status=in-progress` records). Cycle: started → PR merged. `tracker index` (the lines under its headline) and the viewer show them: quote them, do not work them out from the files.
 - **Unfinished work between sessions**: the branch's handoff, until the next `step`.
 - **Build detail**: the PR and commits. The hooks log each commit on the branch of a ticket under way: do not log a commit again.
 
@@ -44,7 +46,7 @@ Link lines (README Context, ticket Links) read `- Label: [title](url) — why it
 1. **Which work.** `tracker start <name words>` ties the tracker the user names to this session (its hooks and commands then use it) and prints the brief; `tracker start` alone takes the tracker with an open ticket on this branch. When it lists options (exit 3), ask the user which one. Each new session, after `/clear` too, starts on no tracker; on a branch with an open ticket, a `[work-tracker]` line at its start asks you to offer the link. Link only on the user's yes; on "Not now", run `tracker start --decline` (no offer on this branch for a day). `--tracker <slug>` works for one command.
 2. **Which tickets.** The branch names them: every ticket whose `branch` it is; else a `tracker use` choice for this worktree (a shared branch such as `main`); else an id in the branch name; at session start, else the branch's PR. `tracker here` prints the brief again: the handoff first, then the tickets under way in full, the rest in one line. When the match is wrong, `tracker use <id>` puts the ticket on this branch. When the branch holds several tickets and this session's work is one of them, `tracker start <slug> --on <id>` puts this session on it alone (the other sessions keep theirs). Make or switch branches only when the user asks; start a new branch from the branch `context` names (`start:`), else the default branch, name it for the work (led by the ticket's Issue id when it has one), and record it with `tracker set <id> status=in-progress`.
 3. **Another ticket or decision.** `tracker context <id>` before you touch it. Ids ignore case and leading zeros; a PR (`#123`), a branch or `<tracker>:<id>` also work. Its dependencies' Carry forward is the contract you build on (`--deep` for the whole chain); its settled decisions hold. `tracker show <ids> --section <name>` prints records' own text, whole or by section (`show D-01 D-02 --section resolution`): read records through it or `context`, not with `cat` or `sed`.
-4. **The whole picture**: `tracker index` (`--active`), `tracker decisions` (the open ones; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker). Read a file only when one of these points you to it.
+4. **The whole picture**: `tracker index` (`--active`; under its headline, the wait and cycle time lines), `tracker decisions` (the open ones; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker). Read a file only when one of these points you to it.
 5. **Changes by others.** A `Changed since your brief` line on a user message reports another session's or GitHub's change to your tickets' dependencies or decisions: act on it.
 
 ## Write
@@ -64,6 +66,7 @@ Record each fact at the moment it forms, in its home:
 | a direction choice is raised or settled | `tracker decide` (below) |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
+| a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (an MCP server for Shortcut, Jira, Linear …) and `tracker issue <id> --priority "<its word>" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker (a hook tells each one): put what a subagent needs in its prompt (the output of `tracker context <id> --brief`, or the part that matters), and record what it reports, as you record your own work.
@@ -82,7 +85,7 @@ Completion: each ticket under way has a `next` true as of now (a `[work-tracker]
 
 ## View
 
-`tracker open [id]` opens the live viewer for the user. Its Now section shows the tickets under way, each branch's handoff and how long ago its commits were last logged.
+`tracker open [id]` opens the live viewer for the user. Its Now section shows the tickets under way, each branch's handoff and how long ago its commits were last logged. Its Refresh (top right) pulls PR state at once and asks the next prompt for the due issue fields.
 
 ## New tracker or migration
 

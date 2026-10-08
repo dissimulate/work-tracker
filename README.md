@@ -24,12 +24,13 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | Command | Does |
 |---|---|
 | `tracker list` | all trackers |
-| `tracker index --active` | the tickets under way, whose move each waits on, the open decisions |
+| `tracker index --active` | the tickets under way, whose move each waits on, the open decisions; under the headline, the wait and cycle time lines |
 | `tracker ready` | what can start now, and from which branch |
 | `tracker context <id>` | one ticket or decision in full, with what it builds on |
 | `tracker decisions --all` | the decisions, open and settled |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
 | `tracker open [id]` | the live page |
+| `tracker issue --due` | the tickets whose issue fields (priority, when the issue was created) are due, with their issue links |
 | `tracker check` | problems in the tracker's files |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
 | `tracker <command> --help` | the syntax of a command |
@@ -56,7 +57,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | File | Holds |
 |---|---|
 | `README.md` | the work: Context, Goal, Scope |
-| `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies; Plan, Carry forward (facts later tickets need), Links |
+| `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, its issue's priority and creation time; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options, Resolution |
 | `log.md` | dated one-line history |
 | `evidence/` | files the records cite: runs, measurements |
@@ -65,6 +66,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other.
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
+- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (an MCP server you have signed in to, such as Shortcut's, Jira's or Linear's) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: never read, or open and read more than a day ago or before the viewer's last Refresh. With no such tool the agent leaves them blank.
 
 ### Tickets, branches and sessions
 
@@ -95,7 +97,9 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 - `tracker open [id]` starts a local server (Python `http.server`, 127.0.0.1 only) when none runs, and opens the page. The page polls every 3 s and updates in place. The server stops about 3 min after the last request.
 - **Now** shows the tickets under way (your move first), each branch's handoff, and the agent sessions on this machine that work on the tracker (a ring spins while one works).
 - While a page is open, the server syncs PR state every 2 min.
-- **Sequence** lists the tickets in dependency order. A column heading sorts by that column and a second press reverses it; Waits on and Unblocks sort by count, tickets with no group go last, and ties keep the dependency order. Step puts the dependency order back. The sort is kept in the address (`?sort=group`, `?sort=-group`), so a reload or a shared link keeps it.
+- **Wait time** runs from when a ticket's issue was created (its `issue_created`) to when the ticket started (its `started_at`, which the first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`), so it needs no issue tracker. Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days; the Wait time and Cycle time columns give each ticket's. A ticket without both exact times, with the end before the start (an issue created after the work started), or dropped, has none: a ticket started before 0.29 has no start time, and a merge synced before 0.29 is known only by its date.
+- **Refresh** (top right, beside the live line) pulls PR state from GitHub at once and asks the agent, at your next message in a session on the tracker, to read the due issue fields. The live line says when issue fields were last read, or that a Refresh waits for a session, or that no session is open on the tracker.
+- **Sequence** lists the tickets in dependency order. The Priority column shows each ticket's issue priority and sorts most urgent first (Urgent, Highest and P0 first; an unknown word after the known ones). A column heading sorts by that column and a second press reverses it; Waits on and Unblocks sort by count, tickets with no value in the column (no group, priority, wait or cycle time) go last, and ties keep the dependency order. Step puts the dependency order back. The sort is kept in the address (`?sort=group`, `?sort=-group`), so a reload or a shared link keeps it.
 - The session list uses hook activity: a user prompt marks a tracked session busy, Stop marks it idle, and SessionEnd marks it ended. Activity expires after a day without events. This shows the last reported state; an interrupted turn can remain busy until the next event. Claude Code's `~/.claude/sessions/*.json` (`CLAUDE_CONFIG_DIR` when set) supplies process liveness and names when available. Codex needs no session-file parser.
 
 ### Watch

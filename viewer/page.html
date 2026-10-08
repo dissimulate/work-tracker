@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The viewer's page shell. The server fills the double-brace placeholders below (title, slug, version, body);
+<!-- The viewer's page shell. The server fills the double-brace placeholders below (title, slug, version, token, body);
      body is main_html() in scripts/tracker/viewer.py, which app.js swaps in place when the tracker changes. -->
 <html lang="en">
 <head>
@@ -8,8 +8,8 @@
   <title>{{title}}</title>
   <link rel="stylesheet" href="/assets/style.css">
 </head>
-<body data-slug="{{slug}}" data-version="{{version}}">
-  <div id="live"></div>
+<body data-slug="{{slug}}" data-version="{{version}}" data-token="{{token}}">
+  <div id="bar"><div id="live"></div><button id="refresh" type="button" hidden>Refresh</button></div>
   <main>{{body}}</main>
   <script src="/assets/app.js"></script>
 </body>

@@ -15,7 +15,7 @@ from .git import default_branches
 from .session import (behind, branch_matches, changes_since, declined, get_mark, in_repos, inside_home, lag,
     load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity, watch, work_dir,
     Lag, Match)
-from .views import brief
+from .views import brief, issue_request
 from .github import budget, match_pr, sync
 from .watcher import set_grant
 
@@ -252,6 +252,10 @@ def hook_prompt(data: dict) -> None:
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say
+    asked = m.tracker.raw_state().get("issues", {}).get("requested", 0)
+    if asked and asked != entry.get("told_issues"):  # the viewer's Refresh: passed on once
+        fields["told_issues"] = asked
+        lines += [x for x in [issue_request(m.tracker)] if x]
     idle = not m.active and bool(m.branch) and in_repos(m.tracker, cwd)
     work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle) else None
     new = work is not None and bool(work.commits or work.files)

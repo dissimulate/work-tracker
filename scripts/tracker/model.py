@@ -3,6 +3,7 @@ dependencies, body edits and the write lock. The text format itself is markdown'
 
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import hashlib
 import json
@@ -54,11 +55,16 @@ KEYS = {
         "next": ("set", "one concrete next action, true as of now; cleared when the ticket closes"),
         "summary": ("set", "one line: what the ticket delivered or why it was dropped; shown once it is closed"),
         "updated": ("auto", "date of the last change through the CLI"),
+        "started_at": ("auto", "when `set status=in-progress` first started the ticket, UTC (YYYY-MM-DDTHH:MM:SSZ)"),
         "pr": ("sync", "the PR number"),
         "pr_state": ("sync", "draft|open|merged|closed, from the PR"),
         "base": ("sync", "the PR's base branch; while the PR is open, a base that is other tickets' branch makes "
                          "this ticket wait on them (computed; depends_on does not change)"),
-        "merged_at": ("sync", "date the PR merged"),
+        "merged_at": ("sync", "when the PR merged, UTC (YYYY-MM-DDTHH:MM:SSZ); a date alone before 0.29"),
+        "priority": ("issue", "the priority the ticket's issue has in its issue tracker, in that tracker's words "
+                              "(High, P1, Urgent)"),
+        "issue_created": ("issue", "when the ticket's issue was created in its issue tracker, UTC "
+                                   "(YYYY-MM-DDTHH:MM:SSZ)"),
     },
     "decision": {
         "id": ("decide", "D-<n>; also the file name"),
@@ -82,7 +88,8 @@ KEYS = {
 SCHEMA = 1  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
 RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "tracker": set()}  # `migrate` removes them
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
-              "sync": "`tracker sync` writes it from the PR", "auto": "the tracker writes it"}
+              "sync": "`tracker sync` writes it from the PR", "auto": "the tracker writes it",
+              "issue": "`tracker issue` writes it from the ticket's issue tracker"}
 # Machine state in .state.json: what `tracker rules` says about it. Never in frontmatter. A branch's entries are keyed
 # `owner/name:branch` (see state_key), so a tracker can span repos.
 STATE_KEEP_DAYS = 14
@@ -98,10 +105,54 @@ STATE_RULES = {
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
     "reviews": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state; each sync "
                "replaces them. A ticket's move is computed from them",
+    "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
+              "viewer's Refresh asked for them again. A ticket with an Issue link is due when never read, or when "
+              "open and read more than a day ago or before the request; the brief and the prompt hook list the due "
+              "ones for the model, which reads them with the issue tracker's tool",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
                f"branch's tickets are closed, and a mark, or a handoff on a branch no ticket is on, {STATE_KEEP_DAYS} "
                f"days after it was set. `use` keeps only unfinished tickets",
 }
+
+
+ISSUE_STALE_S = 86400  # an open ticket's issue fields are read again after this
+
+# Issue trackers' priority words, most urgent first: Shortcut and Jira (Highest … Lowest), Linear (Urgent … Low),
+# and P0-P9. A word not here ranks after them; "none" and "no priority" are no priority.
+PRIORITY_RANKS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
+                  "low": 3, "lowest": 4, "trivial": 4}
+PRIORITY_UNKNOWN = 9
+
+# A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to
+# the second) and in order. A dropped ticket has none.
+SPANS = {"wait": ("issue_created", "started_at", "issue created → started"),
+         "cycle": ("started_at", "merged_at", "started → PR merged")}
+
+
+def utc_seconds(text: str) -> int | None:
+    """A `YYYY-MM-DDTHH:MM:SSZ` time as epoch seconds; None for anything else, a date alone included."""
+    try:
+        return calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return None
+
+
+def span(t: Record, name: str) -> int | None:
+    """A ticket's span (SPANS) in seconds; None when dropped, or without both times exact and in order."""
+    if t.stage == "dropped":
+        return None
+    start, end = (utc_seconds(t.get(k)) for k in SPANS[name][:2])
+    return int(end - start) if start is not None and end is not None and end >= start else None
+
+
+def priority_rank(text: str) -> int | None:
+    """Where a priority sorts, most urgent first (0); None for no priority."""
+    word = text.strip().lower()
+    if word in ("", "none", "no priority"):
+        return None
+    if re.fullmatch(r"p\d", word):
+        return int(word[1])
+    return PRIORITY_RANKS.get(word, PRIORITY_UNKNOWN)
 
 
 def state_key(repo: str, branch: str) -> str:
@@ -151,6 +202,10 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def die(msg: str, code: int = 2) -> None:
     print(f"tracker: {msg}", file=sys.stderr)
     sys.exit(code)
@@ -171,6 +226,7 @@ TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
     "summary": (200, "summary", "one line; the detail goes in the PR"),
     "log": (200, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
     "carry": (400, "Carry forward bullet", "one fact per bullet: split it into more"),
+    "priority": (40, "priority", "use the issue tracker's own word for it"),
 }
 
 
@@ -240,6 +296,12 @@ def plain_link(s: str, root: Path | None = None) -> str:
             url = str(root / url)
         return f"{m[1]} <{url}>"
     return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", one, s)
+
+
+def link_url(link: Link) -> str:
+    """The URL a link line points to: its markdown link's, else a bare URL, else its text."""
+    m = re.search(r"\]\(([^)\s]+)\)", link.text) or re.search(r"https?://\S+", link.text)
+    return (m[1] if m.lastindex else m[0]) if m else link.text
 
 
 def link_title(link: Link) -> str:
@@ -638,6 +700,14 @@ class Tracker:
             out[part] = {k: v for k, v in state.get(part, {}).items() if current(part, k, v)}
         out["pr_match"] = {k: v for k, v in state.get("pr_match", {}).items() if now - v.get("at", 0) < PR_MATCH_TTL_S}
         return {k: v for k, v in out.items() if v != {}}
+
+    def issue_due(self, now: float | None = None) -> list[Record]:
+        """The tickets whose issue fields the model should read from their issue tracker (STATE_RULES["issues"])."""
+        issues = self.raw_state().get("issues", {})
+        read, asked = issues.get("read", {}), issues.get("requested", 0)
+        now = time.time() if now is None else now
+        return [t for t in self.tickets if t.aliases and (not read.get(t.id) or t.stage not in CLOSED_TICKET and (
+            now - read[t.id] > ISSUE_STALE_S or read[t.id] < asked))]
 
     def save_state(self, state: dict) -> None:
         atomic_write(self.root / ".state.json", json.dumps(state, indent=2) + "\n")

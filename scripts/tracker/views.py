@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
+from statistics import median
 
-from .model import (BIN, CLOSED_TICKET, ISOLATION_RULE, STAGES, TEXT_MAX, cut, link_lines, resolution, sequence, short,
-    whose_move, Record, Start, Tracker)
+from .model import (BIN, CLOSED_TICKET, ISOLATION_RULE, SPANS, STAGES, TEXT_MAX, cut, link_lines, resolution, sequence,
+    short, span, utc_seconds, whose_move, Record, Start, Tracker)
 from .session import ago, branch_handoff, cwd_repo, handoff_line, lag, Match
 from .contract import check
 
@@ -312,6 +314,53 @@ BRIEF_TICKETS_MAX = 3  # tickets under way shown in full; the rest get one line 
 BRIEF_CARRY_CHARS = 6000  # the dependencies' Carry forward, about 1.5K tokens
 BRIEF_LINE_CHARS = 200  # a Context, link, log or settled-decision line
 BRIEF_LOG = 2  # log lines per ticket
+SPAN_RECENT_S = 7 * 86400  # a span line's recent window
+
+
+def duration(seconds: float) -> str:
+    """`42 min` under an hour (`1 min` at least), `26 h` under two days, then `2.4 d`."""
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))} min"
+    if seconds < 48 * 3600:
+        return f"{int(seconds // 3600)} h"
+    return f"{seconds / 86400:.1f} d"
+
+
+def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
+    """A line per span (SPANS) that some ticket has: the median, the fastest ticket, and the median of the spans that
+    ended in the last 7 days."""
+    now = time.time() if now is None else now
+    lines = []
+    for name, (_, end, what) in SPANS.items():
+        spans = [(t, x) for t in tr.tickets if (x := span(t, name)) is not None]
+        if not spans:
+            continue
+        fastest = min(spans, key=lambda tx: tx[1])
+        parts = [f"{name.capitalize()} time ({what}): median {duration(median(x for _, x in spans))} over "
+                 f"{len(spans)}", f"fastest {duration(fastest[1])} ({fastest[0].id})"]
+        recent = [x for t, x in spans if now - (utc_seconds(t.get(end)) or 0) <= SPAN_RECENT_S]
+        if recent:
+            parts.append(f"last 7 days: median {duration(median(recent))} over {len(recent)}")
+        lines.append(" · ".join(parts))
+    return lines
+
+
+ISSUE_DUE_SHOWN = 10  # due tickets named in the request for their issue fields; the rest as a count
+
+
+def issue_request(tr: Tracker) -> str:
+    """The request for the issue fields that are due (STATE_RULES["issues"]), or "". The model reads them with the
+    issue tracker's tool; the tracker cannot."""
+    due = tr.issue_due()
+    if not due:
+        return ""
+    ids = ", ".join(t.id for t in due[:ISSUE_DUE_SHOWN]) + (f" +{len(due) - ISSUE_DUE_SHOWN}"
+                                                             if len(due) > ISSUE_DUE_SHOWN else "")
+    return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids} (`tracker issue --due` gives their issue "
+            "links). If a tool for their issue tracker is available (an MCP server for Shortcut, Jira, Linear …), "
+            "read each issue's priority and creation time and record them: `tracker issue <id> --priority \"<the "
+            "tracker's word>\" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such "
+            "tool, leave them and never guess a value.")
 
 
 def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,
@@ -367,6 +416,9 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
         parts.append("\n".join(index_lines(tr, set(STAGES) - CLOSED_TICKET, titles=compact, width=BRIEF_LINE_CHARS)))
     if synced:
         parts.append("Synced from GitHub: " + "; ".join(synced))
+    ask = issue_request(tr)
+    if ask:
+        parts.append(ask)
     errors, warnings = check(tr)
     if errors or warnings:
         parts.append(f"Tracker check: {len(errors)} errors, {len(warnings)} warnings — run `check`.")

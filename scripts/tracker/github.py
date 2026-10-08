@@ -198,7 +198,7 @@ def apply_sync(tr: Tracker, found: dict[str, tuple[str, dict]], reviews: dict[st
             "draft" if pr["isDraft"] else "open"
         upd = {"pr": str(pr["number"]), "pr_state": pr_state, "base": pr["baseRefName"]}
         if pr_state == "merged":
-            upd["merged_at"] = pr["mergedAt"][:10]
+            upd["merged_at"] = pr["mergedAt"][:19] + "Z"  # GitHub gives UTC to the second
         # A base that is another ticket's branch makes this ticket wait on it (Tracker.stacked_on).
         diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
         if diff:

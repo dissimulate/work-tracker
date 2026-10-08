@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import html
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -15,11 +17,11 @@ import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, STAGES, WINDOWS, all_trackers, atomic_write, branch_entry, files_hash, sequence, sort_key, spawn, tracker_at,
-    whose_move, Dep, Move, Record, Tracker)
+    ROOT, SPANS, STAGES, WINDOWS, all_trackers, atomic_write, branch_entry, files_hash, locked, priority_rank, sequence,
+    sort_key, span, spawn, tracker_at, whose_move, Dep, Move, Record, Tracker)
 from .session import ago, live_sessions, match_cwd, Live
 from .contract import check
-from .views import pr_label, stage_counts, start_text
+from .views import duration, pr_label, span_lines, stage_counts, start_text
 from .github import sync
 from .watcher import watcher_of
 
@@ -236,7 +238,7 @@ def main_html(tr: Tracker) -> str:
                 toned("closed", ref(d.id) + " ✓") if d.get("status") == "closed" else toned("blocked", ref(d.id))
                 for d in tr.decisions_for(r))))
         facts = []
-        for k in ("branch", "base", "repo", "group", "refs", "owner", "merged_at", "updated"):
+        for k in ("branch", "base", "repo", "group", "refs", "owner", "started_at", "merged_at", "updated"):
             if r.get(k):
                 value = (", ".join(ref(x) for x in r.list(k)) if k == "refs"
                          else e(", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k))))
@@ -277,7 +279,8 @@ def main_html(tr: Tracker) -> str:
         """A row of the sequence, which opens to the whole ticket. A ready ticket shows `ready` for its `todo`.
         Its data-* carry what the page sorts it by (viewer/app.js): `o` its place in the dependency order, `g` its
         group, `r` its status's place in STAGES (an unknown status after them, so the page still renders and shows the
-        check's error), `w` and `u` how many it waits on and unblocks."""
+        check's error), `p` its priority's rank (most urgent 0, none empty), `sw` and `sc` its wait and cycle times in
+        seconds (none empty), `w` and `u` how many it waits on and unblocks."""
         closed = t.stage in CLOSED_TICKET
         tag, gate_chip = gate_html(t)
         cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if tr.blockers(t) else ""
@@ -285,16 +288,23 @@ def main_html(tr: Tracker) -> str:
         pr = f' <span class=meta>PR {e(pr_label(t))}</span>' if t.get("pr") else ""
         word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
         lead = (word, md_inline(str(line))) if line else None
+        spans = {name: span(t, name) for name in SPANS}
         step = seq.step.get(t.id, "")
         cells = (f'<span>{step}</span>'
                  f'<span class="tk tone" title="{e(t.id)} {e(title)}"><span class=id>{e(t.id)}</span> '
                  f'{e(title)}{pr}</span>'
                  f'<span>{e(str(t.get("group", "")))}</span>'
                  f'<span>{gate_chip if tag == "ready" else chip(t.stage)}</span>'
-                 f'{list_cell(waits_items(t))}{list_cell(unblocks_items(t))}')
-        rank = STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)
-        sort = (f'data-o="{order}" data-g="{e(str(t.get("group", "")))}" data-r="{rank}" '
-                f'data-w="{len(waits_items(t))}" data-u="{len(unblocks_items(t))}"')
+                 f'<span>{e(str(t.get("priority", "")))}</span>'
+                 + "".join(f'<span>{"" if x is None else duration(x)}</span>' for x in spans.values())
+                 + f'{list_cell(waits_items(t))}{list_cell(unblocks_items(t))}')
+        status = STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)
+        rank = priority_rank(str(t.get("priority", "")))
+        sort = (f'data-o="{order}" data-g="{e(str(t.get("group", "")))}" data-r="{status}" '
+                f'data-p="{"" if rank is None else rank}" '
+                + "".join(f'data-s{name[0]}="{"" if x is None else x}" ' for name, x in spans.items())
+                + f'data-w="{len(waits_items(t))}" '
+                f'data-u="{len(unblocks_items(t))}"')
         return panel(t.id, cells, body_html(t, lead), attrs=f' class="t{cls}" data-s="{e(t.stage)}" '
                      f'data-c="{int(closed)}" data-b="{tag}" data-step="{step}" {sort}')
 
@@ -366,6 +376,7 @@ def main_html(tr: Tracker) -> str:
         return min(26, max([least, *(len(x) + 1 for x in texts)]))
 
     cols = (f"{width([str(t.get('group', '')) for t in ordered], 6)}ch 12ch "
+            f"{width([str(t.get('priority', '')) for t in ordered], 9)}ch 10ch 10ch "
             f"{width([fit(waits_items(t))[1] for t in ordered], 10)}ch "
             f"{width([fit(unblocks_items(t))[1] for t in ordered], 10)}ch")
     n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
@@ -376,9 +387,11 @@ def main_html(tr: Tracker) -> str:
     # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
     head = "".join(f'<span><button type=button data-sort="{key}">{label}</button></span>'
                    for key, label in (("step", "Step"), ("ticket", "Ticket"), ("group", "Group"),
-                                      ("status", "Status"), ("waits", "Waits on"), ("unblocks", "Unblocks")))
+                                      ("status", "Status"), ("priority", "Priority"), ("wait", "Wait time"),
+                                      ("cycle", "Cycle time"), ("waits", "Waits on"), ("unblocks", "Unblocks")))
     sequence_html = sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
-                        f'<div class=filters>{filters}</div><p class=sr-only aria-live=polite id=sort-said></p>'
+                        "".join(f"<p class=lead>{e(x)}</p>" for x in span_lines(tr))
+                        + f'<div class=filters>{filters}</div><p class=sr-only aria-live=polite id=sort-said></p>'
                         f'<div class=seq style="--cols: {cols}"><div class=seq-head>{head}</div>'
                         + "".join(ticket_row(t, i) for i, t in enumerate(ordered)) + "</div>", True)
 
@@ -408,7 +421,10 @@ def main_html(tr: Tracker) -> str:
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))
     links_row = (panel("_links", named("Links", f"{len(tr.context)}: {e(labels)}"), props_html([link_rows(tr.context)]))
                  if tr.context else "")
-    return f"""<h1>{e(tr.title)}</h1><p class=sub>{facts}<br>{e(tr.slug)} · <code>{e(str(tr.root))}</code></p>
+    state_line = issue_state(tr)
+    issue_html = f"<span hidden id=issue-state>{e(state_line)}</span>" if state_line else ""
+    return f"""{issue_html}
+<h1>{e(tr.title)}</h1><p class=sub>{facts}<br>{e(tr.slug)} · <code>{e(str(tr.root))}</code></p>
 {links_row}
 {goal_html}
 {now_html}
@@ -418,10 +434,36 @@ def main_html(tr: Tracker) -> str:
 {sec("reference", "Reference", 0, reference)}"""
 
 
+def issue_state(tr: Tracker) -> str:
+    """What the page's live line says of the issue fields: when they were last read, or what a Refresh waits on.
+    Empty when no ticket has an Issue link."""
+    linked = [t for t in tr.tickets if t.aliases]
+    if not linked:
+        return ""
+    issues = tr.raw_state().get("issues", {})
+    read, asked = issues.get("read", {}), issues.get("requested", 0)
+    waiting = asked and any(t.stage not in CLOSED_TICKET and read.get(t.id, 0) < asked for t in linked)
+    if waiting:
+        who = ("waiting for a session to read them" if live_sessions(tr.slug)
+               else "no session on this tracker to read them")
+        return f"issues: asked; {who}"
+    last = max((read[t.id] for t in linked if read.get(t.id)), default=0)
+    return f"issues read {clock(last)}" if last else "issues not read yet"
+
+
+def request_refresh(tr: Tracker) -> None:
+    """The page's Refresh: ask again for every open ticket's issue fields. Only the model can read an issue tracker
+    (through its tool), so this records the request; the next prompt hook passes it on."""
+    with locked():
+        state = tr.raw_state()
+        state.setdefault("issues", {})["requested"] = time.time()
+        tr.save_state(state)
+
+
 def page_html(title: str, body: str, slug: str = "", ver: str = "") -> str:
     """viewer/page.html with its placeholders filled; {{body}} is already HTML, the rest are escaped."""
     page = (VIEWER_DIR / "page.html").read_text()
-    for key, value in (("title", title), ("slug", slug), ("version", ver)):
+    for key, value in (("title", title), ("slug", slug), ("version", ver), ("token", TOKEN)):
         page = page.replace("{{" + key + "}}", html.escape(value))
     return page.replace("{{body}}", body)
 
@@ -440,6 +482,8 @@ def code_id() -> str:
 
 
 CODE_ID = code_id()
+TOKEN = secrets.token_urlsafe(16)  # in each page; a Refresh must send it, which another site's page cannot read
+REFRESH_SYNC_S = 15  # a Refresh syncs GitHub unless a sync ran this recently
 VIEWER_SYNC_S = int(os.environ.get("TRACKER_VIEWER_SYNC", "120"))  # GitHub sync while a page is open
 RESTART_WAIT_S = 10  # how long `open` waits for a viewer on this code to restart onto a new version of it
 
@@ -540,6 +584,32 @@ def serve(port: int = 0) -> None:
             if rest[0] == EVIDENCE_DIR and len(rest) > 1:
                 return self.evidence(tr, rest[1:])
             return self.reply(404, "not found", "text/plain")
+
+        def do_POST(self):
+            """A Refresh: the page's token, from this server's own page, or nothing changes."""
+            server.last_seen = time.monotonic()
+            port = server.server_address[1]
+            if (self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}")
+                    or self.headers.get("Sec-Fetch-Site") == "cross-site"
+                    or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN)):
+                return self.reply(403, "forbidden", "text/plain")
+            parts = [p for p in self.path.split("?")[0].split("/") if p]
+            tr = next((t for t in all_trackers() if parts[:1] == ["t"] and len(parts) == 3 and t.slug == parts[1]),
+                      None)
+            if not tr or parts[2] != "refresh":
+                return self.reply(404, "not found", "text/plain")
+            request_refresh(tr)
+
+            def pull():
+                try:
+                    sync(tr, force=False, min_interval=REFRESH_SYNC_S)
+                except (Exception, SystemExit):  # gh missing or a busy lock: the next round tries again
+                    pass
+            threading.Thread(target=pull, daemon=True).start()
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return None
 
         def evidence(self, tr: Tracker, parts: list[str]) -> None:
             folder = (tr.root / EVIDENCE_DIR).resolve()

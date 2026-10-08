@@ -11,19 +11,19 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES,
-    DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, KEYS, LIST_KEYS, LIST_OR_ONE, OWNER_HINT, ROOT, SAFE_NAME,
-    SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
-    blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, load_record, locked, names, norm_id,
-    put_section, relabel, replace_in_section, resolution, same_repo, sequence, short, sort_key, spawn, today, unblocked,
-    Busy, Record, Tracker)
+from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS,
+    EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OWNER_HINT, ROOT, SAFE_NAME, SCHEMA,
+    STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
+    blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url, load_record, locked, names,
+    norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence, short, sort_key, spawn, today,
+    unblocked, utc_now, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
     session_id, session_tracker, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, brief, context_lines, dep_lines, index_lines, order_lines,
-    start_text)
+    span_lines, start_text)
 from .github import match_pr, sync
 from .watcher import REFUSED, Watcher, agent_session, granted, session_name, watching
 
@@ -77,7 +77,8 @@ def cmd_index(args):
         die(f"--status takes {'|'.join(STAGES)}")
     if args.active:
         stages = set(STAGES) - CLOSED_TICKET
-    print("\n".join(index_lines(tr, stages, args.group)))
+    lines = index_lines(tr, stages, args.group)
+    print("\n".join(lines[:1] + span_lines(tr) + lines[1:]))
 
 
 def cmd_here(args):
@@ -175,15 +176,19 @@ def cmd_set(args):
             updates["next"] = ""  # a closed ticket has no next action; its summary says what it delivered
         if not (updates.get("summary") or rec.get("summary")):
             notes.append(f"set its summary: `tracker set {rec.id} summary=\"<what it delivered, or why dropped>\"`")
-    if rec.kind == "ticket" and updates.get("status") == "in-progress" and "branch" not in updates:
-        notes += start_here(tr, rec, updates)
+    if rec.kind == "ticket" and updates.get("status") == "in-progress":
+        if "branch" not in updates:
+            notes += start_here(tr, rec, updates)
+        # The first start, from todo: a cycle time runs from it. A ticket started before 0.29 gets none, not a guess.
+        if not rec.get("started_at") and rec.get("status") == "todo":
+            updates["started_at"] = utc_now()
     if rec.kind != "tracker":
         updates["updated"] = today()
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     was = rec.stage if rec.kind == "ticket" else ""
     rec.save(updates)
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
-                                    for k, v in updates.items() if k != "updated"))
+                                    for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if was == "todo" and updates.get("status") == "in-progress":
         notes += base_notes(tr, rec)
     if rec.kind == "ticket" and "status" in updates:
@@ -644,6 +649,44 @@ def cmd_sync(args):
     print("\n".join(changes) if changes else "no changes")
 
 
+def cmd_issue(args):
+    """Record what the model read from a ticket's issue tracker, or list the tickets whose issue fields are due."""
+    if args.due:
+        tr = resolve(args)
+        due = tr.issue_due()
+        print("\n".join(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due)
+              if due else "no ticket's issue fields are due")
+        return
+    if not args.id:
+        die("give a ticket id, or --due for the tickets whose issue fields are due")
+    tr, t = locate(args, args.id)
+    if t.kind != "ticket" or not t.aliases:
+        die(f"{t.id} has no Issue link: add one first (`tracker add {t.id} link \"Issue: [ID Title](url)\"`)")
+    updates = {}
+    if args.priority is not None:
+        fit("priority", args.priority.strip())
+        updates["priority"] = args.priority.strip() or None  # empty: the issue has no priority now
+    if args.created is not None:
+        updates["issue_created"] = utc_time(args.created)
+    if updates:
+        t.save(updates)
+    state = tr.raw_state()
+    state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
+    tr.save_state(state)
+    print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
+
+
+def utc_time(text: str) -> str:
+    """An ISO 8601 time with its zone, as UTC to the second; refused without a zone, which would be a guess."""
+    try:
+        at = dt.datetime.fromisoformat(text.strip())
+    except ValueError:
+        die(f"'{text}' is not an ISO 8601 time (2026-10-01T09:30:00Z)")
+    if at.tzinfo is None:
+        die(f"'{text}' needs a time zone (Z or +10:00): the issue tracker gives one")
+    return at.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def cmd_synced(args):
     m, cwd = on_branch(args)
     print("; ".join(mark_up_to_date(m, cwd)))
@@ -980,6 +1023,13 @@ def build_parser():
     sp.add_argument("--dry-run", action="store_true", help="only list the changes")
     add("sync", cmd_sync, "pull PR number/state/merge from GitHub into tickets, and the open PRs' reviews, checks and "
                           "merge state, from which each ticket's move is computed")
+    sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, when the "
+                                 "issue was created), or with --due list the tickets whose fields are due")
+    sp.add_argument("id", nargs="?", help="ticket id, or an id its Issue link names")
+    sp.add_argument("--priority", help="the issue's priority in the issue tracker's words; empty: it has none")
+    sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
+    sp.add_argument("--due", action="store_true", help="list the tickets whose issue fields are due, with their "
+                                                      "issue links")
     add("synced", cmd_synced, "log the current branch's commits that the hooks have not logged (they log each "
                               "commit on a branch with a ticket under way), mark it at HEAD, and clear its handoff")
     sp = add("pause", cmd_pause, "stopping mid-work: leave the state of the branch's unfinished work for the next "
@@ -1030,7 +1080,7 @@ def build_parser():
 
 
 WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "wait", "migrate", "synced", "pause", "step", "use", "add",
-                  "drop", "attach"}  # `sync` locks itself
+                  "drop", "attach", "issue"}  # `sync` locks itself
 
 
 def with_check(run, args) -> None:

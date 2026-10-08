@@ -14,12 +14,16 @@ let filter = 'all';
 const SORTS = {
   step: d => Number(d.dataset.o),
   ticket: d => d.dataset.id,
+  priority: d => d.dataset.p === '' ? '' : Number(d.dataset.p),
+  wait: d => d.dataset.sw === '' ? '' : Number(d.dataset.sw),
+  cycle: d => d.dataset.sc === '' ? '' : Number(d.dataset.sc),
   group: d => d.dataset.g,
   status: d => Number(d.dataset.r),
   waits: d => Number(d.dataset.w),
   unblocks: d => Number(d.dataset.u),
 };
-const LABELS = { step: 'dependency order', ticket: 'ticket', group: 'group', status: 'status',
+const LABELS = { step: 'dependency order', ticket: 'ticket', group: 'group', status: 'status', priority: 'priority',
+  wait: 'wait time', cycle: 'cycle time',
   waits: 'waits on', unblocks: 'unblocks' };
 let sort = readSort();
 
@@ -117,8 +121,10 @@ async function poll() {
     }
     version = next;
     const at = t => t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const issues = document.getElementById('issue-state'); // from the server: when issue fields were read
     live.textContent = 'live · ' + at(new Date()) +
-      (Number(synced) ? ' · PRs from GitHub ' + at(new Date(synced * 1000)) : '');
+      (Number(synced) ? ' · PRs from GitHub ' + at(new Date(synced * 1000)) : '') +
+      (issues ? ' · ' + issues.textContent : '');
     live.className = 'on';
   } catch {
     live.textContent = 'viewer stopped — run `tracker open`';
@@ -126,7 +132,22 @@ async function poll() {
   }
 }
 
+// Refresh: pull PR state from GitHub now, and ask the next session prompt for the issue fields (only the model can
+// read an issue tracker). The token proves the request comes from this page.
+const refresh = document.getElementById('refresh');
+async function askRefresh() {
+  refresh.disabled = true;
+  try {
+    await fetch(`/t/${slug}/refresh`, { method: 'POST', headers: { 'X-Tracker-Token': document.body.dataset.token } });
+    await poll();
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
 if (slug) {
+  refresh.hidden = false;
+  refresh.addEventListener('click', askRefresh);
   document.addEventListener('click', e => {
     const b = e.target.closest('.filters button');
     if (b) { filter = b.dataset.f; applyFilter(); }

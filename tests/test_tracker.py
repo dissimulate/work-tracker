@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import html
 import io
 import json
 import os
@@ -13,8 +14,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from unittest import mock
 from pathlib import Path
 
@@ -824,6 +828,7 @@ class SequenceSort(unittest.TestCase):
         head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
         self.assertEqual(re.findall(r'<button type=button data-sort="(\w+)">([^<]+)</button>', head),
                          [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
+                          ("priority", "Priority"), ("wait", "Wait time"), ("cycle", "Cycle time"),
                           ("waits", "Waits on"), ("unblocks", "Unblocks")])
 
         def row(ident: str) -> dict[str, str]:
@@ -846,6 +851,262 @@ class SequenceSort(unittest.TestCase):
         page = viewer.main_html(model.Tracker(model.HOME / s))
         self.assertRegex(page, rf'<details data-id="T-1"[^>]* data-r="{len(model.STAGES)}"')
         self.assertIn("T-1: status &#x27;wip&#x27; not one of", page)
+
+
+class IssueFields(unittest.TestCase):
+    """A ticket's issue fields (priority, when its issue was created) come from its issue tracker through the model,
+    which reads them with the tracker's tool and records them with `tracker issue`. The tracker says when they are
+    due."""
+
+    def tracker(self) -> tuple[str, tuple[str, str]]:
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me")
+        for ident, title in (("T-1", "Linked"), ("T-2", "Unlinked"), ("T-3", "Linked, closed")):
+            run(*t, "new", ident, "--title", title)
+        run(*t, "add", "T-1", "link", "Issue: [SC-1 Story one](https://issues.example/story/1)")
+        run(*t, "add", "T-3", "link", "Issue: [SC-3 Story three](https://issues.example/story/3)")
+        run(*t, "set", "T-3", "status=done", "summary=shipped")
+        return s, t
+
+    def read_at(self, s: str, ident: str, at: float) -> None:
+        tr = model.Tracker(model.HOME / s)
+        state = tr.raw_state()
+        state.setdefault("issues", {}).setdefault("read", {})[ident] = at
+        tr.save_state(state)
+
+    def test_records_fields_and_says_which_are_due(self):
+        s, t = self.tracker()
+        due = run(*t, "issue", "--due")
+        self.assertIn("T-1  https://issues.example/story/1", due)  # never read
+        self.assertIn("T-3  https://issues.example/story/3", due)  # closed, but never read: its creation time
+        self.assertNotIn("T-2", due)  # no Issue link: nothing to read
+
+        out = run(*t, "issue", "T-1", "--priority", "High", "--created", "2026-10-01T09:30:00.123+10:00")
+        self.assertIn("T-1: priority=High, issue_created=2026-09-30T23:30:00Z", out)
+        t1 = model.Tracker(model.HOME / s).lookup("T-1")
+        self.assertEqual((t1.get("priority"), t1.get("issue_created")), ("High", "2026-09-30T23:30:00Z"))
+        self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
+        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+
+        day = 86400
+        self.read_at(s, "T-1", time.time() - day - 60)
+        self.read_at(s, "T-3", time.time() - 30 * day)
+        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-1"])  # a day old; closed stays
+        self.read_at(s, "T-1", time.time() - day + 60)
+        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+        self.read_at(s, "T-1", 1000.0)  # due once more than a day has passed, not at the day itself
+        tr = model.Tracker(model.HOME / s)
+        self.assertEqual([x.id for x in tr.issue_due(now=1000.0 + day)], [])
+        self.assertEqual([x.id for x in tr.issue_due(now=1000.0 + day + 1)], ["T-1"])
+        self.read_at(s, "T-1", time.time() - day + 60)
+
+        viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh asks again for every open one
+        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-1"])
+
+        run(*t, "issue", "T-1", "--priority", "")
+        self.assertNotIn("priority", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its priority
+        self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--priority", "Low", code=2))
+        self.assertIn("needs a time zone", run(*t, "issue", "T-1", "--created", "2026-10-01T09:30:00", code=2))
+        self.assertIn("not an ISO 8601 time", run(*t, "issue", "T-1", "--created", "last week", code=2))
+        self.assertIn("`tracker issue` writes it", run(*t, "set", "T-1", "priority=High", code=2))
+
+    def test_priority_rank(self):
+        rank = model.priority_rank
+        self.assertEqual([rank(x) for x in ("Urgent", "Highest", "critical", "High", "Medium", "normal", "Low",
+                                            "Lowest", "P0", "p2", "Someday", "", "No priority", "none")],
+                         [0, 0, 0, 1, 2, 2, 3, 4, 0, 2, 9, None, None, None])
+
+    def test_the_brief_and_a_refresh_ask_for_due_fields(self):
+        s, t = self.tracker()
+        sid, work = f"sid{time.monotonic_ns()}", repo("feat/T-1")
+        run(*t, "set", "T-1", "status=in-progress", cwd=work)
+        env = {**os.environ, "TRACKER_SESSION": sid}
+        subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, check=True)
+        brief = said(hook("session-start", sid, work, source="startup"))
+        self.assertIn("Issue fields due for 2 ticket(s): T-1, T-3", brief)
+        self.assertIn("never guess", brief)
+
+        run(*t, "issue", "T-1", "--priority", "High")
+        run(*t, "issue", "T-3")
+        self.assertNotIn("Issue fields due", said(hook("session-start", sid, work, source="startup")))
+        self.assertNotIn("Issue fields due", said(hook("prompt", sid, work, prompt="go")))
+
+        viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh, which cannot read issues itself
+        self.assertIn("Issue fields due for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
+        self.assertNotIn("Issue fields due", said(hook("prompt", sid, work, prompt="again")))  # once per request
+
+    def test_the_viewer_shows_priority_and_what_a_refresh_waits_on(self):
+        s, t = self.tracker()
+        run(*t, "new", "T-4", "--title", "Odd")
+        run(*t, "add", "T-4", "link", "Issue: [SC-4 Story four](https://issues.example/story/4)")
+        run(*t, "issue", "T-1", "--priority", "High")
+        run(*t, "issue", "T-3")
+        run(*t, "issue", "T-4", "--priority", "Someday")
+        page = viewer.main_html(model.Tracker(model.HOME / s))
+        head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', head),
+                         ["step", "ticket", "group", "status", "priority", "wait", "cycle", "waits", "unblocks"])
+
+        def p(ident: str) -> str:
+            return re.search(rf'<details data-id="{ident}"[^>]* data-p="([^"]*)"', page).group(1)
+        self.assertEqual((p("T-1"), p("T-2"), p("T-4")), ("1", "", "9"))
+        self.assertRegex(page, r'data-id="T-1".*?<summary>.*?<span>High</span>')
+
+        self.assertRegex(page, r"<span hidden id=issue-state>issues read \d\d:\d\d</span>")
+        viewer.request_refresh(model.Tracker(model.HOME / s))
+        self.assertIn("<span hidden id=issue-state>issues: asked; no session on this tracker to read them</span>",
+                      viewer.main_html(model.Tracker(model.HOME / s)))
+        sid = f"live{time.monotonic_ns()}"  # a Claude session on this machine, tied to the tracker by `tracker start`
+        session.CLAUDE_SESSIONS.mkdir(parents=True, exist_ok=True)
+        (session.CLAUDE_SESSIONS / f"{sid}.json").write_text(json.dumps(
+            {"pid": os.getpid(), "sessionId": sid, "cwd": "/", "name": "live", "status": "idle",
+             "statusUpdatedAt": time.time() * 1000}))
+        session.save_session(sid, tracker=s, cwd=BASE)
+        self.assertIn("<span hidden id=issue-state>issues: asked; waiting for a session to read them</span>",
+                      viewer.main_html(model.Tracker(model.HOME / s)))
+        unlinked = slug()
+        run("init", unlinked, "--title", "Plain", "--owner", "me")
+        self.assertNotIn("issue-state", viewer.main_html(model.Tracker(model.HOME / unlinked)))
+
+    def test_refresh_needs_the_page_token_and_the_same_site(self):
+        s, _ = self.tracker()
+        threading.Thread(target=viewer.serve, daemon=True).start()
+        for _ in range(100):
+            if viewer.VIEWER_FILE.exists():
+                break
+            time.sleep(0.05)
+        port = json.loads(viewer.VIEWER_FILE.read_text())["port"]
+        base = f"http://127.0.0.1:{port}/t/{s}"
+
+        def post(headers: dict) -> int:
+            req = urllib.request.Request(f"{base}/refresh", data=b"", method="POST", headers=headers)
+            try:
+                return urllib.request.urlopen(req).status
+            except urllib.error.HTTPError as err:
+                return err.code
+
+        page = urllib.request.urlopen(f"{base}/").read().decode()
+        token = re.search(r'data-token="([^"]+)"', page).group(1)
+        self.assertEqual(post({}), 403)
+        self.assertEqual(post({"X-Tracker-Token": "wrong"}), 403)
+        self.assertEqual(post({"X-Tracker-Token": token, "Sec-Fetch-Site": "cross-site"}), 403)
+        self.assertIsNone(model.Tracker(model.HOME / s).raw_state().get("issues", {}).get("requested"))
+        self.assertEqual(post({"X-Tracker-Token": token, "Sec-Fetch-Site": "same-origin"}), 204)
+        self.assertGreater(model.Tracker(model.HOME / s).raw_state()["issues"]["requested"], time.time() - 60)
+
+
+class Spans(unittest.TestCase):
+    """A ticket's spans: wait (issue created → started) and cycle (started → PR merged). The tracker records the start
+    itself, so cycle time needs no issue tracker. Each needs both times exact (UTC to the second) and in order."""
+
+    def ticket(self, s: str, ident: str, created: str = "", started: str = "", merged: str = "",
+               status: str = "done") -> None:
+        t = ("--tracker", s)
+        run(*t, "new", ident, "--title", f"Work {ident}", "--branch", f"f-{ident}")
+        if created:
+            run(*t, "add", ident, "link", f"Issue: [SC-{ident} Story](https://issues.example/{ident})")
+            run(*t, "issue", ident, "--created", created)
+        rec = model.Tracker(model.HOME / s).lookup(ident)
+        rec.save({"status": status, **({"started_at": started} if started else {}),
+                  **({"pr": "9", "pr_state": "merged", "merged_at": merged} if merged else {})})
+
+    def test_set_records_the_first_start(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Timed", "--owner", "me")
+        run(*t, "new", "S-1", "--title", "Starts", "--branch", "f1")
+        out = run(*t, "set", "S-1", "status=in-progress")
+        self.assertNotIn("started_at", out)
+        first = model.Tracker(model.HOME / s).lookup("S-1").get("started_at")
+        self.assertLessEqual(abs(model.utc_seconds(first) - time.time()), 5)
+        model.Tracker(model.HOME / s).lookup("S-1").save({"started_at": "2026-09-01T00:00:00Z"})
+        run(*t, "set", "S-1", "status=todo")
+        run(*t, "set", "S-1", "status=in-progress")  # started again: the first start stays
+        self.assertEqual(model.Tracker(model.HOME / s).lookup("S-1").get("started_at"), "2026-09-01T00:00:00Z")
+        self.assertIn("the tracker writes it", run(*t, "set", "S-1", "started_at=2026-09-02T00:00:00Z", code=2))
+        # Started before 0.29, so in progress with no start: set in progress again, it gets none rather than now
+        run(*t, "new", "S-2", "--title", "Started earlier", "--branch", "f2")
+        path = model.HOME / s / "tickets" / "S-2.md"
+        path.write_text(re.sub(r"^status: .*", "status: in-progress", path.read_text(), flags=re.M))
+        run(*t, "set", "S-2", "status=in-progress")
+        self.assertEqual(model.Tracker(model.HOME / s).lookup("S-2").get("started_at"), "")
+
+    def test_sync_keeps_the_merge_time(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Timed", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-1", "--title", "Merging now", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        lists = [{"number": 11, "headRefName": "f1", "state": "MERGED", "isDraft": False,
+                  "mergedAt": "2026-10-01T06:30:00Z", "baseRefName": "main", "updatedAt": ""}]
+        with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False:
+                               lists if args[:2] == ("pr", "list") else {"data": {}}):
+            run(*t, "sync")
+        self.assertEqual(model.Tracker(model.HOME / s).lookup("S-1").get("merged_at"), "2026-10-01T06:30:00Z")
+
+    def test_the_span_lines(self):
+        s = slug()
+        run("init", s, "--title", "Timed", "--owner", "me")
+        self.ticket(s, "S-1", "2026-09-01T00:00:00Z", "2026-09-01T02:00:00Z", "2026-09-01T08:00:00Z")
+        self.ticket(s, "S-2", "2026-09-02T00:00:00Z", "2026-09-03T00:00:00Z", "2026-09-05T00:00:00Z")
+        self.ticket(s, "S-3", "2026-10-01T00:00:00Z", "2026-10-01T00:10:00Z", "2026-10-01T12:10:00Z")  # recent
+        self.ticket(s, "S-4", started="2026-10-02T00:00:00Z", merged="2026-10-02T00:30:00Z")  # no issue: cycle only
+        # S-5 started exactly 7 days ago and merged by date only; S-7's issue was made after its start; S-9 merged
+        # before its start
+        self.ticket(s, "S-5", "2026-09-01T00:00:00Z", "2026-09-29T00:00:00Z", "2026-09-30")
+        self.ticket(s, "S-6", "2026-09-20T00:00:00Z", "2026-09-21T00:00:00Z", status="in-progress")  # not merged
+        self.ticket(s, "S-7", "2026-09-10T00:00:00Z", "2026-09-09T00:00:00Z", "2026-09-11T00:00:00Z")
+        self.ticket(s, "S-8", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", "2026-09-01T02:00:00Z",
+                    status="dropped")
+        self.ticket(s, "S-9", "2026-09-01T00:00:00Z", "2026-09-10T00:00:00Z", "2026-09-09T00:00:00Z")
+        tr = model.Tracker(model.HOME / s)
+        h, d = 3600, 86400
+        self.assertEqual({t.id: (model.span(t, "wait"), model.span(t, "cycle")) for t in tr.tickets},
+                         {"S-1": (2 * h, 6 * h), "S-2": (d, 2 * d), "S-3": (600, 12 * h), "S-4": (None, 1800),
+                          "S-5": (28 * d, None), "S-6": (d, None), "S-7": (None, 2 * d), "S-8": (None, None),
+                          "S-9": (9 * d, None)})
+        now = model.utc_seconds("2026-10-06T00:00:00Z")
+        self.assertEqual(views.span_lines(tr, now), [
+            "Wait time (issue created → started): median 24 h over 6 · fastest 10 min (S-3) · last 7 days: median "
+            "14.0 d over 2",
+            "Cycle time (started → PR merged): median 12 h over 5 · fastest 30 min (S-4) · last 7 days: median 6 h "
+            "over 2"])
+        self.assertEqual(views.span_lines(tr, now + 30 * d), [
+            "Wait time (issue created → started): median 24 h over 6 · fastest 10 min (S-3)",
+            "Cycle time (started → PR merged): median 12 h over 5 · fastest 30 min (S-4)"])
+        empty = slug()
+        run("init", empty, "--title", "Untimed", "--owner", "me")
+        self.assertEqual(views.span_lines(model.Tracker(model.HOME / empty), now), [])
+        self.assertEqual([views.duration(x) for x in (59, 60, 3599, 3600, 47 * 3600 + 3599, 48 * 3600, 100 * 3600)],
+                         ["1 min", "1 min", "59 min", "1 h", "47 h", "2.0 d", "4.2 d"])
+
+    def test_the_viewer_and_index_show_the_spans(self):
+        s = slug()
+        run("init", s, "--title", "Timed", "--owner", "me")
+        self.ticket(s, "S-1", "2026-09-01T00:00:00Z", "2026-09-01T02:00:00Z", "2026-09-01T08:00:00Z")
+        self.ticket(s, "S-2", "2026-09-01T00:00:00Z", status="todo")
+        tr = model.Tracker(model.HOME / s)
+        page = viewer.main_html(tr)
+        head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', head),
+                         ["step", "ticket", "group", "status", "priority", "wait", "cycle", "waits", "unblocks"])
+
+        def spans(ident: str) -> tuple[str, str]:
+            return re.search(rf'<details data-id="{ident}"[^>]* data-sw="([^"]*)" data-sc="([^"]*)"', page).groups()
+        self.assertEqual((spans("S-1"), spans("S-2")), (("7200", "21600"), ("", "")))
+        self.assertRegex(page, r'data-id="S-1".*?<summary>.*?<span>2 h</span><span>6 h</span>')
+        run("--tracker", s, "set", "S-1", "summary=Shipped the API")  # the opened row still leads with its summary
+        page = viewer.main_html(model.Tracker(model.HOME / s))
+        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>summary</dt><dd>Shipped the API</dd>')
+        lines = views.span_lines(tr)
+        self.assertEqual(len(lines), 2)
+        self.assertIn("".join(f"<p class=lead>{html.escape(x)}</p>" for x in lines), page)
+        self.assertEqual(run("--tracker", s, "index").splitlines()[1:3], lines)
+        bare = slug()
+        run("init", bare, "--title", "Untimed", "--owner", "me")
+        self.assertNotIn("class=lead", viewer.main_html(model.Tracker(model.HOME / bare)))
+        self.assertNotIn("Cycle time", run("--tracker", bare, "index"))
 
 
 class Watch(unittest.TestCase):
