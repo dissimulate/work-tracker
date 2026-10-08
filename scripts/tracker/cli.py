@@ -14,9 +14,9 @@ from .markdown import (BULLET, bullets, format_value, headings, parse_links, ren
 from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE,
     EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME,
     SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
-    blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url, load_record, locked, names,
-    norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
-    spawn, today, unblocked, utc_now, Busy, Record, Tracker)
+    atomic_file, atomic_write, blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url,
+    load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
+    set_branch, short, sort_key, spawn, today, unblocked, utc_now, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
@@ -521,7 +521,7 @@ def append_evidence(folder: Path, file: str, text: str) -> str:
         die(f"no file {EVIDENCE_DIR}/{name} to append to: `tracker attach <file>` keeps a new one")
     old = dest.read_text()
     gap = "" if not old or old.endswith("\n\n") else "\n" if old.endswith("\n") else "\n\n"
-    dest.write_text(f"{old}{gap}{text.strip(chr(10))}\n")
+    atomic_write(dest, f"{old}{gap}{text.strip(chr(10))}\n")
     return name
 
 
@@ -529,6 +529,8 @@ def cmd_attach(args):
     """Keep a file in the tracker's evidence/ folder and link it from the records it supports."""
     tr = resolve(args)
     folder = (tr.root / EVIDENCE_DIR).resolve()
+    if not folder.is_relative_to(tr.root.resolve()):
+        die(f"{EVIDENCE_DIR}/ must stay inside the tracker directory")
     if args.append is not None:
         if args.name or args.force:
             die("--append adds to the file named: no --name or --force with it")
@@ -563,11 +565,14 @@ def keep_evidence(args, folder: Path) -> str:
         if not SAFE_NAME.fullmatch(name):
             die(f"'{name}' is not a file name: use letters, digits, `.`, `_` and `-`")
         dest = folder / name
+        if dest.is_symlink() or not dest.resolve().is_relative_to(folder):
+            die(f"refusing to write {EVIDENCE_DIR}/{name}: destination is a symlink or outside {EVIDENCE_DIR}/")
         if dest.exists() and dest.read_bytes() != src.read_bytes() and not args.force:
             die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, --force to replace it, or `--append -` "
                 "to add text to it")
         folder.mkdir(exist_ok=True)
-        shutil.copy2(src, dest)
+        with src.open("rb") as source, atomic_file(dest) as target:
+            shutil.copyfileobj(source, target)
     return name
 
 

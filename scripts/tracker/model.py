@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -401,19 +403,44 @@ def load_record(path: Path, kind: str) -> Record:
 _writes = 0  # tracker files this process wrote: a Tracker rebuilds its index after any write (Tracker.index)
 
 
-def atomic_write(path: Path, text: str) -> None:
+@contextmanager
+def atomic_file(path: Path):
+    """Write through an exclusively created file, then replace the destination. Keep its permissions; a new file
+    is owner-only. Never open the destination for writing, including when another writer replaces it with a link."""
     global _writes
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    for wait in (0.05, 0.1, 0.2, 0.4, None):  # Windows refuses to replace a file while another process reads it
-        try:
-            os.replace(tmp, path)
-            break
-        except PermissionError:
-            if wait is None:
-                raise
-            time.sleep(wait)
-    _writes += 1
+    mode = 0o600
+    try:
+        previous = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(previous.st_mode):
+            die(f"refusing to replace {path}: not a regular file")
+        mode = stat.S_IMODE(previous.st_mode)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            yield f
+        tmp.chmod(mode)
+        for wait in (0.05, 0.1, 0.2, 0.4, None):  # Windows refuses to replace a file while another process reads it
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if wait is None:
+                    raise
+                time.sleep(wait)
+        _writes += 1
+    finally:
+        if tmp.exists():
+            tmp.chmod(0o600)  # Windows cannot remove a temporary file whose saved mode is read-only
+            tmp.unlink()
+
+
+def atomic_write(path: Path, text: str) -> None:
+    with atomic_file(path) as f:
+        f.write(text.encode("utf-8"))
 
 
 def create(path: Path, text: str) -> None:

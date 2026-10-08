@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -522,6 +523,133 @@ class Flow(unittest.TestCase):
         self.assertIn('data-id="T-2"', page)
         self.assertFalse(viewer.code_ready())  # the code on disk is the code running: no restart
         self.assertIn("Decided D-01 Auth scheme (me): JWT", log)
+
+
+class FileSafety(unittest.TestCase):
+    """A tracker write changes only its intended file and keeps private files private."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir=BASE))
+
+    def link(self, path: Path, target: Path):
+        try:
+            path.symlink_to(target, target_is_directory=target.is_dir())
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+
+    def test_atomic_write_ignores_the_old_temporary_name(self):
+        outside, path = self.root / "outside", self.root / "record.md"
+        outside.write_text("keep me")
+        self.link(path.with_suffix(".md.tmp"), outside)
+        model.atomic_write(path, "new ünicode\n")
+        self.assertEqual(path.read_text(), "new ünicode\n")
+        self.assertEqual(outside.read_text(), "keep me")
+        self.assertTrue(path.with_suffix(".md.tmp").is_symlink())
+        self.assertEqual(list(self.root.glob(".record.md.*.tmp")), [])
+
+    def test_atomic_write_refuses_destination_symlinks(self):
+        for exists in (False, True):
+            with self.subTest(exists=exists):
+                outside = self.root / f"outside-{exists}"
+                if exists:
+                    outside.write_text("keep me")
+                path = self.root / f"record-{exists}.md"
+                self.link(path, outside)
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    model.atomic_write(path, "replacement")
+                self.assertTrue(path.is_symlink())
+                self.assertEqual(outside.read_text() if exists else outside.exists(), "keep me" if exists else False)
+
+    @unittest.skipIf(model.WINDOWS, "POSIX permission bits")
+    def test_atomic_write_preserves_modes_and_creates_private_files(self):
+        old_mask = os.umask(0o022)
+        try:
+            for mode in (None, 0o600, 0o640, 0o644):
+                with self.subTest(mode=mode):
+                    path = self.root / f"record-{mode}.md"
+                    if mode is not None:
+                        path.write_text("old")
+                        path.chmod(mode)
+                    with model.atomic_file(path) as f:
+                        self.assertEqual(stat.S_IMODE(os.fstat(f.fileno()).st_mode), 0o600)
+                        f.write(b"new")
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode if mode is not None else 0o600)
+                    self.assertEqual(path.read_text(), "new")
+        finally:
+            os.umask(old_mask)
+
+    def test_a_destination_swapped_for_a_symlink_does_not_redirect_the_write(self):
+        outside, path = self.root / "outside", self.root / "record.md"
+        outside.write_text("keep me")
+        path.write_text("old")
+        with model.atomic_file(path) as f:
+            path.unlink()
+            self.link(path, outside)
+            f.write(b"replacement")
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(path.read_text(), "replacement")
+        self.assertEqual(outside.read_text(), "keep me")
+
+    def test_failed_writes_keep_the_original_and_remove_temporary_files(self):
+        path = self.root / "record.md"
+        path.write_text("keep me")
+        with self.assertRaises(ValueError):
+            with model.atomic_file(path) as f:
+                f.write(b"partial")
+                raise ValueError("interrupted write")
+        self.assertEqual(path.read_text(), "keep me")
+        self.assertEqual(list(self.root.glob("*.tmp")), [])
+        with mock.patch.object(model.os, "replace", side_effect=PermissionError), \
+                mock.patch.object(model.time, "sleep"), self.assertRaises(PermissionError):
+            model.atomic_write(path, "replacement")
+        self.assertEqual(path.read_text(), "keep me")
+        self.assertEqual(list(self.root.glob("*.tmp")), [])
+
+    def test_attach_rejects_symlinks_even_with_force(self):
+        s = slug()
+        run("init", s, "--title", "Safe attachments", "--owner", "me")
+        folder = model.HOME / s / "evidence"
+        folder.mkdir()
+        source = self.root / "source.txt"
+        source.write_text("new")
+        for exists in (False, True):
+            outside = self.root / f"outside-{exists}"
+            if exists:
+                outside.write_text("keep me")
+            name = f"report-{exists}.txt"
+            self.link(folder / name, outside)
+            for flags in ([], ["--force"]):
+                with self.subTest(exists=exists, flags=flags):
+                    out = run("--tracker", s, "attach", str(source), "--name", name, *flags, code=2)
+                    self.assertIn("destination is a symlink", out)
+                    self.assertEqual(outside.read_text() if exists else outside.exists(),
+                                     "keep me" if exists else False)
+
+    def test_attach_rejects_an_evidence_directory_outside_the_tracker(self):
+        s = slug()
+        run("init", s, "--title", "Safe directory", "--owner", "me")
+        self.link(model.HOME / s / "evidence", self.root)
+        source = self.root / "source.txt"
+        source.write_text("keep me")
+        out = run("--tracker", s, "attach", str(source), "--name", "copy.txt", code=2)
+        self.assertIn("must stay inside the tracker", out)
+        self.assertFalse((self.root / "copy.txt").exists())
+
+    def test_attach_copies_binary_files_and_preserves_private_replacements(self):
+        s = slug()
+        run("init", s, "--title", "Copies", "--owner", "me")
+        source = self.root / "source.bin"
+        source.write_bytes(b"\x00\xff\r\n")
+        run("--tracker", s, "attach", str(source))
+        dest = model.HOME / s / "evidence/source.bin"
+        self.assertEqual(dest.read_bytes(), source.read_bytes())
+        if not model.WINDOWS:
+            self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o600)
+        source.write_bytes(b"changed\x00")
+        run("--tracker", s, "attach", str(source), "--force")
+        self.assertEqual(dest.read_bytes(), source.read_bytes())
+        if not model.WINDOWS:
+            self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o600)
 
 
 class Writes(unittest.TestCase):

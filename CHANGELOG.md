@@ -28,6 +28,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Fixed
 
+- Tracker updates and attachments no longer write through destination or temporary-file symlinks.
+- File replacements preserve existing permissions; new replacement files and copied attachments are owner-only.
 - In Codex, a hand edit of a tracker file with `apply_patch` counts as the session's own: the edit hook now runs for it.
 - The hooks log only a branch's own commits, not those that a merge from the default branch brings in.
 - `put` runs as a write: under the lock, with its `check` line, and not in a watching session.
