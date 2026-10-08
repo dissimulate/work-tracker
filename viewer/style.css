@@ -14,11 +14,12 @@
   --ink: #22272e;      /* text */
   --muted: #59636f;    /* secondary text and labels */
   /* Meaning colours share the tag palette; light-mode text uses darker shades for contrast. */
+  --tone-strength: 35%;
   --accent: var(--ready); /* links, ids, the chosen filter */
-  --ready: color-mix(in srgb, var(--tag-ready) 35%, var(--tag-ink));
-  --active: color-mix(in srgb, var(--tag-active) 35%, var(--tag-ink));
-  --done: color-mix(in srgb, var(--tag-done) 35%, var(--tag-ink));
-  --blocked: color-mix(in srgb, var(--tag-blocked) 35%, var(--tag-ink));
+  --ready: color-mix(in srgb, var(--tag-ready) var(--tone-strength), var(--tag-ink));
+  --active: color-mix(in srgb, var(--tag-active) var(--tone-strength), var(--tag-ink));
+  --done: color-mix(in srgb, var(--tag-done) var(--tone-strength), var(--tag-ink));
+  --blocked: color-mix(in srgb, var(--tag-blocked) var(--tone-strength), var(--tag-ink));
   --tint: 7%;          /* how much of a meaning a fill takes */
   /* Solid pastel tags keep the same colours in both themes. */
   --tag-ready: #9fc2ff;
@@ -31,6 +32,7 @@
   --border: 1px solid var(--line);
   --radius: 6px;       /* panels */
   --radius-s: 4px;     /* code, chips, controls, focus rings */
+  --control-size: 30px;
   --pad: 18px;         /* a row's side padding */
   --agent: 14px;       /* an agent icon, left of a Now row */
   --agent-gap: 20px;   /* between an agent icon and its row */
@@ -51,10 +53,7 @@
   --line: #2b313a;
   --ink: #dfe3e9;
   --muted: #9da6b3;
-  --ready: var(--tag-ready);
-  --active: var(--tag-active);
-  --done: var(--tag-done);
-  --blocked: var(--tag-blocked);
+  --tone-strength: 100%;
   --tint: 10%;
 }
 
@@ -63,13 +62,11 @@
    s-<stage> and s-<decision status>, from the dependencies s-ready, s-stack (waits only on work under way, so it
    can stack on it) and s-blocked, and from a ticket's move s-you (your move) and s-them (another's). */
 
-.s-todo, .s-dropped { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
+.s-todo, .s-dropped, .s-them { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
 .s-ready { --tone: var(--ready); --tag-tone: var(--tag-ready); }
 .s-in-progress, .s-in-review, .s-open, .s-stack { --tone: var(--active); --tag-tone: var(--tag-active); }
 .s-merged, .s-done, .s-closed { --tone: var(--done); --tag-tone: var(--tag-done); }
-.s-blocked { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
-.s-you { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
-.s-them { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
+.s-blocked, .s-you { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
 #live { --tone: var(--done); }
 #live.off { --tone: var(--blocked); }
 .filters [aria-pressed="true"] { --tone: var(--accent); }
@@ -86,22 +83,11 @@
   background: color-mix(in srgb, var(--tone, var(--muted)) var(--tint), var(--surface));
 }
 
-/* The live connection indicator. */
-#live::before {
-  content: "";
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--tone, currentColor);
-}
-
 .chip {
   color: var(--tag-ink);
   background: var(--tag-tone, var(--tag-neutral));
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   font: 600 var(--fs-xs)/1.5 var(--sans);
   padding: 2px 7px;
   border-radius: var(--radius-s);
@@ -114,6 +100,16 @@
 /* ---------- base ---------- */
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* Layout rules must not reveal hidden controls or filtered rows. */
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-s);
+  transition: background-color var(--ease), border-color var(--ease);
+}
+button:disabled { opacity: .6; cursor: progress; }
 
 body {
   margin: 0;
@@ -141,7 +137,7 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-s); }
 ::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 
-/* Labels: section heads, column heads, property names. */
+/* Labels: column heads and property names. */
 th, .seq-head > span, .props dt {
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -178,36 +174,63 @@ li { margin: 2px 0; }
 .sub code { background: none; padding: 0; }
 .meta, .nx { font-size: var(--fs-s); color: var(--muted); }
 
-/* ---------- live indicator ---------- */
+/* Single-line previews, cells and live status use the same overflow behaviour. */
+.seq-head > span, .seq summary > span, .seq .lines > *, .nx, #live {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-#bar { /* the live line and Refresh, top right */
+/* ---------- toolbar ---------- */
+
+#bar {
   position: absolute;
   top: 16px;
+  left: var(--pad);
   right: var(--pad);
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
-#refresh, #live, #theme {
-  font: inherit;
+:where(#bar) button, #live {
   font-size: var(--fs-xs);
+  line-height: 1.4;
   padding: 5px 10px;
   border-radius: var(--radius-s);
   background: var(--surface);
   border: var(--border);
 }
 
-#refresh, #theme { color: var(--ink); cursor: pointer; flex-shrink: 0; }
-#refresh:hover, #theme:hover { background: var(--subtle); }
-#refresh:disabled { opacity: .6; cursor: progress; }
+#bar button { min-height: var(--control-size); flex-shrink: 0; }
+#bar button:hover { background: var(--subtle); }
 
-#theme { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; }
-#theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#theme { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 6px; }
+#theme svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 #theme .sun, :root[data-theme="dark"] #theme .moon { display: none; }
 :root[data-theme="dark"] #theme .sun { display: block; }
 
-#live { display: flex; align-items: center; gap: 6px; color: var(--muted); background: none; border-color: transparent; }
+#live { min-width: 0; color: var(--muted); background: none; border-color: transparent; }
+
+#live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: var(--tone);
+}
 
 #live:empty { display: none; }
 
@@ -240,37 +263,19 @@ summary:hover, details[open] > summary { background: var(--subtle); }
 details[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 summary > .chip { align-self: center; }
 summary > .chip + .chip { margin-left: -4px; } /* a decision's status, then what it blocks */
-.nx { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nx { flex-basis: 100%; min-width: 0; }
 details[open] > summary > .nx { display: none; }
 
 details > div { padding: 2px var(--pad) 14px; border-top: var(--border); font-size: var(--fs-m); }
 
 /* Detail panels keep a visible disclosure cue. Sequence rows use their existing grid. */
 details:not(.sec) > summary { position: relative; }
-details:not(.sec):not(.seq > details) > summary { padding-right: calc(var(--pad) + 20px); }
-details:not(.sec):not(.seq > details) > summary::after {
-  content: "";
-  position: absolute;
-  right: var(--pad);
-  top: 20px;
-  width: 6px;
-  height: 6px;
-  border: solid var(--muted);
-  border-width: 0 1px 1px 0;
-  transform: rotate(-45deg);
-  transition: transform var(--ease);
-}
-details[open]:not(.sec):not(.seq > details) > summary::after { transform: rotate(45deg); }
+details:not(.sec, .t) > summary { padding-right: calc(var(--pad) + 20px); }
 
-/* A section: its h2 is the head, with a chevron that turns when it opens. */
-details.sec { background: none; border: 0; border-radius: 0; box-shadow: none; margin: 0; }
-details.sec > summary { display: block; padding: 0; background: none; }
-details.sec > div { padding: 0; border: 0; font-size: inherit; }
-details.sec > summary:hover h2 { color: var(--accent); }
-details.sec > summary h2 { display: flex; align-items: center; gap: 10px; }
-
-details.sec > summary h2::before {
+/* One chevron shape for both detail panels and section headings. */
+details:not(.sec, .t) > summary::after, details.sec > summary h2::before {
   content: "";
+  flex: none;
   width: 6px;
   height: 6px;
   border: solid currentColor;
@@ -278,12 +283,25 @@ details.sec > summary h2::before {
   transform: rotate(-45deg);
   transition: transform var(--ease);
 }
+details:not(.sec, .t) > summary::after {
+  position: absolute;
+  right: var(--pad);
+  top: 20px;
+  color: var(--muted);
+}
+details[open]:not(.sec, .t) > summary::after,
+details.sec[open] > summary h2::before { transform: rotate(45deg); }
 
-details.sec[open] > summary h2::before { transform: rotate(45deg) translate(-2px, -1px); }
+/* A section: its h2 is the head, with a chevron that turns when it opens. */
+details.sec { background: none; border: 0; border-radius: 0; margin: 0; }
+details.sec > summary { display: block; padding: 0; background: none; }
+details.sec > div { padding: 0; border: 0; font-size: inherit; }
+details.sec > summary:hover h2 { color: var(--accent); }
+details.sec > summary h2 { display: flex; align-items: center; gap: 10px; }
 
 /* A list of rows in one panel. Each row draws the line under it, so a row a filter hides leaves no double line. */
 .seq { overflow: hidden; border-bottom: 0; }
-.nowlist > *, .seq > details { margin: 0; border: 0; border-bottom: var(--border); border-radius: 0; box-shadow: none; }
+.nowlist > *, .seq > details { margin: 0; border: 0; border-bottom: var(--border); border-radius: 0; }
 
 /* The Now list does not clip, so the agent icons left of it show: its first and last rows take its corners, and the
    last row leaves the bottom line to the list. */
@@ -318,8 +336,6 @@ details.sec[open] > summary h2::before { transform: rotate(45deg) translate(-2px
 
 /* An agent session on a row's work, left of the row and centred on its head: a faded ring, which spins while the
    session works (busy). It sits --agent-gap past the list's border; main's side padding leaves room for it. */
-.nowlist summary { position: relative; }
-
 .agent {
   position: absolute;
   top: 50%;
@@ -365,7 +381,14 @@ tr:last-child > td { border-bottom: 0; }
    fits its rendered content across all visible rows; the ticket column takes the rest. Long metadata is capped.
    The wrapper owns the size query so the shared grid can change its tracks at each breakpoint. */
 .seq-wrap { container-type: inline-size; }
-.seq { --gap: 14px; display: grid; grid-template-columns: var(--cols); column-gap: var(--gap); font-size: var(--fs-m); }
+.seq {
+  --gap: 14px;
+  --meta-max: 26ch;
+  display: grid;
+  grid-template-columns: var(--cols);
+  column-gap: var(--gap);
+  font-size: var(--fs-m);
+}
 
 .seq > details, .seq-head, .seq summary {
   display: grid;
@@ -373,7 +396,6 @@ tr:last-child > td { border-bottom: 0; }
   grid-template-columns: subgrid;
   min-width: 0;
 }
-.seq > details[hidden] { display: none; }
 
 /* The browser wraps the expanded body in this pseudo-element. Keep it across the whole row. */
 .seq > details::details-content { grid-column: 1 / -1; min-width: 0; }
@@ -386,23 +408,21 @@ tr:last-child > td { border-bottom: 0; }
 
 .seq-head { background: var(--bg); border-bottom: var(--border); }
 .seq-head button { /* a column head sorts by its column; it keeps the label's look */
-  all: unset;
-  cursor: pointer;
-  border-radius: 3px;
+  background: none;
+  border: 0;
+  padding: 0;
+  letter-spacing: inherit;
 }
 .seq-head button:hover { color: var(--ink); }
-.seq-head button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .seq-head > :has([data-dir]) { overflow: visible; } /* the arrow may run into the gap: columns fit their labels */
 .seq-head [data-dir] { color: var(--accent); }
 .seq-head [data-dir="asc"]::after { content: " ↑"; }
 .seq-head [data-dir="desc"]::after { content: " ↓"; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.seq-head > span, .seq summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seq summary > span:has(> .chip) { display: flex; align-items: center; }
 .seq summary > :first-child { color: var(--muted); font-variant-numeric: tabular-nums; }
 .seq details.rep > summary > :first-child { visibility: hidden; } /* the step shows on its first row only */
 .seq details.closed:not([open]) > summary { color: var(--muted); }
-.seq .tk .id { font-weight: 500; }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
    ticket has the rest. */
@@ -419,7 +439,7 @@ tr:last-child > td { border-bottom: 0; }
 
 .deps { font-size: var(--fs-s); }
 .seq .lines { display: flex; flex-direction: column; align-items: flex-start; } /* a Deps cell: waits on above unblocks */
-.seq .lines > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.seq .lines > * { max-width: 100%; }
 
 /* ---------- filters ---------- */
 
@@ -430,10 +450,7 @@ tr:last-child > td { border-bottom: 0; }
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--radius-s);
   padding: 6px 10px;
-  cursor: pointer;
-  transition: background-color var(--ease), border-color var(--ease);
 }
 
 .filters button:not([aria-pressed="true"]):hover { background: var(--subtle); }
@@ -444,8 +461,6 @@ tr:last-child > td { border-bottom: 0; }
   :root { --pad: 12px; --agent-gap: 8px; }
   main { padding-top: 68px; padding-bottom: 48px; }
   h1 { font-size: 26px; }
-  #bar { left: var(--pad); right: var(--pad); justify-content: flex-end; }
-  #live { min-width: 0; overflow-wrap: anywhere; }
   .props { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .props dt:not(:first-child) { margin-top: 10px; }
   .props dt.gap + dd { margin-top: 0; }

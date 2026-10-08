@@ -176,14 +176,14 @@ def link_rows(items: list[Link]) -> list[tuple[str, Html]]:
             for x in items]
 
 
-def chip(tone: str, text: str = "") -> Html:
-    """A status pill: `tone` is a status or s-ready, s-stack, s-blocked (viewer/style.css, "status colours")."""
-    return Html('<span class="chip s-{}">{}</span>').format(tone, text or tone)
+def chip(tone: str, text: str = "", *, cls: str = "") -> Html:
+    """A status tag; its tone maps to the shared status colours, and `cls` adds a layout variant."""
+    return Html('<span class="chip{} s-{}">{}</span>').format(f" {cls}" if cls else "", tone, text or tone)
 
 
 def move_chip(move: Move | None) -> Html:
     """Whose move a ticket under way waits on: yours stands out, another's does not."""
-    return Html('<span class="chip move s-{}">{}</span>').format("you" if move.mine else "them", move.text()) \
+    return chip("you" if move.mine else "them", move.text(), cls="move") \
         if move else NONE
 
 
@@ -335,14 +335,14 @@ class Cell(NamedTuple):
     attrs: dict[str, object] = {}
 
 
-def fit(items: list[tuple[str, Html]], limit: int) -> tuple[int, str]:
-    """How many items fit in `limit` characters with ` +n` for the rest (at least one), and the text shown."""
+def fit(items: list[tuple[str, Html]], limit: int) -> int:
+    """How many items fit in `limit` characters with ` +n` for the rest (at least one)."""
     texts = [text for text, _ in items]
     for k in range(len(texts), 0, -1):
         shown = ", ".join(texts[:k]) + (f" +{len(texts) - k}" if k < len(texts) else "")
         if len(shown) <= limit or k == 1:
-            return k, shown
-    return 0, ""
+            return k
+    return 0
 
 
 def ticket_cell(r: Row) -> Cell:
@@ -377,7 +377,7 @@ def deps_cell(r: Row) -> Cell:
              (("←", "waits on", r.waits), ("→", "unblocks", r.unblocks)) if items]
     lines = []
     for arrow, _, items in lists:
-        k, _ = fit(items, LIST_CH - 2)
+        k = fit(items, LIST_CH - 2)
         more = Html(" <span class=meta>+{}</span>").format(len(items) - k) if k < len(items) else NONE
         lines.append(Html("<span><span class=meta>{}</span> {}{}</span>").format(
             arrow, comma(h for _, h in items[:k]), more))
@@ -403,16 +403,16 @@ COLUMNS = (
     Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
     Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
-           text_cell("group"), "fit-content(26ch)", "mid"),
+           text_cell("group"), "fit-content(var(--meta-max))", "mid"),
     Column((("status", "Status", "status",
              lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
     Column((("priority", "Priority", "priority", lambda r: priority_rank(str(r.t.get("priority", "")))),),
-           text_cell("priority"), "fit-content(26ch)", "narrow"),
+           text_cell("priority"), "fit-content(var(--meta-max))", "narrow"),
     Column((("wait", "Wait", "wait time", lambda r: r.spans["wait"]),
             ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, "max-content", "mid"),
     Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),
             ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))),
-           deps_cell, "fit-content(26ch)", "narrow"),
+           deps_cell, "fit-content(var(--meta-max))", "narrow"),
 )
 
 
@@ -512,9 +512,8 @@ def now_html(tr: Tracker) -> Html:
         head = (agent_icon(agents[t.id]) + ref(t.id) + chip(t.stage) + move_chip(moves[t.id])
                 + named(str(t.get("title")), " · ".join(x for x in (b, stale) if x)))
         line = Html("next: {}").format(md_inline(str(t.get("next")))) if t.get("next") else NONE
-        mine = moves[t.id] and moves[t.id].mine
         now.append(item(t.id, head, line, (Html("<p class=meta>{}</p>").format(fresh) if fresh else NONE)
-                        + agents_html(agents[t.id]), {"class": "mine"} if mine else None))
+                        + agents_html(agents[t.id])))
     for key, h in handoffs.items():
         b = key.rpartition(":")[2] if one_repo else key  # a tracker that spans repos names the repo
         where = f"at {h.get('head', '')[:9]}" + (", uncommitted changes" if h.get("dirty") else "")

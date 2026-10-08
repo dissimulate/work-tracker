@@ -121,6 +121,7 @@ async function poll() {
     live.textContent = 'viewer stopped — run `tracker open`';
     live.className = 'off';
   }
+  live.title = live.textContent; // The toolbar truncates long status text to keep the controls visible.
 }
 
 // Refresh: pull PR state from GitHub now, and ask the next session prompt for the issue fields (only the model can
