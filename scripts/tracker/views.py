@@ -362,9 +362,9 @@ def issue_request(tr: Tracker) -> str:
                                                              if len(due) > ISSUE_DUE_SHOWN else "")
     return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids} (`tracker issue --due` gives their issue "
             "links). If a tool for their issue tracker is available (such as an MCP server), "
-            "read each issue's priority and creation time and record them: `tracker issue <id> --priority \"<the "
-            "tracker's word>\" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such "
-            "tool, leave them and never guess a value.")
+            "read each issue's priority and creation time and record them: `tracker issue <id> --priority <0-4: its "
+            "level's place on its tracker's scale, 0 most urgent> --created <ISO 8601 time>`, or `tracker issue <id>` "
+            "when it has neither. With no such tool, leave them and never guess a value.")
 
 
 def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,

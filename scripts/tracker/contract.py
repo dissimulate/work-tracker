@@ -8,10 +8,10 @@ import re
 from .markdown import format_value, headings, link_ident, parse_links, section
 from .model import (BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES,
     DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE,
-    OPEN_DECISIONS_WARN, PR_STAGE, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RETIRED_KEYS, SCHEMA, SCOPE_PARTS,
-    STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS,
-    TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, names, norm_id,
-    relabel, sequence, Record, Tracker)
+    OPEN_DECISIONS_WARN, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
+    RETIRED_KEYS, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES,
+    TEXT_MAX, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, names,
+    norm_id, priority, relabel, sequence, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -41,6 +41,9 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             hint = " — run `tracker migrate`" if status in STAGES else ""
             errors.append(f"{t.id}: status '{status}' not one of {'|'.join(TICKET_STATUSES)}{hint}")
         check_deps(tr, t, errors, warnings)
+        if str(t.get("priority", "")).strip() and priority(t) is None:
+            hint = " — run `tracker migrate`" if tr.schema < SCHEMA else ""
+            errors.append(f"{t.id}: priority '{t.get('priority')}' is not {PRIORITIES[0]}-{PRIORITIES[-1]}{hint}")
         if t.stage in ("merged", "done") and len(t.carry_forward) > MERGED_CARRY_FORWARD_MAX:
             warnings.append(f"{t.id}: {t.stage} but Carry forward has {len(t.carry_forward)} bullets "
                             f"(limit {MERGED_CARRY_FORWARD_MAX}) — keep what a later ticket needs; the detail is in "
@@ -215,6 +218,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         + f". Stages {', '.join(sorted(CLOSED_TICKET))} are closed; closing clears `next` and wants a `summary`.",
         f"Decision status: {'|'.join(DECISION_STATUSES)}, changed only by `tracker decide`.",
         f"Work status: {'|'.join(TRACKER_STATUSES)} (`tracker set tracker status=...`).",
+        "Priority: " + PRIORITY_RULE + ".",
         "Link lines (README ## Context, ticket ## Links): `- Label: [title](url) — why it matters`, nested bullets "
         f"for detail. Labels: {', '.join(labels)}. Add one for this tracker: `tracker set tracker labels=A,B` "
         "(the tracker's own labels; the defaults stay).",
@@ -230,9 +234,23 @@ def exact(tr: Tracker, ident: str) -> Record | None:
     return next((r for r in tr.records if norm_id(r.id) == norm_id(ident)), None)
 
 
+# Schema 1 kept an issue's priority in its issue tracker's words; these become PRIORITIES, as P0-P4 do. Any other word
+# goes, and the issue is read again.
+PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
+                  "low": 3, "lowest": 4, "trivial": 4}
+
+
+def priority_from_word(word: str) -> int | None:
+    word = word.strip().lower()
+    if re.fullmatch(r"p\d", word) and int(word[1]) in PRIORITIES:
+        return int(word[1])
+    return PRIORITY_WORDS.get(word)
+
+
 def migrate(tr: Tracker, apply: bool) -> list[str]:
     """What it takes to bring a tracker written for an older version to the current rules; with apply, do it."""
     out = []
+    reread = []
     for t in tr.tickets:
         upd = {}
         status = t.get("status")
@@ -244,6 +262,10 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
             upd["status"] = "in-progress"  # its PR showed it started; a PR now overlays only started work
         if t.get("next") == "—":
             upd["next"] = ""
+        if str(t.get("priority", "")).strip() and priority(t) is None:
+            upd["priority"] = priority_from_word(str(t.get("priority")))
+            if upd["priority"] is None:
+                reread.append(t.id)  # due again: the model maps the issue's level onto PRIORITIES
         if "slice" in t.meta:
             upd["slice"] = None
             if t.get("slice") != "" and not t.get("group"):
@@ -270,6 +292,11 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
                                                for k, v in upd.items()))
             if apply:
                 t.save(upd)
+    if reread and apply:
+        state = tr.raw_state()
+        for ident in reread:
+            state.get("issues", {}).get("read", {}).pop(ident, None)
+        tr.save_state(state)
     for d in tr.decisions:
         waiting = {t.id for t in tr.waiting_on(d.id)}
         drop = [r for r in d.list("refs") if tr.canonical(r) in waiting]

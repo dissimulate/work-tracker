@@ -12,7 +12,8 @@ from pathlib import Path
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
 from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE,
-    EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME,
+    EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, PRIORITIES, ROOT,
+    SAFE_NAME,
     SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
     atomic_file, atomic_write, blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url,
     load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
@@ -169,6 +170,8 @@ def cmd_set(args):
                 die(f"status must be one of {'|'.join(allowed)}{hint}")
         if k in ("next", "summary") and rec.kind == "ticket":
             fit(k, v)
+        if k == "priority":
+            v = priority_arg(v)
         if k == "repo" and rec.kind == "ticket" and v and v not in tr.repos:
             die(f"repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
         items = csv(v)
@@ -275,6 +278,8 @@ def cmd_new(args):
         die(f"the tracker spans {len(tr.repos)} repos: pass --repo ({', '.join(tr.repos)})")
     meta = {"id": args.id, "title": args.title, "group": args.group or "", "status": "todo",
             "branch": args.branch or "", "depends_on": [], "next": args.next or "", "updated": today()}
+    if args.priority:
+        meta["priority"] = priority_arg(args.priority)
     if args.repo:
         meta["repo"] = args.repo
     path.parent.mkdir(exist_ok=True)
@@ -716,8 +721,7 @@ def cmd_issue(args):
         die(f"{t.id} has no Issue link: add one first (`tracker add {t.id} link \"Issue: [ID Title](url)\"`)")
     updates = {}
     if args.priority is not None:
-        fit("priority", args.priority.strip())
-        updates["priority"] = args.priority.strip() or None  # empty: the issue has no priority now
+        updates["priority"] = priority_arg(args.priority) or None  # empty: the issue has no priority now
     if args.created is not None:
         updates["issue_created"] = utc_time(args.created)
     if updates:
@@ -726,6 +730,15 @@ def cmd_issue(args):
     state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
     tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
+
+
+def priority_arg(text: str) -> str:
+    """A priority as given (PRIORITIES); "" for an empty one, which clears it."""
+    text = text.strip()
+    if text and not (text.isdigit() and int(text) in PRIORITIES):
+        die(f"priority '{text}' is not {PRIORITIES[0]}-{PRIORITIES[-1]}: {PRIORITIES[0]} is the most urgent, "
+            f"{PRIORITIES[-1]} the least (`tracker rules` says how an issue tracker's levels map onto it)")
+    return str(int(text)) if text else ""
 
 
 def utc_time(text: str) -> str:
@@ -1058,6 +1071,7 @@ def build_parser():
     sp.add_argument("--repo", help="the ticket's repo, when the tracker spans several")
     sp.add_argument("--depends", **IDS, help="ticket or decision ids it waits on")
     sp.add_argument("--next")
+    sp.add_argument("--priority", help="0 (most urgent) to 4 (least); with an Issue link, the issue's own")
     sp = add("decide", cmd_decide, "open a direction decision (by title), or update / resolve one (by D-id)")
     sp.add_argument("target", nargs="?", help="a new decision's title, or an existing D-id")
     sp.add_argument("--question", help="what must be decided and why it matters (new: defaults to the title)")
@@ -1091,7 +1105,8 @@ def build_parser():
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, when the "
                                  "issue was created), or with --due list the tickets whose fields are due")
     sp.add_argument("id", nargs="?", help="ticket id, or an id its Issue link names")
-    sp.add_argument("--priority", help="the issue's priority in the issue tracker's words; empty: it has none")
+    sp.add_argument("--priority", help="the issue's priority mapped onto 0 (most urgent) to 4 (least); empty: it "
+                                       "has none")
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
     sp.add_argument("--due", action="store_true", help="list the tickets whose issue fields are due, with their "
                                                       "issue links")

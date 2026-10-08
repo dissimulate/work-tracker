@@ -154,7 +154,7 @@ class Format(unittest.TestCase):
         run(*t, "new", "T-2", "--title", "Two", "--depends", "T-1")
         run(*t, "set", "T-1", f"next=Do {bad}", "status=in-progress")
         run(*t, "add", "T-1", "link", f"Issue: [SC-1 {bad}](https://issues.example/1)")
-        run(*t, "issue", "T-1", "--priority", f"P{bad}")
+        model.Tracker(model.HOME / s).lookup("T-1").save({"priority": bad})  # check refuses it; the page shows it
         page = viewer.main_html(model.Tracker(model.HOME / s))
         self.assertNotIn("<b x=", page)
         self.assertGreaterEqual(page.count("&lt;b x=&quot;1&quot;&gt;&amp;amp;"), 4)  # title, group, priority, next
@@ -794,6 +794,26 @@ class Upgrade(unittest.TestCase):
         self.assertTrue((backup / "README.md").exists())
         self.assertFalse((backup / ".DS_Store").exists())  # the backup holds the tracker, not Finder's files
 
+    def test_migrate_turns_priority_words_into_numbers(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Old", "--owner", "me")
+        tr = model.Tracker(model.HOME / s)
+        tr.readme().save({"schema": 1})
+        words = {"T-1": "High", "T-2": "p0", "T-3": "Lowest", "T-4": "Someday"}
+        for ident, word in words.items():
+            run(*t, "new", ident, "--title", ident)
+            run(*t, "add", ident, "link", f"Issue: [SC-{ident[2]} Story](https://issues.example/{ident[2]})")
+            run(*t, "issue", ident)
+            model.Tracker(model.HOME / s).lookup(ident).save({"priority": word})
+        self.assertIn("T-4: priority 'Someday' is not 0-4 — run `tracker migrate`", run(*t, "check", code=1))
+        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+        run(*t, "migrate")
+        tr = model.Tracker(model.HOME / s)
+        self.assertEqual([tr.lookup(x).meta.get("priority") for x in words], ["1", "0", "4", None])
+        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-4"])  # read again
+        self.assertNotIn("priority", run(*t, "check"))
+
 
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""
@@ -1136,10 +1156,10 @@ class IssueFields(unittest.TestCase):
         run(*t, "set", "T-9", "status=done", "summary=shipped")
         self.assertNotIn("T-9", run(*t, "issue", "--due"))  # no start: its issue's creation time gives no span
 
-        out = run(*t, "issue", "T-1", "--priority", "High", "--created", "2026-10-01T09:30:00.123+10:00")
-        self.assertIn("T-1: priority=High, issue_created=2026-09-30T23:30:00Z", out)
+        out = run(*t, "issue", "T-1", "--priority", "1", "--created", "2026-10-01T09:30:00.123+10:00")
+        self.assertIn("T-1: priority=1, issue_created=2026-09-30T23:30:00Z", out)
         t1 = model.Tracker(model.HOME / s).lookup("T-1")
-        self.assertEqual((t1.get("priority"), t1.get("issue_created")), ("High", "2026-09-30T23:30:00Z"))
+        self.assertEqual((t1.get("priority"), t1.get("issue_created")), ("1", "2026-09-30T23:30:00Z"))
         self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
         self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
 
@@ -1160,16 +1180,23 @@ class IssueFields(unittest.TestCase):
 
         run(*t, "issue", "T-1", "--priority", "")
         self.assertNotIn("priority", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its priority
-        self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--priority", "Low", code=2))
+        self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--priority", "3", code=2))
         self.assertIn("needs a time zone", run(*t, "issue", "T-1", "--created", "2026-10-01T09:30:00", code=2))
         self.assertIn("not an ISO 8601 time", run(*t, "issue", "T-1", "--created", "last week", code=2))
-        self.assertIn("`tracker issue` writes it", run(*t, "set", "T-1", "priority=High", code=2))
 
-    def test_priority_rank(self):
-        rank = model.priority_rank
-        self.assertEqual([rank(x) for x in ("Urgent", "Highest", "critical", "High", "Medium", "normal", "Low",
-                                            "Lowest", "P0", "p2", "Someday", "", "No priority", "none")],
-                         [0, 0, 0, 1, 2, 2, 3, 4, 0, 2, 9, None, None, None])
+    def test_priority_is_a_number_any_ticket_can_have(self):
+        s, t = self.tracker()
+        run(*t, "new", "T-5", "--title", "Urgent, no issue", "--priority", "0")
+        run(*t, "set", "T-2", "priority=4")  # no Issue link: the model's own call
+        tr = model.Tracker(model.HOME / s)
+        self.assertEqual([model.priority(tr.lookup(x)) for x in ("T-5", "T-2", "T-1")], [0, 4, None])
+        for bad in ("High", "5", "-1", "P1", "1.5"):
+            self.assertIn("is not 0-4", run(*t, "set", "T-2", f"priority={bad}", code=2))
+        self.assertIn("is not 0-4", run(*t, "new", "T-6", "--title", "Six", "--priority", "High", code=2))
+        self.assertIn("is not 0-4", run(*t, "issue", "T-1", "--priority", "High", code=2))
+        run(*t, "set", "T-2", "priority=")
+        self.assertIsNone(model.priority(model.Tracker(model.HOME / s).lookup("T-2")))
+        self.assertIn("Priority: a number from 0 (most urgent) to 4", run(*t, "rules"))
 
     def test_the_brief_and_a_refresh_ask_for_due_fields(self):
         s, t = self.tracker()
@@ -1181,7 +1208,7 @@ class IssueFields(unittest.TestCase):
         self.assertIn("Issue fields due for 2 ticket(s): T-1, T-3", brief)
         self.assertIn("never guess", brief)
 
-        run(*t, "issue", "T-1", "--priority", "High")
+        run(*t, "issue", "T-1", "--priority", "1")
         run(*t, "issue", "T-3")
         self.assertNotIn("Issue fields due", said(hook("session-start", sid, work, source="startup")))
         self.assertNotIn("Issue fields due", said(hook("prompt", sid, work, prompt="go")))
@@ -1192,18 +1219,16 @@ class IssueFields(unittest.TestCase):
 
     def test_the_viewer_shows_priority_and_what_a_refresh_waits_on(self):
         s, t = self.tracker()
-        run(*t, "new", "T-4", "--title", "Odd")
-        run(*t, "add", "T-4", "link", "Issue: [SC-4 Story four](https://issues.example/story/4)")
-        run(*t, "issue", "T-1", "--priority", "High")
+        run(*t, "new", "T-4", "--title", "Least", "--priority", "4")
+        run(*t, "issue", "T-1", "--priority", "1")
         run(*t, "issue", "T-3")
-        run(*t, "issue", "T-4", "--priority", "Someday")
         page = viewer.main_html(model.Tracker(model.HOME / s))
         self.assertEqual(seq_head(page), SEQ_HEAD)
 
         def p(ident: str) -> str:
             return re.search(rf'<details data-id="{ident}"[^>]* data-sort-priority="([^"]*)"', page).group(1)
-        self.assertEqual((p("T-1"), p("T-2"), p("T-4")), ("1", "", "9"))
-        self.assertRegex(page, r'data-id="T-1".*?<summary>.*?<span class="hide-narrow">High</span>')
+        self.assertEqual((p("T-1"), p("T-2"), p("T-4")), ("1", "", "4"))
+        self.assertRegex(page, r'data-id="T-1".*?<summary>.*?<span class="hide-narrow">P1</span>')
 
         self.assertRegex(page, r"<span hidden id=issue-state>issues read \d\d:\d\d</span>")
         viewer.request_refresh(model.Tracker(model.HOME / s))

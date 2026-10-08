@@ -65,8 +65,7 @@ KEYS = {
         "base": ("sync", "the PR's base branch; while the PR is open, a base that is other tickets' branch makes "
                          "this ticket wait on them (computed; depends_on does not change)"),
         "merged_at": ("sync", "when the PR merged, UTC (YYYY-MM-DDTHH:MM:SSZ); a date alone before 0.29"),
-        "priority": ("issue", "the priority the ticket's issue has in its issue tracker, in that tracker's words "
-                              "(High, P1, Urgent)"),
+        "priority": ("set", "how urgent the ticket is, 0 (most) to 4 (least); see Priority"),
         "issue_created": ("issue", "when the ticket's issue was created in its issue tracker, UTC "
                                    "(YYYY-MM-DDTHH:MM:SSZ)"),
     },
@@ -89,7 +88,7 @@ KEYS = {
         "schema": ("auto", "the tracker's format version; `tracker migrate` brings an older one up to date"),
     },
 }
-SCHEMA = 1  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 2  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
 RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "tracker": set()}  # `migrate` removes them
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
               "sync": "`tracker sync` writes it from the PR", "auto": "the tracker writes it",
@@ -122,11 +121,13 @@ STATE_RULES = {
 
 ISSUE_STALE_S = 86400  # an open ticket's issue fields are read again after this
 
-# Issue trackers' common priority words, most urgent first (Highest … Lowest, Urgent … Low), and P0-P9. A word not
-# here ranks last, with P9; "none" and "no priority" are no priority.
-PRIORITY_RANKS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
-                  "low": 3, "lowest": 4, "trivial": 4}
-PRIORITY_UNKNOWN = 9
+PRIORITIES = range(5)  # a ticket's priority: 0 most urgent, 4 least; the same whatever the issue tracker
+PRIORITY_RULE = (
+    "a number from 0 (most urgent) to 4 (least), the same for every issue tracker. A ticket with an Issue link takes "
+    "its issue's priority: put the issue tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, "
+    "Low 3, Lowest 4; P0-P4 as their digit) and record it with `tracker issue <id> --priority <n>`. A ticket without "
+    "one gets yours, from how urgent its work is: `tracker new --priority <n>` or `tracker set <id> priority=<n>`. "
+    "Leave it empty when you cannot tell")
 
 # A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to
 # the second) and in order. A dropped ticket has none.
@@ -150,14 +151,10 @@ def span(t: Record, name: str) -> int | None:
     return int(end - start) if start is not None and end is not None and end >= start else None
 
 
-def priority_rank(text: str) -> int | None:
-    """Where a priority sorts, most urgent first (0); None for no priority."""
-    word = text.strip().lower()
-    if word in ("", "none", "no priority"):
-        return None
-    if re.fullmatch(r"p\d", word):
-        return int(word[1])
-    return PRIORITY_RANKS.get(word, PRIORITY_UNKNOWN)
+def priority(t: Record) -> int | None:
+    """A ticket's priority (PRIORITIES); None when it has none, or a value `check` refuses."""
+    text = str(t.get("priority", "")).strip()
+    return int(text) if text.isdigit() and int(text) in PRIORITIES else None
 
 
 def state_key(repo: str, branch: str) -> str:
@@ -231,7 +228,6 @@ TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
     "summary": (400, "summary", "one line; the detail goes in the PR"),
     "log": (400, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
     "carry": (600, "Carry forward bullet", "one fact per bullet: split it into more"),
-    "priority": (40, "priority", "use the issue tracker's own word for it"),
 }
 
 

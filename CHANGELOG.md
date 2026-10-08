@@ -14,6 +14,9 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Changed
 
+- A ticket's priority is a number from 0 (most urgent) to 4 (least), the same for every issue tracker; the agent
+  maps an issue's level onto it. Any ticket can have one: `tracker new --priority` and `tracker set <id> priority=<n>`.
+  Run `tracker migrate`: it turns the words recorded before into numbers, and an unknown word is read again.
 - Viewer: sequence columns fit their visible contents, leaving the remaining width for ticket titles.
 - Viewer: clearer spacing and headings, charcoal dark surfaces, and consistent solid pastel status tags without dots.
 - Viewer: a red move tag marks your turn instead of a blue left border; narrow layouts and reduced motion are improved.

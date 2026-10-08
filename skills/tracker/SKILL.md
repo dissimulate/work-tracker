@@ -32,6 +32,7 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 - **Whose move**: computed for each ticket under way from its PR's reviews, checks and merge state (`sync`) and its open decisions and external blockers; the brief's `move:` line, `tracker index` and the viewer show it. `next` holds your own next action: do not write a wait on a reviewer into it.
 - **A decision's answer**: its Resolution. Tickets show it through `context`.
 - **Issue-tracker id**: the ticket's `- Issue: [PROJ-12 Title](url)` line; the id also finds the ticket.
+- **Priority**: 0 (most urgent) to 4 (least), the same for every issue tracker. With an Issue link it is the issue's: put its tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, Low 3, Lowest 4). Without one, set your own when you add the ticket. `tracker rules` gives the rule.
 - **Issue fields** (`priority`, `issue_created`): the issue tracker holds them; `tracker issue` records what you read there. The tracker cannot read an issue tracker, so the brief, or a prompt after the viewer's Refresh, names the tickets whose fields are due.
 - **Wait and cycle time**: computed from each ticket's times. Wait: issue created → started (`started_at`, which `set status=in-progress` records). Cycle: started → PR merged. `tracker index` (the lines under its headline) and the viewer show them: quote them, do not work them out from the files.
 - **Unfinished work between sessions**: the branch's handoff, until the next `step`.
@@ -66,7 +67,7 @@ Record each fact at the moment it forms, in its home:
 | a direction choice is raised or settled | `tracker decide` (below) |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
-| a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (such as an MCP server) and `tracker issue <id> --priority "<its word>" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
+| a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (such as an MCP server) and `tracker issue <id> --priority <0-4> --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker (a hook tells each one): put what a subagent needs in its prompt (the output of `tracker context <id> --brief`, or the part that matters), and record what it reports, as you record your own work.
@@ -88,6 +89,6 @@ Completion: each ticket under way has a `next` true as of now (a `[work-tracker]
 
 ## New tracker or migration
 
-- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill `README.md`: Context first (every document linked from the parent issue or brief), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>]`; a group is only a label.
+- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill `README.md`: Context first (every document linked from the parent issue or brief), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>] [--priority <0-4>]`; a group is only a label.
 - **Older tracker**: when `tracker check` says so, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up first).
 - **A plan from elsewhere**: plan text → Plan; facts later tickets rely on → Carry forward; open questions and blockers → decisions; dated notes → one log line each, with a link to the detail; measurement files → `attach`.
