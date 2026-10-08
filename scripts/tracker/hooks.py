@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from .model import ISOLATION_RULE, SYNC_MIN_INTERVAL_S, append_log, locked, short, spawn, today, Tracker
+from .model import ISOLATION_RULE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, append_log, locked, short, spawn, today, Tracker
 from .git import default_branches
 from .session import (behind, branch_matches, changes_since, declined, get_mark, in_repos, inside_home, lag,
     load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity, watch, work_dir,
@@ -112,8 +112,8 @@ def next_request(m: Match, cwd: str | Path, sid: str) -> str:
     nexts = "; ".join(f"{t.id} next: {short(t.get('next'), 80)}" if t.get("next") else f"{t.id} has no next"
                       for t in m.active)
     return (f"[work-tracker] {n} commit(s) on {m.branch} since `next` last changed, logged by the hooks ({nexts}). If "
-            "a step ended or `next` no longer holds: `tracker step <id> --next \"...\"`, with a message only for what "
-            "the commits do not say, and `--carry \"...\"` for each fact a later ticket must know.")
+            f"a step ended or `next` no longer holds: `tracker step <id> --next \"...\"`, with {STEP_MESSAGE}, and "
+            "`--carry \"...\"` for each fact a later ticket must know.")
 
 
 def hook_stop(data: dict) -> None:

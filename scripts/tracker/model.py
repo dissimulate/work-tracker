@@ -274,6 +274,10 @@ ISOLATION_RULE = (
     "to. Outside it (code, comments, commits, branch names, PR titles and bodies, issues, other trackers) write each "
     "fact in its own words, and cite only ids that exist there: a ticket's Issue id, a PR number, a URL. The "
     "tracker's own ids (D-n decisions, ticket ids that are not Issue ids), its name and its sections stay in it.")
+# What a `step` message holds, said wherever a text asks for a step: the brief's protocol and its lag line, and the
+# hook after a commit. The model writes the message right after reading one of them.
+STEP_MESSAGE = ("a message only for what the commits do not say (a result, a measurement, why), never what they or "
+                "the PR hold: the work a commit names, a push, a merge, a review round, a test run")
 TICKET_SECTIONS = ["Plan", "Carry forward", "Links"]  # required, in this order, and no others
 DECISION_SECTIONS = ["Question", "Options", "Resolution"]  # Question required; Resolution required once closed
 # Link labels every tracker accepts; a tracker adds its own in README frontmatter `labels`.

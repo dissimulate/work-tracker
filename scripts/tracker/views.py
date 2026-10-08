@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from statistics import median
 
-from .model import (BIN, CLOSED_TICKET, ISOLATION_RULE, SPANS, STAGES, TEXT_MAX, cut, link_lines, resolution, sequence,
-    short, span, utc_seconds, whose_move, Record, Start, Tracker)
+from .model import (BIN, CLOSED_TICKET, ISOLATION_RULE, SPANS, STAGES, STEP_MESSAGE, TEXT_MAX, cut, link_lines,
+    resolution, sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
 from .session import ago, branch_handoff, cwd_repo, handoff_line, lag, Match
 from .contract import check
 
@@ -292,9 +292,8 @@ def protocol(slug: str) -> str:
         "- start a ticket: `context <id>` (a `start:` line names the branch to start from), then "
         "`set <id> status=in-progress`",
         "- the hooks log each commit on the branch of a ticket under way. A step ends or `next` changes: "
-        "`step <id> --next \"...\"`, with a message only for what the commits do not say (a result, a measurement, "
-        "why; not a push, a merge, a review round or a test run: the PR and `sync` hold those) and `--carry \"...\"` "
-        "for each fact a later ticket needs. `next` is your own next action: a `move:` "
+        f"`step <id> --next \"...\"`, with {STEP_MESSAGE}, and `--carry \"...\"` for each fact a later ticket "
+        "needs. `next` is your own next action: a `move:` "
         "line shows what the PR waits on. "
         f"Limits in characters: the message {most['log']}, `next` {most['next']}, `--done` {most['summary']}, each "
         f"`--carry` {most['carry']}; the detail goes in the PR",
@@ -399,7 +398,7 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
     work = lag(m, cwd)
     if work:
         parts.append(f"The tracker may lag the work: {work.text()}. Bring it up to date from what you know: "
-                     "`step <id> --next \"...\"`, with a message only for what the commit subjects do not say"
+                     f"`step <id> --next \"...\"`, with {STEP_MESSAGE}"
                      + (" (it logs the commits)." if work.commits else "."))
     focus = m.focus
     if len(m.active) > 1 and not m.chosen:
