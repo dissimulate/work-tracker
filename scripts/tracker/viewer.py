@@ -330,10 +330,9 @@ class Row(NamedTuple):
 
 
 class Cell(NamedTuple):
-    """A cell of the sequence: its content, its attributes, and the texts its column's width fits."""
+    """A cell of the sequence: its content and attributes."""
     body: Html | str
     attrs: dict[str, object] = {}
-    texts: tuple[str, ...] = ()
 
 
 def fit(items: list[tuple[str, Html]], limit: int) -> tuple[int, str]:
@@ -354,7 +353,7 @@ def ticket_cell(r: Row) -> Cell:
 
 
 def text_cell(key: str) -> Callable[[Row], Cell]:
-    return lambda r: Cell(str(r.t.get(key, "")), texts=(str(r.t.get(key, "")),))
+    return lambda r: Cell(str(r.t.get(key, "")))
 
 
 def status_cell(r: Row) -> Cell:
@@ -369,52 +368,51 @@ def time_cell(r: Row) -> Cell:
         return Cell("")
     shown = ["" if x is None else duration(x) for x in r.spans.values()]
     title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(r.spans, shown))
-    return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title}, (" → ".join(shown).strip(),))
+    return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title})
 
 
 def deps_cell(r: Row) -> Cell:
     """A line `← ` what the ticket waits on, a line `→ ` what it unblocks."""
     lists = [(arrow, label, items) for arrow, label, items in
              (("←", "waits on", r.waits), ("→", "unblocks", r.unblocks)) if items]
-    texts, lines = [], []
+    lines = []
     for arrow, _, items in lists:
-        k, shown = fit(items, LIST_CH - 2)
+        k, _ = fit(items, LIST_CH - 2)
         more = Html(" <span class=meta>+{}</span>").format(len(items) - k) if k < len(items) else NONE
-        texts.append(f"{arrow} {shown}")
         lines.append(Html("<span><span class=meta>{}</span> {}{}</span>").format(
             arrow, comma(h for _, h in items[:k]), more))
     title = "; ".join(f"{label}: {', '.join(text for text, _ in items)}" for _, label, items in lists)
-    return Cell(NONE.join(lines), {"class": "deps lines", "title": title or None}, tuple(texts))
+    return Cell(NONE.join(lines), {"class": "deps lines", "title": title or None})
 
 
 class Column(NamedTuple):
     """A column of the sequence. `sorts`: a heading button per (key, label, what the page says it sorts by, value per
-    row); a row carries each value as data-sort-<key>, which viewer/app.js sorts by, None or "" last. `width`: CSS, or
-    the fewest ch of a column as wide as its longest text. `hide`: the sequence width (HIDES) it leaves from; "" to
-    always show."""
+    row); a row carries each value as data-sort-<key>, which viewer/app.js sorts by, None or "" last. `width`: a CSS
+    grid track shared by the header and rows. `hide`: the sequence width (HIDES) it leaves from; "" to always show."""
     sorts: tuple[tuple[str, str, str, Callable[[Row], object]], ...]
     cell: Callable[[Row], Cell]
-    width: str | int
+    width: str
     hide: str = ""
 
 
 HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
-WIDEST_CH = 26  # a column as wide as its longest text: at most this
 
 # An unknown status sorts after STAGES, so the page still renders and shows the check's error; a priority by its rank,
 # most urgent 0; dependencies by count.
 COLUMNS = (
-    Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "var(--step)"),
+    Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
-    Column((("group", "Group", "group", lambda r: r.t.get("group", "")),), text_cell("group"), 6, "mid"),
+    Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
+           text_cell("group"), "fit-content(26ch)", "mid"),
     Column((("status", "Status", "status",
-             lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "12ch"),
+             lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
     Column((("priority", "Priority", "priority", lambda r: priority_rank(str(r.t.get("priority", "")))),),
-           text_cell("priority"), 9, "narrow"),
+           text_cell("priority"), "fit-content(26ch)", "narrow"),
     Column((("wait", "Wait", "wait time", lambda r: r.spans["wait"]),
-            ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, 14, "mid"),
+            ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, "max-content", "mid"),
     Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),
-            ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))), deps_cell, 24, "narrow"),
+            ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))),
+           deps_cell, "fit-content(26ch)", "narrow"),
 )
 
 
@@ -447,16 +445,10 @@ def sequence_html(tr: Tracker) -> Html:
     rows = [Row.of(tr, t, i, seq.step.get(t.id, "")) for i, t in enumerate(ordered)]
     cells = [[c.cell(r) for c in COLUMNS] for r in rows]
 
-    def width(i: int, c: Column) -> str:
-        """A column as wide as its longest text, so every row lines up."""
-        if isinstance(c.width, str):
-            return c.width
-        return f"{min(WIDEST_CH, max([c.width, *(len(x) + 1 for row in cells for x in row[i].texts)]))}ch"
-
     def shown_at(c: Column, level: str) -> bool:
         return not c.hide or HIDES.index(c.hide) > HIDES.index(level)
 
-    widths = [width(i, c) for i, c in enumerate(COLUMNS)]
+    widths = [c.width for c in COLUMNS]
     style = "; ".join([f"--cols: {' '.join(widths)}"] + [
         f"--cols-{level}: {' '.join(w for c, w in zip(COLUMNS, widths) if shown_at(c, level))}" for level in HIDES])
 
@@ -473,7 +465,8 @@ def sequence_html(tr: Tracker) -> Html:
     return sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
                NONE.join(Html("<p class=lead>{}</p>").format(x) for x in span_lines(tr))
                + Html('<div class=filters>{}</div><p class=sr-only aria-live=polite id=sort-said></p>'
-                      '<div class=seq style="{}"><div class=seq-head>{}</div>{}</div>').format(
+                      '<div class=seq-wrap><div class=seq style="{}">'
+                      '<div class=seq-head>{}</div>{}</div></div>').format(
                    filters, style, head, NONE.join(ticket_row(tr, r, c) for r, c in zip(rows, cells))), True)
 
 

@@ -362,13 +362,23 @@ tr:last-child > td { border-bottom: 0; }
 
 /* Each ticket is a row that opens to the whole ticket. The server sets --cols, and --cols-mid and --cols-narrow for
    the columns a narrower sequence keeps; it marks the others hide-mid or hide-narrow (Column in viewer.py). A column
-   is as wide as its longest text, so rows line up; the ticket column takes the rest, and every cell truncates. The
-   head's font size is the rows', so ch is the same width in both. */
-.seq { --step: 5ch; --gap: 14px; font-size: var(--fs-m); container-type: inline-size; }
+   fits its rendered content across all visible rows; the ticket column takes the rest. Long metadata is capped.
+   The wrapper owns the size query so the shared grid can change its tracks at each breakpoint. */
+.seq-wrap { container-type: inline-size; }
+.seq { --gap: 14px; display: grid; grid-template-columns: var(--cols); column-gap: var(--gap); font-size: var(--fs-m); }
+
+.seq > details, .seq-head, .seq summary {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  min-width: 0;
+}
+.seq > details[hidden] { display: none; }
+
+/* The browser wraps the expanded body in this pseudo-element. Keep it across the whole row. */
+.seq > details::details-content { grid-column: 1 / -1; min-width: 0; }
 
 .seq-head, .seq summary {
-  display: grid;
-  grid-template-columns: var(--cols);
   gap: 0 var(--gap);
   align-items: center;
   padding: 10px var(--pad);
@@ -393,20 +403,18 @@ tr:last-child > td { border-bottom: 0; }
 .seq details.rep > summary > :first-child { visibility: hidden; } /* the step shows on its first row only */
 .seq details.closed:not([open]) > summary { color: var(--muted); }
 .seq .tk .id { font-weight: 500; }
-.seq details > div { padding-left: calc(var(--pad) + var(--step) + var(--gap)); }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
    ticket has the rest. */
 @container (max-width: 920px) {
-  .seq-head, .seq summary { grid-template-columns: var(--cols-mid); }
+  .seq { grid-template-columns: var(--cols-mid); }
   :is(.seq-head, .seq summary) > .hide-mid { display: none; }
 }
 
 /* Phone width: step, ticket and status only. */
 @container (max-width: 620px) {
-  .seq-head, .seq summary { grid-template-columns: var(--cols-narrow); }
+  .seq { grid-template-columns: var(--cols-narrow); }
   :is(.seq-head, .seq summary) > .hide-narrow { display: none; }
-  .seq details > div { padding-left: var(--pad); }
 }
 
 .deps { font-size: var(--fs-s); }

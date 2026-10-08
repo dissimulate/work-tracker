@@ -14,6 +14,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Changed
 
+- Viewer: sequence columns fit their visible contents, leaving the remaining width for ticket titles.
 - Viewer: clearer spacing and headings, charcoal dark surfaces, and consistent solid pastel status tags without dots.
 - Viewer: a red move tag marks your turn instead of a blue left border; narrow layouts and reduced motion are improved.
 - Each write ends with one line that says what it did: the log line it wrote and the `check` result.
