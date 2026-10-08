@@ -790,6 +790,31 @@ class Hooks(unittest.TestCase):
         self.assertIsNone(hook("stop", sid, work))
         self.assertIn("[W-1] Commits on feat/W-1: ", (model.HOME / s / "log.md").read_text())  # logged for it now
 
+    def test_commits_from_main_not_logged(self):
+        """A merge from the default branch or a rebase onto it brings in work its own tickets logged: only the
+        branch's own commits are logged."""
+        for update in (["merge", "-q", "--no-edit", "main"], ["rebase", "-q", "main"]):
+            s, sid, work = slug(), f"sid{time.monotonic_ns()}", repo("main")
+            sh = lambda *a: subprocess.run(["git", "-C", str(work), *a], check=True, capture_output=True)  # noqa: E731
+            sh("checkout", "-qb", "feat/M-1")
+            run("init", s, "--title", "Merges", "--owner", "me")
+            run("--tracker", s, "new", "M-1", "--title", "Merge work", "--branch", "feat/M-1")
+            env = {**os.environ, "TRACKER_SESSION": sid}
+            subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, check=True)
+            run("--tracker", s, "set", "M-1", "status=in-progress", cwd=work)
+            self.assertIsNone(hook("stop", sid, work))  # the branch's mark
+            commit(work, "own work")
+            sh("checkout", "-q", "main")
+            commit(work, "another ticket, merged on main")  # by this git user, after the mark
+            sh("checkout", "-q", "feat/M-1")
+            sh(*update)
+            commit(work, "after the update")
+            self.assertIsNone(hook("stop", sid, work))
+            logged = [x.split(": ", 1)[1] for x in (model.HOME / s / "log.md").read_text().splitlines()
+                      if "Commits on" in x]
+            self.assertEqual([c.split(" ", 1)[1] for x in logged for c in x.split("; ")],
+                             ["own work", "after the update"], update[0])
+
     def test_work_git_shows(self):
         s, sid, work = slug(), f"sid{time.monotonic_ns()}", repo("feat/G-1")
         run("init", s, "--title", "Git", "--owner", "me")

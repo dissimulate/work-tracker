@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, WINDOWS, all_trackers, append_log, atomic_write,
     branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record, Tracker)
-from .git import branch_of, changed_files, git, head_of, remote_of, repo_slug, worktree, worktree_key
+from .git import branch_of, changed_files, default_branches, git, head_of, remote_of, repo_slug, worktree, worktree_key
 
 
 def named_in(branch: str, t: Record) -> bool:
@@ -349,12 +349,19 @@ def ago(ts: float) -> str:
 
 
 def new_commits(cwd: str | Path, mark: dict) -> list[tuple[str, str]]:
-    """(short sha, subject) of the commits on HEAD that this git user authored after the mark, oldest first."""
+    """(short sha, subject) of the branch's own commits on HEAD that this git user authored after the mark, oldest
+    first. A merge from the default branch, or a rebase onto it, brings in work its own tickets logged: only the
+    branch's first-parent line counts, without merge commits, and off a default branch none that one holds."""
     me = git(cwd, "config", "user.email").lower()
     known = git(cwd, "rev-parse", "--verify", "--quiet", f"{mark['head']}^{{commit}}")
     rng = [f"{mark['head']}..HEAD"] if known else ["HEAD", "--max-count=200"]
+    defaults = default_branches(cwd)
+    held = [] if branch_of(cwd) in defaults else git(
+        cwd, "for-each-ref", "--format=%(refname)",
+        *(f"refs/{where}/{b}" for b in sorted(defaults) for where in ("heads", "remotes/origin"))).split()
     out = []
-    for line in git(cwd, "log", "--reverse", "--format=%h %ae %at %s", *rng).splitlines():
+    for line in git(cwd, "log", "--reverse", "--first-parent", "--no-merges", "--format=%h %ae %at %s", *rng,
+                    *(["--not", *held] if held else [])).splitlines():
         sha, email, at, subject = (line.split(" ", 3) + ["", "", ""])[:4]
         # The range already leaves out the commits the mark holds; the time leaves out old work a pull or a rebase
         # brought in. A commit in the same second as the mark is new.
