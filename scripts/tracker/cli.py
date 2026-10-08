@@ -1104,7 +1104,7 @@ def build_parser():
 
 
 WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "wait", "migrate", "synced", "pause", "step", "use", "add",
-                  "drop", "attach", "issue"}  # `sync` locks itself
+                  "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 
 def log_size(tr: Tracker) -> int:

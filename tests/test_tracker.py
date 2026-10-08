@@ -543,7 +543,7 @@ class Writes(unittest.TestCase):
 
         # The README takes sections after the required ones: `put` or `add` makes one, a part of its name finds it.
         with piped("- L-1 first: it fixes the gate."):
-            run(*t, "put", "tracker", "why this order", "-")
+            self.assertIn("`check`: no new problems", run(*t, "put", "tracker", "why this order", "-"))  # a write
         run(*t, "add", "tracker", "order", "- L-2 next.")
         self.assertIn("## Why this order\n\n- L-1 first: it fixes the gate.\n- L-2 next.",
                       run(*t, "show", "tracker", "--section", "why"))
