@@ -528,7 +528,10 @@ class Writes(unittest.TestCase):
         done = run(*t, "step", "L-1", "--done", "all of it")
         self.assertIn("added `tracker check` problems:\n⚠ L-1: done but Carry forward has 6 bullets", done)
         self.assertEqual(done.count("Carry forward has 6"), 1)
-        self.assertNotIn("check", run(*t, "set", "L-1", "title=One thing"))  # the problem was there before
+        # The problem was there before. Each write ends by saying what it did, so no `check` or `log` follows it.
+        self.assertTrue(run(*t, "set", "L-1", "title=One thing").endswith("\n`check`: no new problems\n"))
+        self.assertIn("log line written · `check`: no new problems", run(*t, "new", "L-9", "--title", "Nine"))
+        self.assertNotIn("log line written", run(*t, "log", "a note"))  # it says `logged`
 
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)

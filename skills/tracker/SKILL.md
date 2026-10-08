@@ -70,7 +70,7 @@ Record each fact at the moment it forms, in its home:
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker (a hook tells each one): put what a subagent needs in its prompt (the output of `tracker context <id> --brief`, or the part that matters), and record what it reports, as you record your own work.
-- **Each write** prints the `check` problems it adds, and `new`, `decide`, `wait`, `step` and `attach` write their own log line: no `tracker check` or `tracker log` after them.
+- **Each write** ends with a line that says whether it wrote its own log line (`new`, `decide`, `wait`, `step` and `attach` do) and what `check` found new: run no `tracker check` or `tracker log` after it.
 - **Text limits**: a command refuses a `next`, a `summary`, a log line or a Carry forward bullet over its limit (`tracker rules` lists them). Say it in short; the detail goes in the Plan, the PR or the commits.
 - **The id** of `step` and `set` can be left out when the session has one ticket (its `--on` choice, or the one ticket under way on the branch): `tracker step "<what and why>" --next "..."`.
 - **Carry forward** holds only what a *later* ticket needs; this ticket's build detail goes in the PR and commits. `tracker drop <id> carry "<text>"` removes a bullet that no longer holds.

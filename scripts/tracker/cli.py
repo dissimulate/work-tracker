@@ -1083,15 +1083,30 @@ WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "wait", "migrate", "syn
                   "drop", "attach", "issue"}  # `sync` locks itself
 
 
+def log_size(tr: Tracker) -> int:
+    try:
+        return (tr.root / "log.md").stat().st_size
+    except OSError:
+        return 0
+
+
 def with_check(run, args) -> None:
-    """Run a write command, then print the `check` problems it added to the tracker, so no `tracker check` needs to
-    follow a write. `init` and `migrate` check for themselves."""
+    """Run a write command, then print the `check` problems it added to the tracker, and end with a line that says
+    whether it wrote its own log line and that `check` found nothing new: no `tracker check` or `tracker log` needs
+    to follow a write. `init` and `migrate` check for themselves."""
     tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
     before = set(problem_lines(tr)) if tr else set()
+    size = log_size(tr) if tr else 0
     run()
-    added = [x for x in problem_lines(Tracker(tr.root)) if x not in before] if tr else []
+    if not tr:
+        return
+    tr = Tracker(tr.root)
+    added = [x for x in problem_lines(tr) if x not in before]
+    logged = args.cmd != "log" and log_size(tr) > size
     if added:
         print("\n".join(["This change added `tracker check` problems:", *added]))
+    print(" · ".join(["log line written"] * logged + ["`check`: " + ("fix the problems above" if added
+                                                                     else "no new problems")]))
 
 
 def own_changes(run) -> None:
