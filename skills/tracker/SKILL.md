@@ -56,7 +56,7 @@ Record each fact at the moment it forms, in its home:
 | When | Run |
 |---|---|
 | you start a ticket's work | `tracker context <id>` (a `start:` line names the branch to start from), then `tracker set <id> status=in-progress` (records the branch, and says when it does not contain that base) |
-| a step ends, or only the next action changes | `tracker step <id> --next "<one concrete action>"`, with `--carry "<fact>"` for each fact a later ticket must know (a contract, a shared module, a changed rule, a trap). Add a message (`step <id> "<text>" --next ...`) only for what the commit subjects do not say: a result, a measurement, why |
+| a step ends, or only the next action changes | `tracker step <id> --next "<one concrete action>"`, with `--carry "<fact>"` for each fact a later ticket must know (a contract, a shared module, a changed rule, a trap). Add a message (`step <id> "<text>" --next ...`) only for what the commit subjects do not say: a result, a measurement, why. Log no push, merge, review round or test run: the PR, its checks and `sync` hold those |
 | a ticket ends | `tracker step <id> "..." --done "<what it delivered>"`; `drop` Carry forward to ≤ 5 bullets. Dropped: `tracker set <id> status=dropped summary="<why>"` |
 | you stop with the work unfinished: a pause, a compaction, the session's end | `tracker step <id> "..." --pause "<what is done, what is half-done and uncommitted, the next step>"` |
 | the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>"`, or the whole Plan with `tracker put <id> plan -` and a heredoc; and a log line saying why |

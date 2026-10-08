@@ -293,7 +293,8 @@ def protocol(slug: str) -> str:
         "`set <id> status=in-progress`",
         "- the hooks log each commit on the branch of a ticket under way. A step ends or `next` changes: "
         "`step <id> --next \"...\"`, with a message only for what the commits do not say (a result, a measurement, "
-        "why) and `--carry \"...\"` for each fact a later ticket needs. `next` is your own next action: a `move:` "
+        "why; not a push, a merge, a review round or a test run: the PR and `sync` hold those) and `--carry \"...\"` "
+        "for each fact a later ticket needs. `next` is your own next action: a `move:` "
         "line shows what the PR waits on. "
         f"Limits in characters: the message {most['log']}, `next` {most['next']}, `--done` {most['summary']}, each "
         f"`--carry` {most['carry']}; the detail goes in the PR",
