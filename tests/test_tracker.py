@@ -515,10 +515,10 @@ class Writes(unittest.TestCase):
         t = ("--tracker", s)
         run("init", s, "--title", "Limits", "--owner", "me")
         run(*t, "new", "L-1", "--title", "One")
-        long = "word " * 50
-        self.assertIn("over 200: one concrete action", run(*t, "set", "L-1", f"next={long}", code=2))
+        long = "word " * 100
+        self.assertIn("over 400: one concrete action", run(*t, "set", "L-1", f"next={long}", code=2))
         self.assertIn("the log line is", run(*t, "log", long, code=2))
-        self.assertIn("over 400", run(*t, "add", "L-1", "carry", long * 2, code=2))
+        self.assertIn("over 600", run(*t, "add", "L-1", "carry", long * 2, code=2))
         log = (model.HOME / s / "log.md").read_text()
         run(*t, "step", "L-1", "Short", "--carry", "fits", "--carry", long * 2, code=2)
         self.assertEqual((model.HOME / s / "log.md").read_text(), log)  # refused before any write

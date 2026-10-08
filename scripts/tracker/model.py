@@ -219,13 +219,13 @@ def spawn(*args: str) -> None:
                      **detach)
 
 
-# The longest text a command takes, in characters: a view shows it whole or cuts it near here (a brief cuts a line at
-# 200), so a longer text loses its end in every session. Enforced when written; `check` leaves older text alone.
+# The longest text a command takes, in characters: a guard against a paragraph where a line belongs, generous so that
+# a line a little long is not refused and written again. Enforced when written; `check` leaves older text alone.
 TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
-    "next": (200, "next", "one concrete action; the detail goes in the Plan or the PR"),
-    "summary": (200, "summary", "one line; the detail goes in the PR"),
-    "log": (200, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
-    "carry": (400, "Carry forward bullet", "one fact per bullet: split it into more"),
+    "next": (400, "next", "one concrete action; the detail goes in the Plan or the PR"),
+    "summary": (400, "summary", "one line; the detail goes in the PR"),
+    "log": (400, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
+    "carry": (600, "Carry forward bullet", "one fact per bullet: split it into more"),
     "priority": (40, "priority", "use the issue tracker's own word for it"),
 }
 
