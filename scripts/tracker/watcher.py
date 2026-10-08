@@ -1,7 +1,8 @@
 """`tracker watch`: one watcher per tracker reports each change that may need the user, one line per ticket, agent or
 check: the new log lines, the facts no log line holds (moves, `next`, stages, tickets that can start, `check` errors),
 the agent sessions on the tracker, and GitHub (`sync`). Only the user starts it: in a terminal, or in an agent session
-they gave the watch with its skill command (a grant the prompt hook writes)."""
+they gave the watch with its skill command (a grant the prompt hook writes). Also `delete_tracker`, which refuses
+while an agent session or a watch is on the tracker."""
 
 from __future__ import annotations
 
@@ -14,8 +15,9 @@ import time
 from pathlib import Path
 
 from .model import (HOME, IN_FLIGHT, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash, locked, short,
-    whose_move, Tracker)
-from .session import CLAUDE_SESSIONS, alive, live_sessions, match_cwd, session_id, Live
+    to_trash, whose_move, Tracker)
+from .session import (CLAUDE_SESSIONS, SESSIONS_DIR, alive, drop_session, live_sessions, load_session, match_cwd,
+    session_id, Live)
 from .contract import check
 from .views import LOG_LINE, start_text
 from .github import budget, sync
@@ -419,3 +421,43 @@ class Watcher:
             pass
         finally:
             self.release(time.time())
+
+
+# ---------------------------------------------------------------- delete
+# Only the user deletes a tracker: `tracker delete` in a terminal, or the viewer's tracker menu.
+
+
+class InUse(Exception):
+    """The tracker has an agent session or a watch on it: a delete would take it from them mid-work."""
+
+
+def in_use(tr: Tracker) -> str:
+    """What stops a delete: the agent sessions and the watch on the tracker; empty when none."""
+    names = [x.name for x in live_sessions(tr.slug)]
+    w = watcher_of(tr)
+    using = ([f"agent session{'s' * (len(names) > 1)} {', '.join(names)}"] if names else []) + \
+        ([f"the watch by {w['who']}"] if w.get("running") else [])
+    return " and ".join(using)
+
+
+def delete_tracker(tr: Tracker) -> str:
+    """Delete the tracker: its folder to the system's trash (of a linked folder, only the link goes), its watch state,
+    and the ties of ended sessions to it, so a new tracker of that slug starts clean. Raises InUse while an agent
+    session or a watch is on it, and OSError when the trash refuses the folder, which then stays. Says what it did."""
+    with locked():
+        using = in_use(tr)
+        if using:
+            raise InUse(f"{tr.slug} is in use by {using}: end them (or run `tracker start --clear` in each session), "
+                        "then delete it")
+        if tr.root.is_symlink():
+            target = tr.root.resolve()
+            tr.root.unlink()
+            done = f"deleted the link {tr.root}; the folder it named stays at {target}"
+        else:
+            to_trash(tr.root)
+            done = f"moved {tr.root} to the trash"
+        state_path(tr.slug).unlink(missing_ok=True)
+        for f in SESSIONS_DIR.glob("*.json"):
+            if load_session(f.stem).get("tracker") == tr.slug:
+                drop_session(f.stem)
+    return done

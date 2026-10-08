@@ -26,7 +26,7 @@ from .contract import check, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
     index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
-from .watcher import REFUSED, Watcher, agent_session, granted, session_name, watching
+from .watcher import REFUSED, InUse, Watcher, agent_session, delete_tracker, granted, session_name, watching
 
 # ---------------------------------------------------------------- templates
 
@@ -905,6 +905,27 @@ def cmd_watch(args):
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal").run(args.once)
 
 
+def cmd_delete(args):
+    """The user's: in a terminal, or from the viewer's tracker menu. The model never deletes a tracker: the command
+    refuses an agent session."""
+    if agent_session()[0]:
+        die("only the user deletes a tracker: in a terminal (`tracker delete <slug>`) or from the viewer's tracker "
+            "menu. Do not delete one yourself.", REFUSED)
+    tr = tracker_at(args.slug) or die(f"no tracker '{args.slug}' (`tracker list` lists them)")
+    if not args.yes:
+        if sys.stdin is None or not sys.stdin.isatty():
+            die("pass --yes to delete without the prompt")
+        answer = input(f"Delete {tr.slug} ({tr.title}): move {tr.root} to the system's trash? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            die("not deleted", 1)
+    try:
+        print(delete_tracker(tr))
+    except InUse as exc:
+        die(str(exc), REFUSED)
+    except OSError as exc:
+        die(f"not deleted: {exc}")
+
+
 def cmd_use(args):
     cwd = work_dir()
     branch = branch_of(cwd) or die("not on a git branch")
@@ -1150,6 +1171,10 @@ def build_parser():
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
+    sp = add("delete", cmd_delete, "for the user: move a tracker's folder to the system's trash. Refuses while an "
+                                   "agent session or a watch is on it, and in an agent session")
+    sp.add_argument("slug", help="the tracker's exact slug")
+    sp.add_argument("--yes", action="store_true", help="delete without the prompt")
     sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when idle)")
     sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its name")
     sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")

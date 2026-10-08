@@ -97,7 +97,14 @@ function openHash() {
 
 async function poll() {
   try {
-    const next = await (await fetch(`/t/${slug}/version`, { cache: 'no-store' })).text();
+    const res = await fetch(`/t/${slug}/version`, { cache: 'no-store' });
+    if (res.status === 404) { // deleted, from this page or another
+      live.textContent = 'tracker deleted — open another from the tracker menu';
+      live.className = 'off';
+      live.title = live.textContent;
+      return;
+    }
+    const next = await res.text();
     const [data, code, synced] = next.split('.');
     const [oldData, oldCode] = version.split('.');
     if (code !== oldCode) return location.reload();
@@ -137,10 +144,87 @@ async function askRefresh() {
   }
 }
 
+// The tracker menu (top left): a tracker opens in this tab; its bin deletes it after a confirm. The server refuses a
+// delete while an agent session or a watch is on the tracker, so the bin is off then. The list is read at each open.
+const switchOpen = document.getElementById('switch-open');
+const switchList = document.getElementById('switch-list');
+const confirmBox = document.getElementById('confirm');
+const confirmError = confirmBox.querySelector('.err');
+let doomed = null; // the tracker the dialog asks about
+
+function trackerRow(t) {
+  const li = document.getElementById('switch-row').content.firstElementChild.cloneNode(true);
+  const a = li.querySelector('a');
+  a.href = `/t/${encodeURIComponent(t.slug)}/`;
+  a.querySelector('b').textContent = t.title;
+  a.querySelector('.meta').textContent = t.slug;
+  if (t.slug === slug) a.setAttribute('aria-current', 'page');
+  const busy = a.querySelector('small');
+  busy.textContent = `in use by ${t.in_use}`;
+  busy.hidden = !t.in_use;
+  const del = li.querySelector('.del');
+  const label = t.in_use ? `Cannot delete ${t.title}: in use` : `Delete ${t.title}`;
+  del.setAttribute('aria-label', label);
+  del.title = label;
+  del.disabled = Boolean(t.in_use);
+  del.addEventListener('click', () => askDelete(t));
+  return li;
+}
+
+async function openSwitch() {
+  try {
+    const trackers = await (await fetch('/trackers', { cache: 'no-store' })).json();
+    switchList.replaceChildren(...trackers.map(trackerRow));
+  } catch {
+    return; // the live line says the viewer stopped
+  }
+  switchList.hidden = false;
+  switchOpen.setAttribute('aria-expanded', 'true');
+}
+
+function closeSwitch(focus) {
+  if (switchList.hidden) return;
+  switchList.hidden = true;
+  switchOpen.setAttribute('aria-expanded', 'false');
+  if (focus) switchOpen.focus();
+}
+
+function askDelete(t) {
+  doomed = t;
+  confirmBox.querySelector('[data-title]').textContent = t.title;
+  confirmBox.querySelector('[data-root]').textContent = t.root;
+  confirmError.hidden = true;
+  closeSwitch(false);
+  confirmBox.showModal();
+}
+
+async function deleteDoomed(button) {
+  button.disabled = true;
+  let res = null;
+  try {
+    res = await fetch(`/t/${encodeURIComponent(doomed.slug)}/delete`,
+      { method: 'POST', headers: { 'X-Tracker-Token': document.body.dataset.token } });
+  } catch { /* the viewer stopped: said below */ }
+  button.disabled = false;
+  if (res && res.ok) {
+    confirmBox.close();
+    if (doomed.slug === slug) location.assign('/');
+    return;
+  }
+  confirmError.textContent = res ? await res.text() : 'The viewer stopped: run `tracker open`, then try again.';
+  confirmError.hidden = false;
+}
+
 if (slug) {
+  document.getElementById('switch').hidden = false;
+  switchOpen.addEventListener('click', () => (switchList.hidden ? openSwitch() : closeSwitch(false)));
+  confirmBox.querySelector('[data-cancel]').addEventListener('click', () => confirmBox.close());
+  confirmBox.querySelector('[data-delete]').addEventListener('click', e => deleteDoomed(e.currentTarget));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSwitch(true); });
   refresh.hidden = false;
   refresh.addEventListener('click', askRefresh);
   document.addEventListener('click', e => {
+    if (!e.target.closest('#switch')) closeSwitch(false);
     const b = e.target.closest('.filters button');
     if (b) { filter = b.dataset.f; applyFilter(); }
     const h = e.target.closest('.seq-head button');

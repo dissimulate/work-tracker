@@ -5,6 +5,12 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ## Unreleased
 
+### Added
+
+- Viewer: a tracker menu (top left) lists every tracker; pick one to open it, or its bin to move it to the system's trash after a confirm. A tracker with an agent session or a watch on it cannot be deleted.
+- `tracker delete <slug>` moves a tracker to the system's trash from a terminal. It refuses in an agent session.
+- Viewer: a page whose tracker was deleted says so instead of reloading.
+
 ## 0.30.0 - 2026-10-08
 
 ### Added

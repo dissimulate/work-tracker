@@ -20,12 +20,12 @@ from typing import Callable, NamedTuple
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
     ROOT, SPANS, STAGES, WINDOWS, all_trackers, atomic_write, branch_entry, files_hash, locked, priority, sequence,
-    sort_key, span, spawn, tracker_at, whose_move, Dep, Move, Record, Tracker)
+    sort_key, span, spawn, tracker_at, whose_move, Busy, Dep, Move, Record, Tracker)
 from .session import ago, live_sessions, match_cwd, Live
 from .contract import check
 from .views import duration, pr_label, span_lines, stage_counts, start_text
 from .github import sync
-from .watcher import watcher_of
+from .watcher import delete_tracker, in_use, watcher_of, InUse
 
 # ---------------------------------------------------------------- render
 
@@ -728,6 +728,10 @@ def serve(port: int = 0) -> None:
             parts = self.parts()
             if parts == ["ping"]:
                 return self.reply(200, CODE_ID, "text/plain")
+            if parts == ["trackers"]:  # the tracker menu: each tracker, and what stops its delete
+                return self.reply(200, json.dumps([{"slug": t.slug, "title": t.title, "root": str(t.root),
+                                                    "in_use": in_use(t)} for t in all_trackers()]),
+                                  "application/json")
             if len(parts) == 2 and parts[0] == "assets":
                 asset = VIEWER_DIR / parts[1]
                 if asset.suffix in ASSET_TYPES and asset.parent == VIEWER_DIR and asset.is_file():
@@ -755,13 +759,22 @@ def serve(port: int = 0) -> None:
             return self.reply(404, "not found", "text/plain")
 
         def do_POST(self):
-            """A Refresh: the page's token, from this server's own page, or nothing changes."""
+            """A Refresh or a Delete: the page's token, from this server's own page, or nothing changes."""
             if not self.allowed() or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN):
                 return self.reply(403, "forbidden", "text/plain")
             parts = self.parts()
             tr = tracker_at(parts[1]) if len(parts) == 3 and parts[0] == "t" else None
-            if not tr or parts[2] != "refresh":
+            if not tr or parts[2] not in ("refresh", "delete"):
                 return self.reply(404, "not found", "text/plain")
+            if parts[2] == "delete":
+                try:
+                    delete_tracker(tr)
+                except (InUse, Busy) as exc:
+                    return self.reply(409, str(exc), "text/plain")
+                except OSError as exc:  # the trash refused the folder, which stays
+                    return self.reply(500, f"not deleted: {exc}", "text/plain")
+                server.viewed.pop(tr.slug, None)
+                return self.send(204)
             request_refresh(tr)
 
             def pull():

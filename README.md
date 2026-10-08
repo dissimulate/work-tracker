@@ -31,6 +31,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
 | `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
 | `tracker open [id]` | the live page |
+| `tracker delete <slug>` | move a tracker's folder to the system's trash (only in a terminal; refused while a session or a watch is on it) |
 | `tracker issue --due` | the tickets whose issue fields (priority, when the issue was created) are due, with their issue links |
 | `tracker check` | problems in the tracker's files |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
@@ -97,6 +98,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 ### Viewer
 
 - `tracker open [id]` starts a local server (Python `http.server`, 127.0.0.1 only) when none runs, and opens the page. The page polls every 3 s and updates in place. The server stops about 3 min after the last request.
+- **Tracker menu** (top left) lists every tracker. A tracker opens in the same tab. Its bin moves the tracker's folder to the system's trash (macOS Trash, Windows Recycle Bin, the freedesktop trash on Linux) after you confirm; restore it from there. The bin is off while an agent session or a watch is on the tracker; end them first. If the trash refuses the folder, the folder stays and the dialog shows why.
 - **Now** shows the tickets under way (your move first), each branch's handoff, and the agent sessions on this machine that work on the tracker (a ring spins while one works).
 - While a page is open, the server syncs PR state every 2 min.
 - **Wait time** runs from when a ticket's issue was created (its `issue_created`) to when the ticket started (its `started_at`, which the first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`), so it needs no issue tracker. Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days; the Time column gives each ticket's, as `wait → cycle`. A ticket without both exact times, with the end before the start (an issue created after the work started), or dropped, has none: a ticket started before 0.29 has no start time, and a merge synced before 0.29 is known only by its date.
@@ -149,7 +151,7 @@ Environment variables. All are optional.
 5. `contract`: `check`, `rules`, `migrate`
 6. `views`: text views and the brief
 7. `github`: `sync`
-8. `watcher`: `tracker watch` and the user's grant
+8. `watcher`: `tracker watch` and the user's grant; `tracker delete`
 9. `viewer`: the page and its server (look: `viewer/page.html`, `style.css`, `app.js`). Markup is `Html`, which escapes the text put into it; the sequence's columns are its `Column` table
 10. `hooks`
 11. `cli`

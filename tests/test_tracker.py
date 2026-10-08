@@ -1582,5 +1582,93 @@ class Watch(unittest.TestCase):
             run("watch", self.s, "--once", code=4)
 
 
+class Delete(unittest.TestCase):
+    """`tracker delete` and the viewer's tracker menu: the folder goes to the system's trash, only by the user, and
+    never while a session or a watch is on it. The tests use the freedesktop trash in BASE, not the user's."""
+
+    def setUp(self):
+        self.s = slug()
+        run("init", self.s, "--title", "Doomed", "--owner", "me")
+        self.root = model.HOME / self.s
+        self.trash = Path(BASE) / "xdg" / "Trash"
+        patches = [mock.patch.object(watcher, "to_trash", model.xdg_trash),
+                   mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(self.trash.parent)})]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def live(self) -> str:
+        """A running Claude session tied to the tracker."""
+        sid = f"live{time.monotonic_ns()}"
+        session.CLAUDE_SESSIONS.mkdir(parents=True, exist_ok=True)
+        (session.CLAUDE_SESSIONS / f"{sid}.json").write_text(json.dumps(
+            {"pid": os.getpid(), "sessionId": sid, "cwd": "/", "name": "busy-one", "status": "busy"}))
+        session.save_session(sid, tracker=self.s, cwd=BASE)
+        return sid
+
+    def test_the_cli_moves_the_folder_to_the_trash(self):
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            self.assertIn("only the user deletes a tracker", run("delete", self.s, "--yes", code=4))
+        with mock.patch.object(sys, "stdin", io.StringIO("")):
+            self.assertIn("pass --yes", run("delete", self.s, code=2))
+        self.assertIn("no tracker", run("delete", "no-such-tracker", "--yes", code=2))
+
+        sid = self.live()
+        self.assertIn("in use by agent session busy-one", run("delete", self.s, "--yes", code=4))
+        self.assertTrue(self.root.exists())
+        (session.CLAUDE_SESSIONS / f"{sid}.json").unlink()  # the session ended; its tie stays until the delete
+        watcher.state_path(self.s).parent.mkdir(parents=True, exist_ok=True)
+        watcher.state_path(self.s).write_text("{}")
+
+        self.assertIn("to the trash", run("delete", self.s, "--yes"))
+        self.assertFalse(self.root.exists())
+        self.assertTrue((self.trash / "files" / self.s / "README.md").exists())
+        info = (self.trash / "info" / f"{self.s}.trashinfo").read_text()
+        self.assertIn(f"Path={self.root.absolute()}\n", info)
+        self.assertFalse(watcher.state_path(self.s).exists())
+        self.assertEqual(session.load_session(sid), {})
+
+        run("init", self.s, "--title", "Doomed again", "--owner", "me")  # a second one of the name: its own entry
+        run("delete", self.s, "--yes")
+        self.assertTrue((self.trash / "files" / f"{self.s}.2" / "README.md").exists())
+        self.assertTrue((self.trash / "info" / f"{self.s}.2.trashinfo").exists())
+
+    def test_the_viewer_lists_and_deletes(self):
+        threading.Thread(target=viewer.serve, daemon=True).start()
+        for _ in range(100):
+            if viewer.VIEWER_FILE.exists():
+                break
+            time.sleep(0.05)
+        port = json.loads(viewer.VIEWER_FILE.read_text())["port"]
+        base = f"http://127.0.0.1:{port}"
+        page = urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode()
+        token = re.search(r'data-token="([^"]+)"', page).group(1)
+
+        def listed() -> dict:
+            got = json.loads(urllib.request.urlopen(f"{base}/trackers").read())
+            return next((t for t in got if t["slug"] == self.s), {})
+
+        def delete(headers: dict) -> tuple[int, str]:
+            req = urllib.request.Request(f"{base}/t/{self.s}/delete", data=b"", method="POST", headers=headers)
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, r.read().decode()
+            except urllib.error.HTTPError as err:
+                return err.code, err.read().decode()
+
+        self.assertEqual(listed(), {"slug": self.s, "title": "Doomed", "root": str(self.root), "in_use": ""})
+        self.assertEqual(delete({})[0], 403)
+        self.assertEqual(delete({"X-Tracker-Token": token, "Sec-Fetch-Site": "cross-site"})[0], 403)
+        sid = self.live()
+        self.assertEqual(listed()["in_use"], "agent session busy-one")
+        code, said = delete({"X-Tracker-Token": token})
+        self.assertEqual((code, said.split(":")[0]), (409, f"{self.s} is in use by agent session busy-one"))
+        (session.CLAUDE_SESSIONS / f"{sid}.json").unlink()
+        self.assertEqual(delete({"X-Tracker-Token": token}), (204, ""))
+        self.assertFalse(self.root.exists())
+        self.assertEqual(listed(), {})
+        self.assertEqual(delete({"X-Tracker-Token": token})[0], 404)
+
+
 if __name__ == "__main__":
     unittest.main()

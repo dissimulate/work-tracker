@@ -206,8 +206,9 @@ li { margin: 2px 0; }
 #bar button { min-height: var(--control-size); flex-shrink: 0; }
 #bar button:hover { background: var(--subtle); }
 
-#theme { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 6px; }
-#theme svg {
+/* An icon button: the theme switch, the tracker menu, a tracker's bin. */
+.icon { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 6px; }
+.icon svg {
   width: 16px;
   height: 16px;
   fill: none;
@@ -218,6 +219,50 @@ li { margin: 2px 0; }
 }
 #theme .sun, :root[data-theme="dark"] #theme .moon { display: none; }
 :root[data-theme="dark"] #theme .sun { display: block; }
+
+/* The tracker menu, top left: a row per tracker, its bin on the right. */
+#switch { position: relative; margin-right: auto; }
+
+#switch-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  min-width: 260px;
+  max-width: min(440px, calc(100vw - 2 * var(--pad)));
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--tag-ink) 18%, transparent);
+}
+
+#switch-list li { display: flex; align-items: center; gap: 4px; max-width: none; }
+
+#switch-list a {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+  color: var(--ink);
+  font-size: var(--fs-m);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#switch-list a:hover { background: var(--subtle); text-decoration: none; }
+#switch-list a[aria-current="page"] b { color: var(--accent); }
+#switch-list small { display: block; color: var(--active); }
+
+#switch-list .del { color: var(--muted); background: none; border-color: transparent; }
+#switch-list .del:not(:disabled):hover { color: var(--blocked); background: var(--subtle); }
+#switch-list .del:disabled { opacity: .35; cursor: not-allowed; }
 
 #live { min-width: 0; color: var(--muted); background: none; border-color: transparent; }
 
@@ -233,6 +278,31 @@ li { margin: 2px 0; }
 }
 
 #live:empty { display: none; }
+
+/* ---------- the delete dialog ---------- */
+
+#confirm {
+  width: min(460px, calc(100vw - 2 * var(--pad)));
+  padding: 20px;
+  color: var(--ink);
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--radius);
+}
+#confirm::backdrop { background: color-mix(in srgb, var(--tag-ink) 45%, transparent); }
+#confirm p { margin: 0 0 10px; }
+#confirm .err { color: var(--blocked); font-size: var(--fs-s); }
+#confirm .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+#confirm button {
+  min-height: var(--control-size);
+  padding: 5px 14px;
+  font-size: var(--fs-s);
+  background: var(--surface);
+  border: var(--border);
+}
+#confirm button:hover { background: var(--subtle); }
+#confirm .danger { color: var(--tag-ink); background: var(--tag-blocked); border-color: transparent; }
+#confirm .danger:hover { background: color-mix(in srgb, var(--tag-blocked) 85%, var(--tag-ink)); }
 
 /* ---------- panels: every part that opens ---------- */
 

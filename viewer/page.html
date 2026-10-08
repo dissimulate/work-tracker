@@ -12,9 +12,30 @@
 </head>
 <body data-slug="{{slug}}" data-version="{{version}}" data-token="{{token}}">
   <div id="bar">
+    <div id="switch" hidden>
+      <button id="switch-open" class="icon" type="button" aria-label="Switch tracker" title="Switch tracker"
+              aria-expanded="false" aria-controls="switch-list">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3.5 3 8l9 4.5L21 8l-9-4.5Z"/>
+          <path d="m3 12 9 4.5 9-4.5"/>
+          <path d="m3 16 9 4.5 9-4.5"/>
+        </svg>
+      </button>
+      <ul id="switch-list" hidden></ul>
+      <template id="switch-row">
+        <li>
+          <a><b></b> <span class="meta"></span><small class="meta" hidden></small></a>
+          <button class="icon del" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13M10 11v5.5M14 11v5.5"/>
+            </svg>
+          </button>
+        </li>
+      </template>
+    </div>
     <div id="live"></div>
     <button id="refresh" type="button" hidden>Refresh</button>
-    <button id="theme" type="button" aria-label="Switch colour theme" title="Switch colour theme">
+    <button id="theme" class="icon" type="button" aria-label="Switch colour theme" title="Switch colour theme">
       <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="12" r="4"/>
         <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>
@@ -24,6 +45,16 @@
       </svg>
     </button>
   </div>
+  <dialog id="confirm" aria-labelledby="confirm-title">
+    <p id="confirm-title"><b>Delete <span data-title></span>?</b></p>
+    <p class="meta">This moves the folder <code data-root></code> to the system's trash, with its tickets, decisions,
+      log and evidence. To get it back, restore it from the trash.</p>
+    <p class="err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" data-cancel>Cancel</button>
+      <button type="button" class="danger" data-delete>Delete</button>
+    </div>
+  </dialog>
   <main>{{body}}</main>
   <script src="/assets/app.js"></script>
 </body>
