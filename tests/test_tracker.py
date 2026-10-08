@@ -566,6 +566,15 @@ class Writes(unittest.TestCase):
         self.assertIn(f"{s} is a tracker; `tracker context <id>` takes one", whole)
         self.assertIn("L-2", whole)
 
+        # The skill runs `tracker $ARGUMENTS`: a slash command's tracker name starts it, and `view` opens.
+        commands = cli.build_parser()[1].choices
+        self.assertEqual(cli.named_command([s], commands), ["start", s])
+        self.assertEqual(cli.named_command(["--tracker", s, "view", "L-1"], commands), ["--tracker", s, "open", "L-1"])
+        self.assertEqual(cli.named_command(["index", "--active"], commands), ["index", "--active"])
+        self.assertEqual(cli.named_command(["frobnicate"], commands), ["frobnicate"])  # argparse refuses it
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": f"sid{time.monotonic_ns()}"}):
+            self.assertIn(f"[work-tracker] {s} — Limits", run(s))
+
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)
         self.assertIn("(no section 'goal')\n\n== README · Limits · planning\n(no section 'carry')\n\n## Goal", shown)

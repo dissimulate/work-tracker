@@ -924,7 +924,9 @@ def cmd_use(args):
 
 def cmd_open(args):
     from .viewer import viewer_ping, viewer_port
-    tr, rec = locate(args, args.id) if args.id else (resolve(args), None)
+    here = find_tracker(args) if args.id else None
+    whole = args.id and not (here and here.lookup(args.id)) and tracker_at(args.id)
+    tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
     old = viewer_ping()  # a viewer on other code is replaced on its port, so its open pages carry on
     port = viewer_port()
     if not port:
@@ -1130,7 +1132,7 @@ def build_parser():
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
     sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when idle)")
-    sp.add_argument("id", nargs="?", help="ticket or decision to open")
+    sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its name")
     sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")
     sp = sub.add_parser("serve")
     sp.add_argument("--port", type=int, default=0)
@@ -1244,9 +1246,25 @@ def reclaim(args, argv: list[str], parser) -> None:
         parser.error(f"{args.cmd}: the following arguments are required: {name}")
 
 
+ALIASES = {"view": "open"}  # a word the model reaches for: the command it means
+
+
+def named_command(argv: list[str], commands) -> list[str]:
+    """The skill runs `tracker $ARGUMENTS`, so a slash command's words arrive as they were typed: `view` means `open`,
+    and words that name a tracker but no command mean `start` (`/work-tracker:tracker payments`)."""
+    i = 2 if argv[:1] == ["--tracker"] else 1 if argv[:1] and argv[0].startswith("--tracker=") else 0
+    head, rest = argv[:i], argv[i:]
+    if not rest or rest[0].startswith("-") or rest[0] in commands:
+        return argv
+    if rest[0] in ALIASES:
+        return [*head, ALIASES[rest[0]], *rest[1:]]
+    return [*head, "start", *rest] if tracker_matches(rest)[0] else argv
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    parser = build_parser()[0]
+    parser, commands = build_parser()
+    argv = named_command(argv, commands.choices)
     args = parser.parse_args(argv)
     reclaim(args, argv, parser)
     no_id(args)
