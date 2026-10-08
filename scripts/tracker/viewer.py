@@ -221,9 +221,112 @@ def version(tr: Tracker) -> str:
     return f"{files_hash(tr.data_files(), live)}.{code}.{int(tr.raw_state().get('last_sync', 0))}"
 
 
-LIST_CH = 24  # the viewer's sequence: a list column shows the items that fit, then `+n`
-STALE_MARK_S = 86400  # the viewer's Now: a branch whose commits were last logged before this shows it unopened
-HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
+# ---------------------------------------------------------------- page parts
+
+def panel(key: str, head: Html, body: Html, line: Html | str = NONE, attrs: dict[str, object] | None = None) -> Html:
+    """Every part of the page that opens: its head, then `line` cut to one line while it is closed."""
+    nx = Html("<span class=nx>{}</span>").format(line) if line else NONE
+    return Html('<details data-id="{}"{}><summary>{}{}</summary><div>{}</div></details>').format(
+        key, attributes(attrs or {}), head, nx, body)
+
+
+def sec(key: str, title: str, count: int | str, body: Html, start_open: bool = False) -> Html:
+    """A section: its heading opens and closes it. The count shows while it is closed."""
+    return panel(f"_sec-{key}", Html("<h2>{}</h2>").format(f"{title} · {count}" if count else title), body,
+                 attrs={"class": "sec", "open": start_open})
+
+
+def named(name: str, meta: str = "") -> Html:
+    return Html("<b>{}</b>").format(name) + (Html("<span class=meta>{}</span>").format(meta) if meta else NONE)
+
+
+def ref(ident: str) -> Html:
+    return Html('<a class=id href="#{0}">{0}</a>').format(ident)
+
+
+def comma(parts) -> Html:
+    return Html(", ").join(parts)
+
+
+def toned(tone: str, body: Html | str, title: str | None = None) -> Html:
+    """Text in a status colour (a dependency, a decision); a link or id in it takes the same colour."""
+    return Html('<span class="tone s-{}"{}>{}</span>').format(tone, attributes({"title": title}), body)
+
+
+def dep_html(d: Dep) -> Html:
+    if not d.rec:
+        return toned("blocked", d.ident, d.link.text if d.link else None)
+    tone = "done" if d.done else "stack" if d.kind == "ticket" and d.rec.stage in IN_FLIGHT else "blocked"
+    return toned(tone, ref(d.ident) + " ✓" * d.done)
+
+
+def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
+    """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision blocks."""
+    if r.kind == "decision":
+        later = [t.id for t in tr.waiting_on(r.id)]
+        return "", chip("blocked", f"blocks {', '.join(later)}") if later and r.get("status") == "open" else NONE
+    if r.stage in CLOSED_TICKET:
+        return "", NONE
+    blockers = tr.blockers(r)
+    if blockers:
+        tone, verb = ("stack", "stacks on") if tr.stackable(r) else ("blocked", "waits on")
+        return "blocked", chip(tone, f"{verb} {', '.join(d.ident for d in blockers)}")
+    return ("ready", chip("ready")) if r.stage == "todo" else ("", NONE)
+
+
+def body_html(tr: Tracker, r: Record, lead: tuple[str, Html] | None = None) -> Html:
+    """What a ticket or decision shows when it opens: one grid of its line (next or summary), dependencies, facts and
+    links, then the body."""
+    deps = [("waits on", comma(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
+    start = tr.start_point(r) if r.kind == "ticket" else None
+    if start and start.stacked:
+        deps.append(("start", start_text(tr, start)))
+    if tr.waiting_on(r.id):
+        deps.append(("unblocks" if r.kind == "ticket" else "blocks", comma(ref(t.id) for t in tr.waiting_on(r.id))))
+    if r.kind == "ticket" and tr.decisions_for(r):
+        deps.append(("decisions", comma(
+            toned("closed", ref(d.id) + " ✓") if d.get("status") == "closed" else toned("blocked", ref(d.id))
+            for d in tr.decisions_for(r))))
+    facts = []
+    for k in ("branch", "base", "repo", "group", "refs", "owner", "started_at", "merged_at", "updated"):
+        if r.get(k):
+            value = (comma(ref(x) for x in r.list(k)) if k == "refs"
+                     else ", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k)))
+            facts.append((k.removesuffix("_at"),
+                          Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
+    move = whose_move(tr, r) if r.kind == "ticket" else None
+    head = ([lead] if lead else []) + ([("move", move_chip(move))] if move else [])
+    props = props_html([head, deps, facts, link_rows(r.links)])
+    return Html("<div>{}{}</div>").format(props, md_to_html(without_section(r.body, "Links")))
+
+
+def decision_html(tr: Tracker, d: Record) -> Html:
+    return panel(d.id, Html("<span class=id>{}</span>{}{}<b>{}</b>").format(
+        d.id, chip(d.get("status", "open")), gate_html(tr, d)[1], str(d.get("title"))), body_html(tr, d))
+
+
+# ---------------------------------------------------------------- the sequence
+
+LIST_CH = 24  # a list column shows the items that fit, then `+n`
+
+
+class Row(NamedTuple):
+    """A ticket of the sequence, with what its row shows worked out once. `waits` and `unblocks` are its two
+    dependency lists, as (text, html) per item; a closed ticket's waits-on is history, which its row leaves out (the
+    opened ticket still lists it)."""
+    t: Record
+    order: int  # its place in the dependency order the page starts in
+    step: int | str
+    gate: tuple[str, Html]  # gate_html
+    waits: list[tuple[str, Html]]
+    unblocks: list[tuple[str, Html]]
+    spans: dict[str, int | None]  # SPANS, in seconds
+
+    @classmethod
+    def of(cls, tr: Tracker, t: Record, order: int, step: int | str) -> Row:
+        waits = [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
+        return cls(t, order, step, gate_html(tr, t), waits, [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)],
+                   {name: span(t, name) for name in SPANS})
 
 
 class Cell(NamedTuple):
@@ -233,208 +336,165 @@ class Cell(NamedTuple):
     texts: tuple[str, ...] = ()
 
 
+def fit(items: list[tuple[str, Html]], limit: int) -> tuple[int, str]:
+    """How many items fit in `limit` characters with ` +n` for the rest (at least one), and the text shown."""
+    texts = [text for text, _ in items]
+    for k in range(len(texts), 0, -1):
+        shown = ", ".join(texts[:k]) + (f" +{len(texts) - k}" if k < len(texts) else "")
+        if len(shown) <= limit or k == 1:
+            return k, shown
+    return 0, ""
+
+
+def ticket_cell(r: Row) -> Cell:
+    pr = Html(" <span class=meta>PR {}</span>").format(pr_label(r.t)) if r.t.get("pr") else NONE
+    title = str(r.t.get("title"))
+    return Cell(Html("<span class=id>{}</span> {}{}").format(r.t.id, title, pr),
+                {"class": "tk tone", "title": f"{r.t.id} {title}"})
+
+
+def text_cell(key: str) -> Callable[[Row], Cell]:
+    return lambda r: Cell(str(r.t.get(key, "")), texts=(str(r.t.get(key, "")),))
+
+
+def status_cell(r: Row) -> Cell:
+    """A ready ticket shows `ready` for its `todo`."""
+    tag, gate_chip = r.gate
+    return Cell(gate_chip if tag == "ready" else chip(r.t.stage))
+
+
+def time_cell(r: Row) -> Cell:
+    """`wait → cycle`, either side blank when the ticket has none."""
+    if all(x is None for x in r.spans.values()):
+        return Cell("")
+    shown = ["" if x is None else duration(x) for x in r.spans.values()]
+    title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(r.spans, shown))
+    return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title}, (" → ".join(shown).strip(),))
+
+
+def deps_cell(r: Row) -> Cell:
+    """A line `← ` what the ticket waits on, a line `→ ` what it unblocks."""
+    lists = [(arrow, label, items) for arrow, label, items in
+             (("←", "waits on", r.waits), ("→", "unblocks", r.unblocks)) if items]
+    texts, lines = [], []
+    for arrow, _, items in lists:
+        k, shown = fit(items, LIST_CH - 2)
+        more = Html(" <span class=meta>+{}</span>").format(len(items) - k) if k < len(items) else NONE
+        texts.append(f"{arrow} {shown}")
+        lines.append(Html("<span><span class=meta>{}</span> {}{}</span>").format(
+            arrow, comma(h for _, h in items[:k]), more))
+    title = "; ".join(f"{label}: {', '.join(text for text, _ in items)}" for _, label, items in lists)
+    return Cell(NONE.join(lines), {"class": "deps lines", "title": title or None}, tuple(texts))
+
+
 class Column(NamedTuple):
     """A column of the sequence. `sorts`: a heading button per (key, label, what the page says it sorts by, value per
-    ticket); a row carries each value as data-sort-<key>, which viewer/app.js sorts by. `width`: CSS, or the fewest ch
-    of a column as wide as its longest text. `hide`: the sequence width (HIDES) it leaves from; "" to always show."""
-    sorts: tuple[tuple[str, str, str, Callable[[Record], object]], ...]
-    cell: Callable[[Record], Cell]
+    row); a row carries each value as data-sort-<key>, which viewer/app.js sorts by, None or "" last. `width`: CSS, or
+    the fewest ch of a column as wide as its longest text. `hide`: the sequence width (HIDES) it leaves from; "" to
+    always show."""
+    sorts: tuple[tuple[str, str, str, Callable[[Row], object]], ...]
+    cell: Callable[[Row], Cell]
     width: str | int
     hide: str = ""
 
 
-def main_html(tr: Tracker) -> Html:
-    counts = stage_counts(tr)
+HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
+WIDEST_CH = 26  # a column as wide as its longest text: at most this
+
+# An unknown status sorts after STAGES, so the page still renders and shows the check's error; a priority by its rank,
+# most urgent 0; dependencies by count.
+COLUMNS = (
+    Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "var(--step)"),
+    Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
+    Column((("group", "Group", "group", lambda r: r.t.get("group", "")),), text_cell("group"), 6, "mid"),
+    Column((("status", "Status", "status",
+             lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "12ch"),
+    Column((("priority", "Priority", "priority", lambda r: priority_rank(str(r.t.get("priority", "")))),),
+           text_cell("priority"), 9, "narrow"),
+    Column((("wait", "Wait", "wait time", lambda r: r.spans["wait"]),
+            ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, 14, "mid"),
+    Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),
+            ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))), deps_cell, 24, "narrow"),
+)
+
+
+def hide_class(c: Column, cls: object = None) -> str | None:
+    """A cell's class, with the column's hide-<width> when it has one."""
+    return " ".join(x for x in (str(cls or ""), c.hide and f"hide-{c.hide}") if x) or None
+
+
+def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
+    """A row of the sequence, which opens to the whole ticket. Its data-* carry its status (data-s), whether the server
+    counts it closed (data-c), ready or blocked (data-b), its step and its sort values (Column)."""
+    t = r.t
+    closed = t.stage in CLOSED_TICKET
+    cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if r.gate[0] == "blocked" else ""
+    word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
+    summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
+        {"class": hide_class(c, x.attrs.get("class")), **{k: v for k, v in x.attrs.items() if k != "class"}}), x.body)
+        for c, x in zip(COLUMNS, cells))
+    sorts = {f"data-sort-{key}": "" if (v := value(r)) is None else v
+             for c in COLUMNS for key, _, _, value in c.sorts}
+    attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0], "data-step": r.step,
+             **sorts}
+    return panel(t.id, summary, body_html(tr, t, (word, md_inline(str(line))) if line else None), attrs=attrs)
+
+
+def sequence_html(tr: Tracker) -> Html:
+    """The tickets in dependency order, dropped last, under their filters and sortable column heads."""
     seq = sequence(tr)
-
-    def panel(key: str, head: Html, body: Html, line: Html | str = NONE,
-              attrs: dict[str, object] | None = None) -> Html:
-        """Every part of the page that opens: its head, then `line` cut to one line while it is closed."""
-        nx = Html("<span class=nx>{}</span>").format(line) if line else NONE
-        return Html('<details data-id="{}"{}><summary>{}{}</summary><div>{}</div></details>').format(
-            key, attributes(attrs or {}), head, nx, body)
-
-    def named(name: str, meta: str = "") -> Html:
-        return Html("<b>{}</b>").format(name) + (Html("<span class=meta>{}</span>").format(meta) if meta else NONE)
-
-    def sec(key: str, title: str, count: int | str, body: Html, start_open: bool = False) -> Html:
-        """A section: its heading opens and closes it. The count shows while it is closed."""
-        return panel(f"_sec-{key}", Html("<h2>{}</h2>").format(f"{title} · {count}" if count else title), body,
-                     attrs={"class": "sec", "open": start_open})
-
-    def ref(ident: str) -> Html:
-        return Html('<a class=id href="#{0}">{0}</a>').format(ident)
-
-    def comma(parts) -> Html:
-        return Html(", ").join(parts)
-
-    def toned(tone: str, body: Html | str, title: str | None = None) -> Html:
-        """Text in a status colour (a dependency, a decision); a link or id in it takes the same colour."""
-        return Html('<span class="tone s-{}"{}>{}</span>').format(tone, attributes({"title": title}), body)
-
-    def dep_html(d: Dep) -> Html:
-        if not d.rec:
-            return toned("blocked", d.ident, d.link.text if d.link else None)
-        tone = "done" if d.done else "stack" if d.kind == "ticket" and d.rec.stage in IN_FLIGHT else "blocked"
-        return toned(tone, ref(d.ident) + " ✓" * d.done)
-
-    def gate_html(r: Record) -> tuple[str, Html]:
-        """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision blocks."""
-        if r.kind == "decision":
-            later = [t.id for t in tr.waiting_on(r.id)]
-            return "", chip("blocked", f"blocks {', '.join(later)}") if later and r.get("status") == "open" else NONE
-        if r.stage in CLOSED_TICKET:
-            return "", NONE
-        blockers = tr.blockers(r)
-        if blockers:
-            tone, verb = ("stack", "stacks on") if tr.stackable(r) else ("blocked", "waits on")
-            return "blocked", chip(tone, f"{verb} {', '.join(d.ident for d in blockers)}")
-        return ("ready", chip("ready")) if r.stage == "todo" else ("", NONE)
-
-    def body_html(r: Record, lead: tuple[str, Html] | None = None) -> Html:
-        """What a ticket or decision shows when it opens: one grid of its line (next or summary), dependencies,
-        facts and links, then the body."""
-        deps = [("waits on", comma(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
-        start = tr.start_point(r) if r.kind == "ticket" else None
-        if start and start.stacked:
-            deps.append(("start", start_text(tr, start)))
-        if tr.waiting_on(r.id):
-            deps.append(("unblocks" if r.kind == "ticket" else "blocks", comma(ref(t.id) for t in tr.waiting_on(r.id))))
-        if r.kind == "ticket" and tr.decisions_for(r):
-            deps.append(("decisions", comma(
-                toned("closed", ref(d.id) + " ✓") if d.get("status") == "closed" else toned("blocked", ref(d.id))
-                for d in tr.decisions_for(r))))
-        facts = []
-        for k in ("branch", "base", "repo", "group", "refs", "owner", "started_at", "merged_at", "updated"):
-            if r.get(k):
-                value = (comma(ref(x) for x in r.list(k)) if k == "refs"
-                         else ", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k)))
-                facts.append((k.removesuffix("_at"),
-                              Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
-        move = whose_move(tr, r) if r.kind == "ticket" else None
-        head = ([lead] if lead else []) + ([("move", move_chip(move))] if move else [])
-        props = props_html([head, deps, facts, link_rows(r.links)])
-        return Html("<div>{}{}</div>").format(props, md_to_html(without_section(r.body, "Links")))
-
-    def decision_html(d: Record) -> Html:
-        return panel(d.id, Html("<span class=id>{}</span>{}{}<b>{}</b>").format(
-            d.id, chip(d.get("status", "open")), gate_html(d)[1], str(d.get("title"))), body_html(d))
-
-    # A ticket's two dependency lists, as (text, html) per item. A closed ticket's waits-on is history: its row leaves
-    # it out; the opened ticket still lists it.
-    def waits_items(t: Record) -> list[tuple[str, Html]]:
-        return [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
-
-    def unblocks_items(t: Record) -> list[tuple[str, Html]]:
-        return [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)]
-
-    def fit(items: list[tuple[str, Html]], limit: int) -> tuple[int, str]:
-        """How many items fit in `limit` characters with ` +n` for the rest (at least one), and the text shown."""
-        texts = [text for text, _ in items]
-        for k in range(len(texts), 0, -1):
-            shown = ", ".join(texts[:k]) + (f" +{len(texts) - k}" if k < len(texts) else "")
-            if len(shown) <= limit or k == 1:
-                return k, shown
-        return 0, ""
-
-    def deps_cell(t: Record) -> Cell:
-        """A line `← ` what the ticket waits on, a line `→ ` what it unblocks."""
-        lists = [(arrow, label, items) for arrow, label, items in
-                 (("←", "waits on", waits_items(t)), ("→", "unblocks", unblocks_items(t))) if items]
-        texts, lines = [], []
-        for arrow, _, items in lists:
-            k, shown = fit(items, LIST_CH - 2)
-            more = Html(" <span class=meta>+{}</span>").format(len(items) - k) if k < len(items) else NONE
-            texts.append(f"{arrow} {shown}")
-            lines.append(Html("<span><span class=meta>{}</span> {}{}</span>").format(
-                arrow, comma(h for _, h in items[:k]), more))
-        title = "; ".join(f"{label}: {', '.join(text for text, _ in items)}" for _, label, items in lists)
-        return Cell(NONE.join(lines), {"class": "deps lines", "title": title or None}, tuple(texts))
-
-    def time_cell(t: Record) -> Cell:
-        """`wait → cycle`, either side blank when the ticket has none."""
-        spans = {name: span(t, name) for name in SPANS}
-        if all(x is None for x in spans.values()):
-            return Cell("")
-        shown = ["" if x is None else duration(x) for x in spans.values()]
-        title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(spans, shown))
-        return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title},
-                    (" → ".join(shown).strip(),))
-
-    def ticket_cell(t: Record) -> Cell:
-        pr = Html(" <span class=meta>PR {}</span>").format(pr_label(t)) if t.get("pr") else NONE
-        title = str(t.get("title"))
-        return Cell(Html("<span class=id>{}</span> {}{}").format(t.id, title, pr),
-                    {"class": "tk tone", "title": f"{t.id} {title}"})
-
-    def status_cell(t: Record) -> Cell:
-        """A ready ticket shows `ready` for its `todo`."""
-        tag, gate_chip = gate_html(t)
-        return Cell(gate_chip if tag == "ready" else chip(t.stage))
-
-    def text_cell(key: str) -> Callable[[Record], Cell]:
-        return lambda t: Cell(str(t.get(key, "")), texts=(str(t.get(key, "")),))
-
-    # Dropped tickets go last.
     ordered = sorted(tr.tickets, key=lambda t: (t.stage == "dropped", seq.step.get(t.id, 0), sort_key(t.id)))
-    order = {t.id: i for i, t in enumerate(ordered)}
-
-    # Sort values: an unknown status after STAGES, so the page still renders and shows the check's error; priority by
-    # rank, most urgent 0; times in seconds; dependencies by count. None or "" sorts last either way.
-    columns = (
-        Column((("step", "Step", "dependency order", lambda t: order[t.id]),),
-               lambda t: Cell(seq.step.get(t.id, "")), "var(--step)"),
-        Column((("ticket", "Ticket", "ticket", lambda t: t.id),), ticket_cell, "minmax(0, 1fr)"),
-        Column((("group", "Group", "group", lambda t: t.get("group", "")),), text_cell("group"), 6, "mid"),
-        Column((("status", "Status", "status",
-                 lambda t: STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)),), status_cell, "12ch"),
-        Column((("priority", "Priority", "priority", lambda t: priority_rank(str(t.get("priority", "")))),),
-               text_cell("priority"), 9, "narrow"),
-        Column(tuple((name, label, f"{name} time", lambda t, name=name: span(t, name))
-                     for name, label in (("wait", "Wait"), ("cycle", "→ Cycle"))), time_cell, 14, "mid"),
-        Column((("waits", "← Waits on", "waits on", lambda t: len(waits_items(t))),
-                ("unblocks", "→ Unblocks", "unblocks", lambda t: len(unblocks_items(t)))), deps_cell, 24, "narrow"),
-    )
-    cells = {t.id: [c.cell(t) for c in columns] for t in ordered}
+    rows = [Row.of(tr, t, i, seq.step.get(t.id, "")) for i, t in enumerate(ordered)]
+    cells = [[c.cell(r) for c in COLUMNS] for r in rows]
 
     def width(i: int, c: Column) -> str:
         """A column as wide as its longest text, so every row lines up."""
         if isinstance(c.width, str):
             return c.width
-        return f"{min(26, max([c.width, *(len(x) + 1 for t in ordered for x in cells[t.id][i].texts)]))}ch"
+        return f"{min(WIDEST_CH, max([c.width, *(len(x) + 1 for row in cells for x in row[i].texts)]))}ch"
 
     def shown_at(c: Column, level: str) -> bool:
         return not c.hide or HIDES.index(c.hide) > HIDES.index(level)
 
-    widths = [width(i, c) for i, c in enumerate(columns)]
+    widths = [width(i, c) for i, c in enumerate(COLUMNS)]
     style = "; ".join([f"--cols: {' '.join(widths)}"] + [
-        f"--cols-{level}: {' '.join(w for c, w in zip(columns, widths) if shown_at(c, level))}" for level in HIDES])
+        f"--cols-{level}: {' '.join(w for c, w in zip(COLUMNS, widths) if shown_at(c, level))}" for level in HIDES])
 
-    def hide(c: Column, cls: object = None) -> str | None:
-        return " ".join(x for x in (str(cls or ""), c.hide and f"hide-{c.hide}") if x) or None
+    counts = stage_counts(tr)
+    n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
+         "ready": len(tr.ready()),
+         "blocked": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET and tr.blockers(t)), **counts}
+    filters = NONE.join(Html('<button data-f="{0}">{0} <span class=n>{1}</span></button>').format(f, n[f])
+                        for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
+    # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
+    head = NONE.join(Html("<span{}>{}</span>").format(attributes({"class": hide_class(c)}), Html(" ").join(
+        Html('<button type=button data-sort="{}" data-said="{}">{}</button>').format(key, said, label)
+        for key, label, said, _ in c.sorts)) for c in COLUMNS)
+    return sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
+               NONE.join(Html("<p class=lead>{}</p>").format(x) for x in span_lines(tr))
+               + Html('<div class=filters>{}</div><p class=sr-only aria-live=polite id=sort-said></p>'
+                      '<div class=seq style="{}"><div class=seq-head>{}</div>{}</div>').format(
+                   filters, style, head, NONE.join(ticket_row(tr, r, c) for r, c in zip(rows, cells))), True)
 
-    def ticket_row(t: Record) -> Html:
-        """A row of the sequence, which opens to the whole ticket. Its data-* carry its status (data-s), whether the
-        server counts it closed (data-c), ready or blocked (data-b), its step and its sort values (Column)."""
-        closed = t.stage in CLOSED_TICKET
-        cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if tr.blockers(t) else ""
-        word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
-        summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
-            {"class": hide(c, x.attrs.get("class")), **{k: v for k, v in x.attrs.items() if k != "class"}}), x.body)
-            for c, x in zip(columns, cells[t.id]))
-        sorts = {f"data-sort-{key}": "" if (v := value(t)) is None else v
-                 for c in columns for key, _, _, value in c.sorts}
-        attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": gate_html(t)[0],
-                 "data-step": seq.step.get(t.id, ""), **sorts}
-        return panel(t.id, summary, body_html(t, (word, md_inline(str(line))) if line else None), attrs=attrs)
 
-    def now_item(key: str, head: Html, line: Html | str, more: Html = NONE,
-                 attrs: dict[str, object] | None = None) -> Html:
-        """A Now entry: its head and the start of its line; it opens to the whole line and `more`."""
+# ---------------------------------------------------------------- now
+
+STALE_MARK_S = 86400  # a branch whose commits were last logged before this shows it unopened
+
+
+def now_html(tr: Tracker) -> Html:
+    """Work under way (your move first, then the others' by who, then the tickets whose PR GitHub has not been read
+    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, and the
+    watch."""
+
+    def item(key: str, head: Html, line: Html | str, more: Html = NONE, attrs: dict[str, object] | None = None) -> Html:
+        """An entry: its head and the start of its line; it opens to the whole line and `more`."""
         return panel(f"_now-{key}", head, (Html("<p>{}</p>").format(line) if line else NONE) + more, line, attrs)
 
-    # Your move first, then the others' by who, then the tickets whose PR GitHub has not been read for; in progress
-    # before in review within each.
+    def agents_html(sessions: list[Live]) -> Html:
+        return NONE.join(Html("<p class=meta>session {}: {}, in {}</p>").format(x.name, agent_word(x), x.cwd)
+                         for x in sessions)
+
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     one_repo = len(tr.repos) <= 1
@@ -445,10 +505,6 @@ def main_html(tr: Tracker) -> Html:
     # under way; a session with none gets its own entry.
     live = [(x, match_cwd(x.cwd, x.sid, tr)) for x in live_sessions(tr.slug)]
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
-
-    def agents_html(sessions: list[Live]) -> Html:
-        return NONE.join(Html("<p class=meta>session {}: {}, in {}</p>").format(x.name, agent_word(x), x.cwd)
-                         for x in sessions)
 
     def turn(t: Record) -> tuple:
         move = moves[t.id]
@@ -464,20 +520,20 @@ def main_html(tr: Tracker) -> Html:
                 + named(str(t.get("title")), " · ".join(x for x in (b, stale) if x)))
         line = Html("next: {}").format(md_inline(str(t.get("next")))) if t.get("next") else NONE
         mine = moves[t.id] and moves[t.id].mine
-        now.append(now_item(t.id, head, line, (Html("<p class=meta>{}</p>").format(fresh) if fresh else NONE)
-                            + agents_html(agents[t.id]), {"class": "mine"} if mine else None))
+        now.append(item(t.id, head, line, (Html("<p class=meta>{}</p>").format(fresh) if fresh else NONE)
+                        + agents_html(agents[t.id]), {"class": "mine"} if mine else None))
     for key, h in handoffs.items():
         b = key.rpartition(":")[2] if one_repo else key  # a tracker that spans repos names the repo
         where = f"at {h.get('head', '')[:9]}" + (", uncommitted changes" if h.get("dirty") else "")
         head = named(f"Handoff on {b}", f'{ago(h.get("at", 0))}, {where}')
-        now.append(now_item(f"handoff-{key}", head, md_inline(h.get("text", "")), attrs={"class": "handoff"}))
+        now.append(item(f"handoff-{key}", head, md_inline(h.get("text", "")), attrs={"class": "handoff"}))
     busy = len(now)
     for x, m in live:
         if not m.active:
             open_ids = comma(ref(t.id) + f" {t.stage}" for t in m.focus)
             head = agent_icon([x]) + named(x.name, x.branch)
-            now.append(now_item(f"agent-{x.sid}", head, Html("on {}").format(open_ids) if open_ids else "on no ticket",
-                                agents_html([x])))
+            now.append(item(f"agent-{x.sid}", head, Html("on {}").format(open_ids) if open_ids else "on no ticket",
+                            agents_html([x])))
     yours = sum(bool(m and m.mine) for m in moves.values())
     if not any(t.stage in IN_FLIGHT for t in tr.tickets) and tr.meta.get("status") == "active":
         ready = comma(ref(t.id) for t in tr.ready())
@@ -488,53 +544,39 @@ def main_html(tr: Tracker) -> Html:
         text = f"Watched by {w['who']} since {clock(w['since'])}" if w["running"] else \
             f"Watch by {w['who']} ended {clock(w['ended'])}"
         now.append(Html('<p class="watch{}">{}</p>').format("" if w["running"] else " ended", text))
-    now_html = sec("now", "Now", f"{busy}" + (f" · {yours} your move" if yours else "") + agents_n,
-                   Html("<div class=nowlist>{}</div>").format(NONE.join(now)), True) if now else NONE
+    return sec("now", "Now", f"{busy}" + (f" · {yours} your move" if yours else "") + agents_n,
+               Html("<div class=nowlist>{}</div>").format(NONE.join(now)), True) if now else NONE
 
-    n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
-         "ready": len(tr.ready()),
-         "blocked": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET and tr.blockers(t)), **counts}
-    filters = NONE.join(Html('<button data-f="{0}">{0} <span class=n>{1}</span></button>').format(f, n[f])
-                        for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
-    # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
-    head = NONE.join(Html("<span{}>{}</span>").format(attributes({"class": hide(c)}), Html(" ").join(
-        Html('<button type=button data-sort="{}" data-said="{}">{}</button>').format(key, said, label)
-        for key, label, said, _ in c.sorts)) for c in columns)
-    sequence_html = sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
-                        NONE.join(Html("<p class=lead>{}</p>").format(x) for x in span_lines(tr))
-                        + Html('<div class=filters>{}</div><p class=sr-only aria-live=polite id=sort-said></p>'
-                               '<div class=seq style="{}"><div class=seq-head>{}</div>{}</div>').format(
-                            filters, style, head, NONE.join(ticket_row(t) for t in ordered)), True)
 
-    open_ds = tr.open_decisions()
-    open_d = NONE.join(decision_html(d) for d in open_ds) or Html("<p class=meta>None.</p>")
+# ---------------------------------------------------------------- the page
+
+def reference_html(tr: Tracker) -> Html:
+    """What is settled or past, one collapsed row each: closed decisions, the rest of the README, the log."""
     settled = [d for d in tr.decisions if d.get("status") == "closed"]
-    log_path = tr.root / "log.md"
-    log_lines = [ln for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
-    log = md_to_html("\n".join(reversed(log_lines))) if log_lines else Html("<p class=meta>Empty.</p>")
-    errors, warnings = check(tr)
-    problems = NONE.join([*(Html("<li>✗ {}</li>").format(x) for x in errors),
-                          *(Html("<li>⚠ {}</li>").format(x) for x in warnings)])
-    facts = " · ".join(f"{k}: {tr.meta[k]}" for k in ("status", "owner", "repo", "created") if tr.meta.get(k))
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
-    goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
-    goal_html = panel("_goal", named(", ".join(headings(goal))), md_to_html(goal)) if goal else NONE
-
-    # Reference: what is settled or past, one collapsed row each.
-    reference = NONE.join([
-        panel("_closed", named("Closed decisions", str(len(settled))), NONE.join(decision_html(d) for d in settled))
+    log_path = tr.root / "log.md"
+    log_lines = [ln for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
+    log = md_to_html("\n".join(reversed(log_lines))) if log_lines else Html("<p class=meta>Empty.</p>")
+    return sec("reference", "Reference", 0, NONE.join([
+        panel("_closed", named("Closed decisions", str(len(settled))), NONE.join(decision_html(tr, d) for d in settled))
         if settled else NONE,
         panel("_readme", named("More about this work", ", ".join(headings(extra))), md_to_html(extra))
         if headings(extra) else NONE,
         panel("_log", named("Log", f"{len(log_lines)} entries, newest first"), log,
-              md_inline(log_lines[-1][2:]) if log_lines else NONE)])
+              md_inline(log_lines[-1][2:]) if log_lines else NONE)]))
+
+
+def main_html(tr: Tracker) -> Html:
+    errors, warnings = check(tr)
+    problems = NONE.join([*(Html("<li>✗ {}</li>").format(x) for x in errors),
+                          *(Html("<li>⚠ {}</li>").format(x) for x in warnings)])
+    open_ds = tr.open_decisions()
+    facts = " · ".join(f"{k}: {tr.meta[k]}" for k in ("status", "owner", "repo", "created") if tr.meta.get(k))
+    goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))
-    links_row = (panel("_links", named("Links", f"{len(tr.context)}: {labels}"), props_html([link_rows(tr.context)]))
-                 if tr.context else NONE)
     state_line = issue_state(tr)
-    issue_html = Html("<span hidden id=issue-state>{}</span>").format(state_line) if state_line else NONE
     return Html("""{issue}
 <h1>{title}</h1><p class=sub>{facts}<br>{slug} · <code>{root}</code></p>
 {links}
@@ -544,12 +586,17 @@ def main_html(tr: Tracker) -> Html:
 {check}
 {decisions}
 {reference}""").format(
-        issue=issue_html, title=tr.title, facts=facts, slug=tr.slug, root=str(tr.root), links=links_row,
-        goal=goal_html, now=now_html, sequence=sequence_html,
+        issue=Html("<span hidden id=issue-state>{}</span>").format(state_line) if state_line else NONE,
+        title=tr.title, facts=facts, slug=tr.slug, root=str(tr.root),
+        links=panel("_links", named("Links", f"{len(tr.context)}: {labels}"), props_html([link_rows(tr.context)]))
+        if tr.context else NONE,
+        goal=panel("_goal", named(", ".join(headings(goal))), md_to_html(goal)) if goal else NONE,
+        now=now_html(tr), sequence=sequence_html(tr),
         check=sec("check", "Check", len(errors) + len(warnings), Html("<ul>{}</ul>").format(problems))
         if problems else NONE,
-        decisions=sec("decisions", "Open decisions", len(open_ds), open_d, True),
-        reference=sec("reference", "Reference", 0, reference))
+        decisions=sec("decisions", "Open decisions", len(open_ds),
+                      NONE.join(decision_html(tr, d) for d in open_ds) or Html("<p class=meta>None.</p>"), True),
+        reference=reference_html(tr))
 
 
 def issue_state(tr: Tracker) -> str:
@@ -603,6 +650,8 @@ CODE_ID = code_id()
 TOKEN = secrets.token_urlsafe(16)  # in each page; a Refresh must send it, which another site's page cannot read
 REFRESH_SYNC_S = 15  # a Refresh syncs GitHub unless a sync ran this recently
 VIEWER_SYNC_S = int(os.environ.get("TRACKER_VIEWER_SYNC", "120"))  # GitHub sync while a page is open
+# Only app.js runs: no inline script or handler, if tracker text ever gets past Html's escaping.
+PAGE_CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'"
 RESTART_WAIT_S = 10  # how long `open` waits for a viewer on this code to restart onto a new version of it
 
 
@@ -665,13 +714,21 @@ def serve(port: int = 0) -> None:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
+        def allowed(self) -> bool:
+            """A request to this server by its own name, not from another site's page (DNS rebinding, a cross-site
+            request)."""
             server.last_seen = time.monotonic()
             port = server.server_address[1]
-            if (self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}")
-                    or self.headers.get("Sec-Fetch-Site") == "cross-site"):
-                return self.reply(403, "forbidden", "text/plain")  # DNS rebinding; a request another site's page sends
-            parts = [p for p in self.path.split("?")[0].split("#")[0].split("/") if p]
+            return (self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+                    and self.headers.get("Sec-Fetch-Site") != "cross-site")
+
+        def parts(self) -> list[str]:
+            return [p for p in self.path.split("?")[0].split("#")[0].split("/") if p]
+
+        def do_GET(self):
+            if not self.allowed():
+                return self.reply(403, "forbidden", "text/plain")
+            parts = self.parts()
             if parts == ["ping"]:
                 return self.reply(200, CODE_ID, "text/plain")
             if len(parts) == 2 and parts[0] == "assets":
@@ -683,7 +740,7 @@ def serve(port: int = 0) -> None:
                 items = NONE.join(Html('<li><a href="/t/{0}/">{1}</a> <span class=meta>{0}</span></li>').format(
                     t.slug, t.title) for t in all_trackers())
                 return self.reply(200, page_html("Trackers", Html("<h1>Trackers</h1><ul>{}</ul>").format(items)))
-            tr = next((t for t in all_trackers() if parts[0] == "t" and len(parts) > 1 and t.slug == parts[1]), None)
+            tr = tracker_at(parts[1]) if parts[0] == "t" and len(parts) > 1 else None
             if not tr:
                 return self.reply(404, "no such tracker", "text/plain")
             server.viewed[tr.slug] = time.monotonic()
@@ -694,10 +751,7 @@ def serve(port: int = 0) -> None:
                 return self.reply(200, main_html(tr))
             if not rest:
                 if not self.path.split("?")[0].endswith("/"):  # relative evidence/ links resolve under the slash
-                    self.send_response(301)
-                    self.send_header("Location", f"/t/{tr.slug}/")
-                    self.end_headers()
-                    return None
+                    return self.send(301, headers={"Location": f"/t/{tr.slug}/"})
                 return self.reply(200, page_html(tr.title, main_html(tr), tr.slug, version(tr)))
             if rest[0] == EVIDENCE_DIR and len(rest) > 1:
                 return self.evidence(tr, rest[1:])
@@ -705,15 +759,10 @@ def serve(port: int = 0) -> None:
 
         def do_POST(self):
             """A Refresh: the page's token, from this server's own page, or nothing changes."""
-            server.last_seen = time.monotonic()
-            port = server.server_address[1]
-            if (self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}")
-                    or self.headers.get("Sec-Fetch-Site") == "cross-site"
-                    or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN)):
+            if not self.allowed() or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN):
                 return self.reply(403, "forbidden", "text/plain")
-            parts = [p for p in self.path.split("?")[0].split("/") if p]
-            tr = next((t for t in all_trackers() if parts[:1] == ["t"] and len(parts) == 3 and t.slug == parts[1]),
-                      None)
+            parts = self.parts()
+            tr = tracker_at(parts[1]) if len(parts) == 3 and parts[0] == "t" else None
             if not tr or parts[2] != "refresh":
                 return self.reply(404, "not found", "text/plain")
             request_refresh(tr)
@@ -724,10 +773,7 @@ def serve(port: int = 0) -> None:
                 except (Exception, SystemExit):  # gh missing or a busy lock: the next round tries again
                     pass
             threading.Thread(target=pull, daemon=True).start()
-            self.send_response(204)
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return None
+            return self.send(204)
 
         def evidence(self, tr: Tracker, parts: list[str]) -> None:
             folder = (tr.root / EVIDENCE_DIR).resolve()
@@ -742,22 +788,20 @@ def serve(port: int = 0) -> None:
             data = path.read_bytes()
             if not ctype:
                 ctype = "text/plain; charset=utf-8" if b"\0" not in data[:4096] else "application/octet-stream"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "sandbox")  # a file runs no script in the viewer's origin
-            self.end_headers()
-            self.wfile.write(data)
+            # A file runs no script in the viewer's origin.
+            return self.send(200, data, {"Content-Type": ctype, "Content-Security-Policy": "sandbox"})
 
         def reply(self, code: int, body: str, ctype: str = "text/html") -> None:
-            data = body.encode()
+            return self.send(code, body.encode(), {"Content-Type": f"{ctype}; charset=utf-8",
+                                                   "Content-Security-Policy": PAGE_CSP})
+
+        def send(self, code: int, data: bytes = b"", headers: dict[str, str] | None = None) -> None:
+            """Every response: never cached, its length unless a 204, which has no body."""
             self.send_response(code)
-            self.send_header("Content-Type", f"{ctype}; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            # Only app.js runs: no inline script or handler, if tracker text ever gets past md_inline's escaping.
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'")
+            for key, value in {**(headers or {}), "Cache-Control": "no-store"}.items():
+                self.send_header(key, value)
+            if code != 204:
+                self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
 

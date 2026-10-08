@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import html
+import http.client
 import io
 import json
 import os
@@ -69,6 +70,17 @@ def run(*args: str, cwd: Path | None = None, code: int = 0) -> str:
         git.worktree.cache_clear()
     assert got == code, f"tracker {' '.join(args)} exited {got}:\n{out.getvalue()}"
     return out.getvalue()
+
+
+SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
+            ("priority", "Priority"), ("wait", "Wait"), ("cycle", "→ Cycle"), ("waits", "← Waits on"),
+            ("unblocks", "→ Unblocks")]  # the viewer's sequence heading buttons, as (sort key, label)
+
+
+def seq_head(page: str) -> list[tuple[str, str]]:
+    """The heading buttons of the viewer's sequence, as (sort key, label)."""
+    head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
+    return re.findall(r'<button type=button data-sort="(\w+)" data-said="[^"]+">([^<]+)</button>', head)
 
 
 def piped(text: str):
@@ -928,11 +940,7 @@ class SequenceSort(unittest.TestCase):
         run(*t, "new", "T-5", "--title", "Uses that", "--depends", "T-3")
         page = viewer.main_html(model.Tracker(model.HOME / s))
 
-        head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
-        self.assertEqual(re.findall(r'<button type=button data-sort="(\w+)" data-said="[^"]+">([^<]+)</button>', head),
-                         [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
-                          ("priority", "Priority"), ("wait", "Wait"), ("cycle", "→ Cycle"),
-                          ("waits", "← Waits on"), ("unblocks", "→ Unblocks")])
+        self.assertEqual(seq_head(page), SEQ_HEAD)
 
         def row(ident: str) -> dict[str, str]:
             attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
@@ -944,7 +952,7 @@ class SequenceSort(unittest.TestCase):
         self.assertEqual([row("T-10")[k] for k in keys], ["1", "T-10", "ui", "0", "0", "0"])
         self.assertEqual([row("T-3")[k] for k in keys], ["2", "T-3", "", "0", "1", "1"])
         self.assertEqual([row("T-4")[k] for k in keys], ["4", "T-4", "api", "5", "0", "0"])
-        self.assertEqual(len(row("T-2")), len(re.findall(r'data-sort="', head)))  # a value per heading button
+        self.assertEqual(len(row("T-2")), len(SEQ_HEAD))  # a value per heading button
 
         # One Deps column: a line ← what the ticket waits on, a line → what it unblocks; the title names both lists.
         def deps(ident: str) -> str:
@@ -1062,9 +1070,7 @@ class IssueFields(unittest.TestCase):
         run(*t, "issue", "T-3")
         run(*t, "issue", "T-4", "--priority", "Someday")
         page = viewer.main_html(model.Tracker(model.HOME / s))
-        head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
-        self.assertEqual(re.findall(r'data-sort="(\w+)"', head),
-                         ["step", "ticket", "group", "status", "priority", "wait", "cycle", "waits", "unblocks"])
+        self.assertEqual(seq_head(page), SEQ_HEAD)
 
         def p(ident: str) -> str:
             return re.search(rf'<details data-id="{ident}"[^>]* data-sort-priority="([^"]*)"', page).group(1)
@@ -1087,7 +1093,7 @@ class IssueFields(unittest.TestCase):
         run("init", unlinked, "--title", "Plain", "--owner", "me")
         self.assertNotIn("issue-state", viewer.main_html(model.Tracker(model.HOME / unlinked)))
 
-    def test_refresh_needs_the_page_token_and_the_same_site(self):
+    def test_the_server_guards_every_request(self):
         s, _ = self.tracker()
         threading.Thread(target=viewer.serve, daemon=True).start()
         for _ in range(100):
@@ -1112,6 +1118,30 @@ class IssueFields(unittest.TestCase):
         self.assertIsNone(model.Tracker(model.HOME / s).raw_state().get("issues", {}).get("requested"))
         self.assertEqual(post({"X-Tracker-Token": token, "Sec-Fetch-Site": "same-origin"}), 204)
         self.assertGreater(model.Tracker(model.HOME / s).raw_state()["issues"]["requested"], time.time() - 60)
+
+        # Every response is uncached; a GET has the same guard as a POST; a file from evidence/ runs no script.
+        def get(path: str, headers: dict | None = None) -> tuple[int, dict[str, str], bytes]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                conn.request("GET", path, headers=headers or {})
+                r = conn.getresponse()
+                return r.status, dict(r.getheaders()), r.read()
+            finally:
+                conn.close()
+
+        (model.HOME / s / "evidence").mkdir(exist_ok=True)
+        (model.HOME / s / "evidence" / "r.txt").write_text("hi")
+        code, headers, body = get(f"/t/{s}/evidence/r.txt")
+        self.assertEqual((code, body, headers["Content-Security-Policy"], headers["Cache-Control"]),
+                         (200, b"hi", "sandbox", "no-store"))
+        code, headers, _ = get(f"/t/{s}")
+        self.assertEqual((code, headers["Location"], headers["Content-Length"]), (301, f"/t/{s}/", "0"))
+        self.assertEqual(get(f"/t/{s}/", {"Host": f"evil.example:{port}"})[0], 403)
+        self.assertEqual(get(f"/t/{s}/", {"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(get("/t/no-such-tracker/")[0], 404)
+        code, headers, _ = get(f"/t/{s}/")
+        self.assertEqual((code, headers["Cache-Control"]), (200, "no-store"))
+        self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
 
 
 class Spans(unittest.TestCase):
@@ -1206,9 +1236,7 @@ class Spans(unittest.TestCase):
         self.ticket(s, "S-2", "2026-09-01T00:00:00Z", status="todo")
         tr = model.Tracker(model.HOME / s)
         page = viewer.main_html(tr)
-        head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
-        self.assertEqual(re.findall(r'data-sort="(\w+)"', head),
-                         ["step", "ticket", "group", "status", "priority", "wait", "cycle", "waits", "unblocks"])
+        self.assertEqual(seq_head(page), SEQ_HEAD)
 
         def spans(ident: str) -> tuple[str, str]:
             return re.search(rf'<details data-id="{ident}"[^>]* data-sort-wait="([^"]*)" data-sort-cycle="([^"]*)"',
