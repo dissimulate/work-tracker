@@ -409,12 +409,19 @@ def record_for(args, ident: str) -> tuple[Tracker, Record]:
     return locate(args, ident)
 
 
-def section_named(rec: Record, word: str) -> str:
-    """The section a word names: a case-free prefix of one of the record's sections (`carry` → Carry forward)."""
+def section_named(rec: Record, word: str, new: bool = False) -> str:
+    """The section a word names: a case-free prefix of one of the record's sections (`carry` → Carry forward), else a
+    part of one (`order` → Why this order). `new`: a README section that none matches is a new one, by that name (any
+    sections may follow the required ones)."""
     known = {"ticket": TICKET_SECTIONS, "decision": DECISION_SECTIONS}.get(rec.kind) or headings(rec.body)
-    hits = [h for h in known if h.lower().startswith(word.lower().strip())]
+    w = " ".join(word.lower().split())
+    hits = [h for h in known if h.lower().startswith(w)] or [h for h in known if w in h.lower()]
+    if not hits and new and rec.kind == "tracker" and w:
+        name = " ".join(word.split())
+        return name[0].upper() + name[1:]
     if len(hits) != 1:
-        die(f"'{word}' names {'none' if not hits else 'more than one'} of {rec.id}'s sections: {', '.join(known)}")
+        die(f"'{word}' names {'none' if not hits else 'more than one'} of {rec.id}'s sections: {', '.join(known)}"
+            + ("; `put tracker \"<new section>\" -` adds a README section" if rec.kind == "tracker" else ""))
     if hits[0] in OWNED_SECTIONS:
         die(f"## {hits[0]}: use {OWNED_SECTIONS[hits[0]]}")
     return hits[0]
@@ -436,7 +443,7 @@ def touch(rec: Record) -> None:
 
 def cmd_add(args):
     tr, rec = record_for(args, args.id)
-    heading = section_named(rec, args.section)
+    heading = section_named(rec, args.section, new=True)
     text = args.text.strip()
     if heading == "Carry forward":
         fit("carry", text)
@@ -457,7 +464,7 @@ def cmd_add(args):
 def cmd_put(args):
     """Replace a whole section: a rewritten Plan, a Carry forward kept short, a new set of Links."""
     tr, rec = record_for(args, args.id)
-    heading = section_named(rec, args.section)
+    heading = section_named(rec, args.section, new=True)
     text = args.text.strip("\n")
     if not text.strip():
         die("put takes the section's whole new text: pass it, or `-` and pipe it (a heredoc: <<'EOF')")
@@ -968,15 +975,15 @@ def build_parser():
                              "add T-8 carry \"...\" / add T-8 link \"PR: [title](url) — why\" / "
                              "add T-8 plan \"...\" --replace \"old text\"")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
-    sp.add_argument("section", help="a section, by a prefix of its name: plan, carry, links, question, options, "
-                                    "context, goal, scope")
+    sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
+                                    "options, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
     sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`), with the text "
                              "from stdin: put T-8 carry - <<'EOF' … EOF")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
-    sp.add_argument("section", help="a section, by a prefix of its name: plan, carry, links, question, options, "
-                                    "context, goal, scope")
+    sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
+                                    "options, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", nargs="?", default="-", help="the section's whole new text; `-` or left out: from stdin")
     sp = add("drop", cmd_drop, "remove the one line of a section that holds this text (a bullet goes with its "
                                "nested lines): drop T-8 carry \"old fact\"")

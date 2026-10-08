@@ -541,6 +541,14 @@ class Writes(unittest.TestCase):
         self.assertEqual(run(*t, "history", "--since", "2999-01-01"), "no log lines\n")
         self.assertIn("about two", run(*t, "show", "log"))  # the log is no record, but `show log` reads it
 
+        # The README takes sections after the required ones: `put` or `add` makes one, a part of its name finds it.
+        with piped("- L-1 first: it fixes the gate."):
+            run(*t, "put", "tracker", "why this order", "-")
+        run(*t, "add", "tracker", "order", "- L-2 next.")
+        self.assertIn("## Why this order\n\n- L-1 first: it fixes the gate.\n- L-2 next.",
+                      run(*t, "show", "tracker", "--section", "why"))
+        self.assertIn("names none of L-1's sections", run(*t, "put", "L-1", "order", "x", code=2))
+
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)
         self.assertIn("(no section 'goal')\n\n== README · Limits · planning\n(no section 'carry')\n\n## Goal", shown)

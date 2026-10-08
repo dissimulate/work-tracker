@@ -60,7 +60,7 @@ Record each fact at the moment it forms, in its home:
 | a ticket ends | `tracker step <id> "..." --done "<what it delivered>"`; `drop` Carry forward to ≤ 5 bullets. Dropped: `tracker set <id> status=dropped summary="<why>"` |
 | you stop with the work unfinished: a pause, a compaction, the session's end | `tracker step <id> "..." --pause "<what is done, what is half-done and uncommitted, the next step>"` |
 | the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>"`, or the whole Plan with `tracker put <id> plan -` and a heredoc; and a log line saying why |
-| a section changes as a whole (Carry forward kept short, Links sorted) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
+| a section changes as a whole (Carry forward kept short, Links sorted), or the README needs a section of its own (`put tracker "Why this order" -` makes it) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"` |
 | a direction choice is raised or settled | `tracker decide` (below) |
