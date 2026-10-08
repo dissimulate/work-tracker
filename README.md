@@ -130,9 +130,10 @@ Environment variables. All are optional.
 
 ## Develop
 
-- Run from a checkout in Claude Code: `claude --plugin-dir <path to this folder>`, then `/reload-plugins` after an edit. In Codex, install through the marketplace; after a change, bump the manifest version and run `codex plugin add work-tracker@<marketplace-name>` again. An open viewer restarts itself when `scripts/tracker/` changes, and an open page reloads when `viewer/` changes.
+- Run from a checkout in Claude Code: `claude --plugin-dir <path to this folder>`, then `/reload-plugins` after an edit. In Codex, install through the marketplace. Codex caches an installed copy by version: to try a change, raise the manifest version in your checkout, run `codex plugin add work-tracker@<marketplace-name>` again, and put the version back before you commit. An open viewer restarts itself when `scripts/tracker/` changes, and an open page reloads when `viewer/` changes.
 - Test: `python3 -m unittest discover tests` (about 10 s, no network). Lint: `uvx ruff check`.
-- Ship: bump `version` in `.claude-plugin/plugin.json`. Installed copies are cached by version.
+- Changelog: a commit with a change that users see adds a line per change under `## Unreleased` in `CHANGELOG.md`, below a `### Added`, `### Changed`, `### Fixed` or `### Removed` heading.
+- Release: `scripts/release.py patch|minor|major` on `main`, `--dry-run` to see the notes first. It runs the tests and lint, moves the Unreleased lines to a `CHANGELOG.md` section for the version, bumps `version` in `.claude-plugin/plugin.json` (installed copies are cached by version), commits, tags `v<version>`, pushes both and makes the GitHub release.
 - The format's contract (keys and who writes each, statuses, link labels, sections) is the constants in `scripts/tracker/model.py`. `tracker rules` prints it, `tracker check` enforces it, and the hooks and templates read it.
 - Each fact has one home, and every view is computed from it. `skills/tracker/SKILL.md` lists each home.
 
