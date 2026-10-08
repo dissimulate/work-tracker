@@ -163,5 +163,5 @@ claude plugin eval . --scaffold --allow-tools Bash --ablation none -j 8
 - `--scaffold`: each case's `scaffold.sh` sources `evals/lib/demo-tracker.sh`, which makes a git repo and a `demo` tracker in the run's workspace. The sandbox lets the agent write only there, so the tracker is in `.trackers/`, linked from `~/.claude/trackers`.
 - `--ablation none`: with no plugin there is no tracker, so a baseline measures nothing.
 - `-j 8`: runs 8 sessions at a time (the default is 1), so the suite takes about as long as its slowest run, not the sum of all of them. They share your rate limit: use less when other sessions run.
-- `--runs 1` while you change a case; the default is 3 runs per case.
+- `--runs 1` while you change a case. A case runs 3 times, except those whose `prompt.md` sets `runs: 1`: one plain command, passed in every full run so far. A case where the model weighs a choice keeps 3.
 - On macOS with only the Xcode `git` (`/usr/bin/git`), git cannot run in the sandbox, so the cases leave git to the scaffold and the hooks.
