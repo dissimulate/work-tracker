@@ -334,14 +334,15 @@ tr:last-child > td { border-bottom: 0; }
 
 /* ---------- sequence ---------- */
 
-/* Each ticket is a row that opens to the whole ticket. The server sets --cols, the columns after step and ticket
-   (--cols-mid, those a narrower page keeps): each as wide as its longest text, so rows line up. The ticket column
-   takes the rest, and every cell truncates. The head's font size is the rows', so ch is the same width in both. */
+/* Each ticket is a row that opens to the whole ticket. The server sets --cols, and --cols-mid and --cols-narrow for
+   the columns a narrower page keeps; it marks the others hide-mid or hide-narrow (Column in viewer.py). A column is as
+   wide as its longest text, so rows line up; the ticket column takes the rest, and every cell truncates. The head's
+   font size is the rows', so ch is the same width in both. */
 .seq { --step: 5ch; --gap: 14px; font-size: var(--fs-m); }
 
 .seq-head, .seq summary {
   display: grid;
-  grid-template-columns: var(--step) minmax(0, 1fr) var(--cols);
+  grid-template-columns: var(--cols);
   gap: 0 var(--gap);
   align-items: center;
   padding: 10px var(--pad);
@@ -368,16 +369,16 @@ tr:last-child > td { border-bottom: 0; }
 .seq .tk .id { font-weight: 700; }
 .seq details > div { padding-left: calc(var(--pad) + var(--step) + var(--gap)); }
 
-/* Narrower: no group or time, so the ticket keeps its room; the opened ticket has its group, start and merge. */
+/* Narrower: fewer columns, so the ticket keeps its room; the opened ticket has the rest. */
 @media (max-width: 1000px) {
-  .seq-head, .seq summary { grid-template-columns: var(--step) minmax(0, 1fr) var(--cols-mid); }
-  :is(.seq-head, .seq summary) > :is(:nth-child(3), :nth-child(6)) { display: none; }
+  .seq-head, .seq summary { grid-template-columns: var(--cols-mid); }
+  :is(.seq-head, .seq summary) > .hide-mid { display: none; }
 }
 
-/* Phone width: step, ticket and status only; the dependencies are in the opened ticket. */
+/* Phone width: step, ticket and status only. */
 @media (max-width: 700px) {
-  .seq-head, .seq summary { grid-template-columns: var(--step) minmax(0, 1fr) max-content; }
-  :is(.seq-head, .seq summary) > :is(:nth-child(3), :nth-child(n+5)) { display: none; }
+  .seq-head, .seq summary { grid-template-columns: var(--cols-narrow); }
+  :is(.seq-head, .seq summary) > .hide-narrow { display: none; }
   .seq details > div { padding-left: var(--pad); }
 }
 

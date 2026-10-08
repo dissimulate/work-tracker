@@ -10,10 +10,12 @@ import os
 import re
 import secrets
 import signal
+import string
 import subprocess
 import sys
 import threading
 import time
+from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
@@ -27,15 +29,58 @@ from .watcher import watcher_of
 
 # ---------------------------------------------------------------- render
 
-def md_inline(s: str) -> str:
+class Html(str):
+    """Markup for the page; a plain str is text. Html.format, Html.join and + escape the text they take and keep
+    markup as is. An f-string or str.join gives a plain str, which the next of them escapes, and `"<p>" + Html`
+    escapes the "<p>": build markup only with these, from Html literals."""
+
+    def format(self, *args: object, **kwargs: object) -> Html:
+        return Html(ESCAPING.vformat(self, args, kwargs))
+
+    def join(self, parts) -> Html:
+        return Html(str.join(self, map(esc, parts)))
+
+    def __add__(self, other: str) -> Html:
+        return Html(str.__add__(self, esc(other)))
+
+    def __radd__(self, other: str) -> Html:
+        return Html(str.__add__(esc(other), self))
+
+    def __mul__(self, n: int) -> Html:
+        return Html(str.__mul__(self, n))
+
+
+class Escaping(string.Formatter):
+    def format_field(self, value: object, spec: str) -> str:
+        shown = format(value, spec)
+        return shown if isinstance(value, Html) else html.escape(shown)
+
+
+ESCAPING = Escaping()
+NONE = Html("")
+
+
+def esc(x: object) -> Html:
+    """Text as markup: escaped, unless it is markup already."""
+    return x if isinstance(x, Html) else Html(html.escape(str(x)))
+
+
+def attributes(pairs: dict[str, object]) -> Html:
+    """` name="value"` per pair; a None or False value leaves its attribute out, and True writes it bare."""
+    return NONE.join(Html(" {}").format(k) if v is True else Html(' {}="{}"').format(k, v)
+                     for k, v in pairs.items() if v is not None and v is not False)
+
+
+# The Markdown subset escapes its text itself, and returns Html.
+def md_inline(s: str) -> Html:
     s = html.escape(s, quote=False)
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<![*\w])\*([^*\s][^*]*)\*(?!\w)", r"<em>\1</em>", s)
     # One pass for both forms: a bare URL inside a link's URL must not become a second link, whose quotes would end
     # the first one's href and open its tag to new attributes.
-    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)|(?<![\"'>=])(https?://[^\s<)\"']+)",
-                  lambda m: link_html(m[2], m[1]) if m[1] else link_html(m[3], m[3]), s)
+    return Html(re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)|(?<![\"'>=])(https?://[^\s<)\"']+)",
+                       lambda m: link_html(m[2], m[1]) if m[1] else link_html(m[3], m[3]), s))
 
 
 SAFE_HREF = re.compile(rf"(?:https?://|mailto:|#|{EVIDENCE_DIR}/)", re.I)
@@ -49,13 +94,16 @@ def link_html(url: str, text: str) -> str:
     return f'<a href="{url.replace(chr(34), "&quot;")}">{text}</a>'
 
 
-def md_to_html(md: str) -> str:
+def md_to_html(md: str) -> Html:
     """A small Markdown subset: headings, lists (nested by indent), code fences, tables, paragraphs."""
     out, para, lines, i = [], [], strip_comments(md).splitlines(), 0
 
+    def inline(text: str) -> str:  # plain str: `"<p>" + Html` would escape the "<p>"
+        return str(md_inline(text))
+
     def flush():
         if para:
-            out.append("<p>" + md_inline(" ".join(para)) + "</p>")
+            out.append("<p>" + inline(" ".join(para)) + "</p>")
             para.clear()
 
     while i < len(lines):
@@ -71,7 +119,7 @@ def md_to_html(md: str) -> str:
         elif m := re.match(r"(#{1,6})\s+(.*)", line):
             flush()
             n = min(len(m.group(1)) + 1, 6)
-            out.append(f"<h{n}>{md_inline(m.group(2))}</h{n}>")
+            out.append(f"<h{n}>{inline(m.group(2))}</h{n}>")
         elif re.match(r"\s*[-*]\s+", line):
             flush()
             depth = 0
@@ -83,7 +131,7 @@ def md_to_html(md: str) -> str:
                 while depth > d:
                     out.append("</ul>")
                     depth -= 1
-                out.append("<li>" + md_inline(m.group(2)) + "</li>")
+                out.append("<li>" + inline(m.group(2)) + "</li>")
                 i += 1
             out += ["</ul>"] * depth
             continue
@@ -97,8 +145,8 @@ def md_to_html(md: str) -> str:
                 i += 1
             if rows:
                 head, *body = rows
-                out.append("<div class=tbl><table><tr>" + "".join(f"<th>{md_inline(c)}</th>" for c in head) + "</tr>")
-                out += ["<tr>" + "".join(f"<td>{md_inline(c)}</td>" for c in r) + "</tr>" for r in body]
+                out.append("<div class=tbl><table><tr>" + "".join(f"<th>{inline(c)}</th>" for c in head) + "</tr>")
+                out += ["<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>" for r in body]
                 out.append("</table></div>")
             continue
         elif not line.strip():
@@ -107,7 +155,7 @@ def md_to_html(md: str) -> str:
             para.append(line.strip())
         i += 1
     flush()
-    return "\n".join(out)
+    return Html("\n".join(out))
 
 
 VIEWER_DIR = ROOT / "viewer"
@@ -116,27 +164,27 @@ EVIDENCE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpe
                   ".svg": "image/svg+xml", ".pdf": "application/pdf", ".html": "text/plain; charset=utf-8"}
 
 
-def props_html(groups: list[list[tuple[str, str]]]) -> str:
+def props_html(groups: list[list[tuple[str, str]]]) -> Html:
     """Label and value rows in one grid, so the values line up; each group after the first starts with a gap."""
-    rows = "".join(f'<dt{" class=gap" if i and not j else ""}>{html.escape(label)}</dt><dd>{value}</dd>'
-                   for i, group in enumerate(g for g in groups if g) for j, (label, value) in enumerate(group))
-    return f"<dl class=props>{rows}</dl>" if rows else ""
+    rows = NONE.join(Html("<dt{}>{}</dt><dd>{}</dd>").format(Html(" class=gap") if i and not j else "", label, value)
+                     for i, group in enumerate(g for g in groups if g) for j, (label, value) in enumerate(group))
+    return Html("<dl class=props>{}</dl>").format(rows) if rows else NONE
 
 
-def link_rows(items: list[Link]) -> list[tuple[str, str]]:
-    return [(x.label, md_inline(x.text) + "".join(f"<br><small>{md_inline(y)}</small>" for y in x.sub))
+def link_rows(items: list[Link]) -> list[tuple[str, Html]]:
+    return [(x.label, md_inline(x.text) + NONE.join(Html("<br><small>{}</small>").format(md_inline(y)) for y in x.sub))
             for x in items]
 
 
-def chip(tone: str, text: str = "") -> str:
+def chip(tone: str, text: str = "") -> Html:
     """A status pill: `tone` is a status or s-ready, s-stack, s-blocked (viewer/style.css, "status colours")."""
-    return f'<span class="chip s-{html.escape(tone)}">{html.escape(text or tone)}</span>'
+    return Html('<span class="chip s-{}">{}</span>').format(tone, text or tone)
 
 
-def move_chip(move: Move | None) -> str:
+def move_chip(move: Move | None) -> Html:
     """Whose move a ticket under way waits on: yours stands out, another's does not."""
-    return f'<span class="chip move s-{"you" if move.mine else "them"}">{html.escape(move.text())}</span>' \
-        if move else ""
+    return Html('<span class="chip move s-{}">{}</span>').format("you" if move.mine else "them", move.text()) \
+        if move else NONE
 
 
 def agent_word(s: Live) -> str:
@@ -152,15 +200,15 @@ def clock(ts: float) -> str:
     return time.strftime("%H:%M" if same_day else "%a %H:%M", time.localtime(ts))
 
 
-def agent_icon(sessions: list[Live]) -> str:
+def agent_icon(sessions: list[Live]) -> Html:
     """Left of a Now row, the Claude sessions on its work: a ring that spins while one of them works (busy) and stays
     still while all are idle (they wait for the user)."""
     if not sessions:
-        return ""
+        return NONE
     word = "working" if any(x.status == "busy" for x in sessions) else "idle"
     title = "; ".join(f"{x.name}: {agent_word(x)}" for x in sessions)
-    return (f'<span class="agent{" busy" * (word == "working")}" role="img" aria-label="agent {word}" '
-            f'title="{html.escape(title)}"></span>')
+    return Html('<span class="agent{}" role="img" aria-label="agent {}" title="{}"></span>').format(
+        " busy" * (word == "working"), word, title)
 
 
 def version(tr: Tracker) -> str:
@@ -175,92 +223,112 @@ def version(tr: Tracker) -> str:
 
 LIST_CH = 24  # the viewer's sequence: a list column shows the items that fit, then `+n`
 STALE_MARK_S = 86400  # the viewer's Now: a branch whose commits were last logged before this shows it unopened
+HIDES = ("mid", "narrow")  # the page widths a sequence column can leave from, widest first (viewer/style.css)
 
 
-def main_html(tr: Tracker) -> str:
-    e = html.escape
+class Cell(NamedTuple):
+    """A cell of the sequence: its content, its attributes, and the texts its column's width fits."""
+    body: Html | str
+    attrs: dict[str, object] = {}
+    texts: tuple[str, ...] = ()
+
+
+class Column(NamedTuple):
+    """A column of the sequence. `sorts`: a heading button per (key, label, what the page says it sorts by, value per
+    ticket); a row carries each value as data-sort-<key>, which viewer/app.js sorts by. `width`: CSS, or the fewest ch
+    of a column as wide as its longest text. `hide`: the page width (HIDES) it leaves from; "" to always show."""
+    sorts: tuple[tuple[str, str, str, Callable[[Record], object]], ...]
+    cell: Callable[[Record], Cell]
+    width: str | int
+    hide: str = ""
+
+
+def main_html(tr: Tracker) -> Html:
     counts = stage_counts(tr)
     seq = sequence(tr)
 
-    def panel(key: str, head: str, body: str, line: str = "", attrs: str = "") -> str:
+    def panel(key: str, head: Html, body: Html, line: Html | str = NONE,
+              attrs: dict[str, object] | None = None) -> Html:
         """Every part of the page that opens: its head, then `line` cut to one line while it is closed."""
-        nx = f"<span class=nx>{line}</span>" if line else ""
-        return f'<details data-id="{e(key)}"{attrs}><summary>{head}{nx}</summary><div>{body}</div></details>'
+        nx = Html("<span class=nx>{}</span>").format(line) if line else NONE
+        return Html('<details data-id="{}"{}><summary>{}{}</summary><div>{}</div></details>').format(
+            key, attributes(attrs or {}), head, nx, body)
 
-    def named(name: str, meta: str = "") -> str:
-        return f"<b>{name}</b>" + (f"<span class=meta>{meta}</span>" if meta else "")
+    def named(name: str, meta: str = "") -> Html:
+        return Html("<b>{}</b>").format(name) + (Html("<span class=meta>{}</span>").format(meta) if meta else NONE)
 
-    def sec(key: str, title: str, count: int | str, body: str, start_open: bool = False) -> str:
+    def sec(key: str, title: str, count: int | str, body: Html, start_open: bool = False) -> Html:
         """A section: its heading opens and closes it. The count shows while it is closed."""
-        return panel(f"_sec-{key}", f'<h2>{title}{f" · {count}" if count else ""}</h2>', body,
-                     attrs=" class=sec" + " open" * start_open)
+        return panel(f"_sec-{key}", Html("<h2>{}</h2>").format(f"{title} · {count}" if count else title), body,
+                     attrs={"class": "sec", "open": start_open})
 
-    def ref(ident: str) -> str:
-        return f'<a class=id href="#{e(ident)}">{e(ident)}</a>'
+    def ref(ident: str) -> Html:
+        return Html('<a class=id href="#{0}">{0}</a>').format(ident)
 
-    def toned(tone: str, body: str, attrs: str = "") -> str:
+    def comma(parts) -> Html:
+        return Html(", ").join(parts)
+
+    def toned(tone: str, body: Html | str, title: str | None = None) -> Html:
         """Text in a status colour (a dependency, a decision); a link or id in it takes the same colour."""
-        return f'<span class="tone s-{tone}"{attrs}>{body}</span>'
+        return Html('<span class="tone s-{}"{}>{}</span>').format(tone, attributes({"title": title}), body)
 
-    def dep_html(d: Dep) -> str:
+    def dep_html(d: Dep) -> Html:
         if not d.rec:
-            return toned("blocked", e(d.ident), f' title="{e(d.link.text)}"' if d.link else "")
+            return toned("blocked", d.ident, d.link.text if d.link else None)
         tone = "done" if d.done else "stack" if d.kind == "ticket" and d.rec.stage in IN_FLIGHT else "blocked"
         return toned(tone, ref(d.ident) + " ✓" * d.done)
 
-    def later_html(ident: str) -> str:
-        return ", ".join(ref(t.id) for t in tr.waiting_on(ident))
-
-    def gate_html(r: Record) -> tuple[str, str]:
+    def gate_html(r: Record) -> tuple[str, Html]:
         """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision blocks."""
         if r.kind == "decision":
             later = [t.id for t in tr.waiting_on(r.id)]
-            return "", chip("blocked", f"blocks {', '.join(later)}") if later and r.get("status") == "open" else ""
+            return "", chip("blocked", f"blocks {', '.join(later)}") if later and r.get("status") == "open" else NONE
         if r.stage in CLOSED_TICKET:
-            return "", ""
+            return "", NONE
         blockers = tr.blockers(r)
         if blockers:
             tone, verb = ("stack", "stacks on") if tr.stackable(r) else ("blocked", "waits on")
             return "blocked", chip(tone, f"{verb} {', '.join(d.ident for d in blockers)}")
-        return ("ready", chip("ready")) if r.stage == "todo" else ("", "")
+        return ("ready", chip("ready")) if r.stage == "todo" else ("", NONE)
 
-    def body_html(r: Record, lead: tuple[str, str] | None = None) -> str:
+    def body_html(r: Record, lead: tuple[str, Html] | None = None) -> Html:
         """What a ticket or decision shows when it opens: one grid of its line (next or summary), dependencies,
         facts and links, then the body."""
-        deps = [("waits on", ", ".join(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
+        deps = [("waits on", comma(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
         start = tr.start_point(r) if r.kind == "ticket" else None
         if start and start.stacked:
-            deps.append(("start", e(start_text(tr, start))))
+            deps.append(("start", start_text(tr, start)))
         if tr.waiting_on(r.id):
-            deps.append(("unblocks" if r.kind == "ticket" else "blocks", later_html(r.id)))
+            deps.append(("unblocks" if r.kind == "ticket" else "blocks", comma(ref(t.id) for t in tr.waiting_on(r.id))))
         if r.kind == "ticket" and tr.decisions_for(r):
-            deps.append(("decisions", ", ".join(
+            deps.append(("decisions", comma(
                 toned("closed", ref(d.id) + " ✓") if d.get("status") == "closed" else toned("blocked", ref(d.id))
                 for d in tr.decisions_for(r))))
         facts = []
         for k in ("branch", "base", "repo", "group", "refs", "owner", "started_at", "merged_at", "updated"):
             if r.get(k):
-                value = (", ".join(ref(x) for x in r.list(k)) if k == "refs"
-                         else e(", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k))))
-                facts.append((k.removesuffix("_at"), f"<code>{value}</code>" if k in ("branch", "base") else value))
+                value = (comma(ref(x) for x in r.list(k)) if k == "refs"
+                         else ", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k)))
+                facts.append((k.removesuffix("_at"),
+                              Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
         move = whose_move(tr, r) if r.kind == "ticket" else None
         head = ([lead] if lead else []) + ([("move", move_chip(move))] if move else [])
         props = props_html([head, deps, facts, link_rows(r.links)])
-        return f'<div>{props}{md_to_html(without_section(r.body, "Links"))}</div>'
+        return Html("<div>{}{}</div>").format(props, md_to_html(without_section(r.body, "Links")))
 
-    def decision_html(d: Record) -> str:
-        return panel(d.id, f'<span class=id>{e(d.id)}</span>{chip(d.get("status", "open"))}{gate_html(d)[1]}'
-                           f'<b>{e(str(d.get("title")))}</b>', body_html(d))
+    def decision_html(d: Record) -> Html:
+        return panel(d.id, Html("<span class=id>{}</span>{}{}<b>{}</b>").format(
+            d.id, chip(d.get("status", "open")), gate_html(d)[1], str(d.get("title"))), body_html(d))
 
     # A ticket's two dependency lists, as (text, html) per item. A closed ticket's waits-on is history: its row leaves
     # it out; the opened ticket still lists it.
-    def waits_items(t: Record) -> list[tuple[str, str]]:
+    def waits_items(t: Record) -> list[tuple[str, Html]]:
         return [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
 
-    def unblocks_items(t: Record) -> list[tuple[str, str]]:
+    def unblocks_items(t: Record) -> list[tuple[str, Html]]:
         return [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)]
 
-    def fit(items: list[tuple[str, str]], limit: int) -> tuple[int, str]:
+    def fit(items: list[tuple[str, Html]], limit: int) -> tuple[int, str]:
         """How many items fit in `limit` characters with ` +n` for the rest (at least one), and the text shown."""
         texts = [text for text, _ in items]
         for k in range(len(texts), 0, -1):
@@ -269,64 +337,101 @@ def main_html(tr: Tracker) -> str:
                 return k, shown
         return 0, ""
 
-    def deps_cell(t: Record) -> tuple[list[str], str]:
-        """(text per line, html) of the Deps column: a line `← ` what the ticket waits on, a line `→ ` what it
-        unblocks."""
+    def deps_cell(t: Record) -> Cell:
+        """A line `← ` what the ticket waits on, a line `→ ` what it unblocks."""
         lists = [(arrow, label, items) for arrow, label, items in
                  (("←", "waits on", waits_items(t)), ("→", "unblocks", unblocks_items(t))) if items]
         texts, lines = [], []
         for arrow, _, items in lists:
             k, shown = fit(items, LIST_CH - 2)
-            more = f' <span class=meta>+{len(items) - k}</span>' if k < len(items) else ""
+            more = Html(" <span class=meta>+{}</span>").format(len(items) - k) if k < len(items) else NONE
             texts.append(f"{arrow} {shown}")
-            lines.append(f'<span><span class=meta>{arrow}</span> {", ".join(h for _, h in items[:k])}{more}</span>')
+            lines.append(Html("<span><span class=meta>{}</span> {}{}</span>").format(
+                arrow, comma(h for _, h in items[:k]), more))
         title = "; ".join(f"{label}: {', '.join(text for text, _ in items)}" for _, label, items in lists)
-        return texts, f'<span class="deps lines" title="{e(title)}">{"".join(lines)}</span>'
+        return Cell(NONE.join(lines), {"class": "deps lines", "title": title or None}, tuple(texts))
 
-    def time_cell(spans: dict[str, int | None]) -> tuple[str, str]:
-        """(text, html) of the Time column: `wait → cycle`, either side blank when the ticket has none."""
+    def time_cell(t: Record) -> Cell:
+        """`wait → cycle`, either side blank when the ticket has none."""
+        spans = {name: span(t, name) for name in SPANS}
         if all(x is None for x in spans.values()):
-            return "", "<span></span>"
+            return Cell("")
         shown = ["" if x is None else duration(x) for x in spans.values()]
         title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(spans, shown))
-        return " → ".join(shown).strip(), (f'<span title="{e(title)}">{shown[0]} <span class=meta>→</span> '
-                                           f'{shown[1]}</span>')
+        return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title},
+                    (" → ".join(shown).strip(),))
 
-    def ticket_row(t: Record, order: int) -> str:
-        """A row of the sequence, which opens to the whole ticket. A ready ticket shows `ready` for its `todo`.
-        Its data-* carry what the page sorts it by (viewer/app.js): `o` its place in the dependency order, `g` its
-        group, `r` its status's place in STAGES (an unknown status after them, so the page still renders and shows the
-        check's error), `p` its priority's rank (most urgent 0, none empty), `sw` and `sc` its wait and cycle times in
-        seconds (none empty), `w` and `u` how many it waits on and unblocks."""
-        closed = t.stage in CLOSED_TICKET
-        tag, gate_chip = gate_html(t)
-        cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if tr.blockers(t) else ""
+    def ticket_cell(t: Record) -> Cell:
+        pr = Html(" <span class=meta>PR {}</span>").format(pr_label(t)) if t.get("pr") else NONE
         title = str(t.get("title"))
-        pr = f' <span class=meta>PR {e(pr_label(t))}</span>' if t.get("pr") else ""
-        word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
-        lead = (word, md_inline(str(line))) if line else None
-        spans = {name: span(t, name) for name in SPANS}
-        step = seq.step.get(t.id, "")
-        cells = (f'<span>{step}</span>'
-                 f'<span class="tk tone" title="{e(t.id)} {e(title)}"><span class=id>{e(t.id)}</span> '
-                 f'{e(title)}{pr}</span>'
-                 f'<span>{e(str(t.get("group", "")))}</span>'
-                 f'<span>{gate_chip if tag == "ready" else chip(t.stage)}</span>'
-                 f'<span>{e(str(t.get("priority", "")))}</span>'
-                 f'{time_cell(spans)[1]}{deps_cell(t)[1]}')
-        status = STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)
-        rank = priority_rank(str(t.get("priority", "")))
-        sort = (f'data-o="{order}" data-g="{e(str(t.get("group", "")))}" data-r="{status}" '
-                f'data-p="{"" if rank is None else rank}" '
-                + "".join(f'data-s{name[0]}="{"" if x is None else x}" ' for name, x in spans.items())
-                + f'data-w="{len(waits_items(t))}" '
-                f'data-u="{len(unblocks_items(t))}"')
-        return panel(t.id, cells, body_html(t, lead), attrs=f' class="t{cls}" data-s="{e(t.stage)}" '
-                     f'data-c="{int(closed)}" data-b="{tag}" data-step="{step}" {sort}')
+        return Cell(Html("<span class=id>{}</span> {}{}").format(t.id, title, pr),
+                    {"class": "tk tone", "title": f"{t.id} {title}"})
 
-    def now_item(key: str, head: str, line: str, more: str = "", attrs: str = "") -> str:
+    def status_cell(t: Record) -> Cell:
+        """A ready ticket shows `ready` for its `todo`."""
+        tag, gate_chip = gate_html(t)
+        return Cell(gate_chip if tag == "ready" else chip(t.stage))
+
+    def text_cell(key: str) -> Callable[[Record], Cell]:
+        return lambda t: Cell(str(t.get(key, "")), texts=(str(t.get(key, "")),))
+
+    # Dropped tickets go last.
+    ordered = sorted(tr.tickets, key=lambda t: (t.stage == "dropped", seq.step.get(t.id, 0), sort_key(t.id)))
+    order = {t.id: i for i, t in enumerate(ordered)}
+
+    # Sort values: an unknown status after STAGES, so the page still renders and shows the check's error; priority by
+    # rank, most urgent 0; times in seconds; dependencies by count. None or "" sorts last either way.
+    columns = (
+        Column((("step", "Step", "dependency order", lambda t: order[t.id]),),
+               lambda t: Cell(seq.step.get(t.id, "")), "var(--step)"),
+        Column((("ticket", "Ticket", "ticket", lambda t: t.id),), ticket_cell, "minmax(0, 1fr)"),
+        Column((("group", "Group", "group", lambda t: t.get("group", "")),), text_cell("group"), 6, "mid"),
+        Column((("status", "Status", "status",
+                 lambda t: STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)),), status_cell, "12ch"),
+        Column((("priority", "Priority", "priority", lambda t: priority_rank(str(t.get("priority", "")))),),
+               text_cell("priority"), 9, "narrow"),
+        Column(tuple((name, label, f"{name} time", lambda t, name=name: span(t, name))
+                     for name, label in (("wait", "Wait"), ("cycle", "→ Cycle"))), time_cell, 14, "mid"),
+        Column((("waits", "← Waits on", "waits on", lambda t: len(waits_items(t))),
+                ("unblocks", "→ Unblocks", "unblocks", lambda t: len(unblocks_items(t)))), deps_cell, 24, "narrow"),
+    )
+    cells = {t.id: [c.cell(t) for c in columns] for t in ordered}
+
+    def width(i: int, c: Column) -> str:
+        """A column as wide as its longest text, so every row lines up."""
+        if isinstance(c.width, str):
+            return c.width
+        return f"{min(26, max([c.width, *(len(x) + 1 for t in ordered for x in cells[t.id][i].texts)]))}ch"
+
+    def shown_at(c: Column, level: str) -> bool:
+        return not c.hide or HIDES.index(c.hide) > HIDES.index(level)
+
+    widths = [width(i, c) for i, c in enumerate(columns)]
+    style = "; ".join([f"--cols: {' '.join(widths)}"] + [
+        f"--cols-{level}: {' '.join(w for c, w in zip(columns, widths) if shown_at(c, level))}" for level in HIDES])
+
+    def hide(c: Column, cls: object = None) -> str | None:
+        return " ".join(x for x in (str(cls or ""), c.hide and f"hide-{c.hide}") if x) or None
+
+    def ticket_row(t: Record) -> Html:
+        """A row of the sequence, which opens to the whole ticket. Its data-* carry its status (data-s), whether the
+        server counts it closed (data-c), ready or blocked (data-b), its step and its sort values (Column)."""
+        closed = t.stage in CLOSED_TICKET
+        cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if tr.blockers(t) else ""
+        word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
+        summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
+            {"class": hide(c, x.attrs.get("class")), **{k: v for k, v in x.attrs.items() if k != "class"}}), x.body)
+            for c, x in zip(columns, cells[t.id]))
+        sorts = {f"data-sort-{key}": "" if (v := value(t)) is None else v
+                 for c in columns for key, _, _, value in c.sorts}
+        attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": gate_html(t)[0],
+                 "data-step": seq.step.get(t.id, ""), **sorts}
+        return panel(t.id, summary, body_html(t, (word, md_inline(str(line))) if line else None), attrs=attrs)
+
+    def now_item(key: str, head: Html, line: Html | str, more: Html = NONE,
+                 attrs: dict[str, object] | None = None) -> Html:
         """A Now entry: its head and the start of its line; it opens to the whole line and `more`."""
-        return panel(f"_now-{key}", head, (f"<p>{line}</p>" if line else "") + more, line, attrs)
+        return panel(f"_now-{key}", head, (Html("<p>{}</p>").format(line) if line else NONE) + more, line, attrs)
 
     # Your move first, then the others' by who, then the tickets whose PR GitHub has not been read for; in progress
     # before in review within each.
@@ -341,8 +446,9 @@ def main_html(tr: Tracker) -> str:
     live = [(x, match_cwd(x.cwd, x.sid, tr)) for x in live_sessions(tr.slug)]
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
 
-    def agents_html(sessions: list[Live]) -> str:
-        return "".join(f"<p class=meta>session {e(x.name)}: {e(agent_word(x))}, in {e(x.cwd)}</p>" for x in sessions)
+    def agents_html(sessions: list[Live]) -> Html:
+        return NONE.join(Html("<p class=meta>session {}: {}, in {}</p>").format(x.name, agent_word(x), x.cwd)
+                         for x in sessions)
 
     def turn(t: Record) -> tuple:
         move = moves[t.id]
@@ -355,106 +461,95 @@ def main_html(tr: Tracker) -> str:
         fresh = f"commits logged {ago(mark['at'])}" if isinstance(mark, dict) else ""
         stale = fresh if fresh and time.time() - mark["at"] > STALE_MARK_S else ""
         head = (agent_icon(agents[t.id]) + ref(t.id) + chip(t.stage) + move_chip(moves[t.id])
-                + named(e(str(t.get("title"))), " · ".join(x for x in (e(b), stale) if x)))
-        line = f'next: {md_inline(str(t.get("next")))}' if t.get("next") else ""
+                + named(str(t.get("title")), " · ".join(x for x in (b, stale) if x)))
+        line = Html("next: {}").format(md_inline(str(t.get("next")))) if t.get("next") else NONE
         mine = moves[t.id] and moves[t.id].mine
-        now.append(now_item(t.id, head, line, (f"<p class=meta>{fresh}</p>" if fresh else "")
-                            + agents_html(agents[t.id]), " class=mine" if mine else ""))
+        now.append(now_item(t.id, head, line, (Html("<p class=meta>{}</p>").format(fresh) if fresh else NONE)
+                            + agents_html(agents[t.id]), {"class": "mine"} if mine else None))
     for key, h in handoffs.items():
         b = key.rpartition(":")[2] if one_repo else key  # a tracker that spans repos names the repo
-        where = f"at {e(h.get('head', '')[:9])}" + (", uncommitted changes" if h.get("dirty") else "")
-        head = named(f"Handoff on {e(b)}", f'{ago(h.get("at", 0))}, {where}')
-        now.append(now_item(f"handoff-{key}", head, md_inline(h.get("text", "")), attrs=" class=handoff"))
+        where = f"at {h.get('head', '')[:9]}" + (", uncommitted changes" if h.get("dirty") else "")
+        head = named(f"Handoff on {b}", f'{ago(h.get("at", 0))}, {where}')
+        now.append(now_item(f"handoff-{key}", head, md_inline(h.get("text", "")), attrs={"class": "handoff"}))
     busy = len(now)
     for x, m in live:
         if not m.active:
-            open_ids = ", ".join(f"{ref(t.id)} {e(t.stage)}" for t in m.focus)
-            head = agent_icon([x]) + named(e(x.name), e(x.branch))
-            now.append(now_item(f"agent-{x.sid}", head, f"on {open_ids}" if open_ids else "on no ticket",
+            open_ids = comma(ref(t.id) + f" {t.stage}" for t in m.focus)
+            head = agent_icon([x]) + named(x.name, x.branch)
+            now.append(now_item(f"agent-{x.sid}", head, Html("on {}").format(open_ids) if open_ids else "on no ticket",
                                 agents_html([x])))
     yours = sum(bool(m and m.mine) for m in moves.values())
     if not any(t.stage in IN_FLIGHT for t in tr.tickets) and tr.meta.get("status") == "active":
-        ready = ", ".join(ref(t.id) for t in tr.ready())
-        now.append(f'<p class=idle>Nothing in progress.{" Ready: " + ready if ready else ""}</p>')
+        ready = comma(ref(t.id) for t in tr.ready())
+        now.append(Html("<p class=idle>Nothing in progress.{}</p>").format(" Ready: " + ready if ready else ""))
     agents_n = f" · {len(live)} agent{'s' * (len(live) > 1)}" if live else ""
     w = watcher_of(tr)  # `tracker watch`: who watches the tracker for the user, or when the watch ended
     if w:
-        text = f"Watched by {e(w['who'])} since {clock(w['since'])}" if w["running"] else \
-            f"Watch by {e(w['who'])} ended {clock(w['ended'])}"
-        now.append(f'<p class="watch{"" if w["running"] else " ended"}">{text}</p>')
+        text = f"Watched by {w['who']} since {clock(w['since'])}" if w["running"] else \
+            f"Watch by {w['who']} ended {clock(w['ended'])}"
+        now.append(Html('<p class="watch{}">{}</p>').format("" if w["running"] else " ended", text))
     now_html = sec("now", "Now", f"{busy}" + (f" · {yours} your move" if yours else "") + agents_n,
-                   f'<div class=nowlist>{"".join(now)}</div>', True) if now else ""
+                   Html("<div class=nowlist>{}</div>").format(NONE.join(now)), True) if now else NONE
 
-    # Dropped tickets go last. Columns are as wide as their longest text, so every row lines up.
-    ordered = sorted(tr.tickets, key=lambda t: (t.stage == "dropped", seq.step.get(t.id, 0), sort_key(t.id)))
-
-    def width(texts: list[str], least: int) -> str:
-        return f"{min(26, max([least, *(len(x) + 1 for x in texts)]))}ch"
-
-    # Group, status, priority, time, deps; --cols-mid leaves out group and time, which a narrower page hides.
-    cols = [width([str(t.get("group", "")) for t in ordered], 6), "12ch",
-            width([str(t.get("priority", "")) for t in ordered], 9),
-            width([time_cell({name: span(t, name) for name in SPANS})[0] for t in ordered], 14),
-            width([x for t in ordered for x in deps_cell(t)[0]], 24)]
-    style = f"--cols: {' '.join(cols)}; --cols-mid: {' '.join(cols[i] for i in (1, 2, 4))}"
     n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
          "ready": len(tr.ready()),
          "blocked": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET and tr.blockers(t)), **counts}
-    filters = "".join(f'<button data-f="{f}">{f} <span class=n>{n[f]}</span></button>'
-                      for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
-    # Each heading sorts the rows by its column in the page; Step puts back the dependency order. Time and Deps each
-    # show two values, and have a heading for each.
-    def sorter(key: str, label: str) -> str:
-        return f'<button type=button data-sort="{key}">{label}</button>'
-
-    head = "".join(f"<span>{' '.join(sorter(*x) for x in col)}</span>"
-                   for col in ([("step", "Step")], [("ticket", "Ticket")], [("group", "Group")],
-                               [("status", "Status")], [("priority", "Priority")],
-                               [("wait", "Wait"), ("cycle", "→ Cycle")],
-                               [("waits", "← Waits on"), ("unblocks", "→ Unblocks")]))
+    filters = NONE.join(Html('<button data-f="{0}">{0} <span class=n>{1}</span></button>').format(f, n[f])
+                        for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
+    # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
+    head = NONE.join(Html("<span{}>{}</span>").format(attributes({"class": hide(c)}), Html(" ").join(
+        Html('<button type=button data-sort="{}" data-said="{}">{}</button>').format(key, said, label)
+        for key, label, said, _ in c.sorts)) for c in columns)
     sequence_html = sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
-                        "".join(f"<p class=lead>{e(x)}</p>" for x in span_lines(tr))
-                        + f'<div class=filters>{filters}</div><p class=sr-only aria-live=polite id=sort-said></p>'
-                        f'<div class=seq style="{style}"><div class=seq-head>{head}</div>'
-                        + "".join(ticket_row(t, i) for i, t in enumerate(ordered)) + "</div>", True)
+                        NONE.join(Html("<p class=lead>{}</p>").format(x) for x in span_lines(tr))
+                        + Html('<div class=filters>{}</div><p class=sr-only aria-live=polite id=sort-said></p>'
+                               '<div class=seq style="{}"><div class=seq-head>{}</div>{}</div>').format(
+                            filters, style, head, NONE.join(ticket_row(t) for t in ordered)), True)
 
     open_ds = tr.open_decisions()
-    open_d = "".join(decision_html(d) for d in open_ds) or "<p class=meta>None.</p>"
+    open_d = NONE.join(decision_html(d) for d in open_ds) or Html("<p class=meta>None.</p>")
     settled = [d for d in tr.decisions if d.get("status") == "closed"]
     log_path = tr.root / "log.md"
     log_lines = [ln for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
-    log = md_to_html("\n".join(reversed(log_lines))) if log_lines else "<p class=meta>Empty.</p>"
+    log = md_to_html("\n".join(reversed(log_lines))) if log_lines else Html("<p class=meta>Empty.</p>")
     errors, warnings = check(tr)
-    problems = "".join(f"<li>✗ {e(x)}</li>" for x in errors) + "".join(f"<li>⚠ {e(x)}</li>" for x in warnings)
-    facts = " · ".join(f"{k}: {e(str(tr.meta[k]))}" for k in ("status", "owner", "repo", "created") if tr.meta.get(k))
+    problems = NONE.join([*(Html("<li>✗ {}</li>").format(x) for x in errors),
+                          *(Html("<li>⚠ {}</li>").format(x) for x in warnings)])
+    facts = " · ".join(f"{k}: {tr.meta[k]}" for k in ("status", "owner", "repo", "created") if tr.meta.get(k))
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
     goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
-    goal_html = panel("_goal", named(e(", ".join(headings(goal)))), md_to_html(goal)) if goal else ""
+    goal_html = panel("_goal", named(", ".join(headings(goal))), md_to_html(goal)) if goal else NONE
 
     # Reference: what is settled or past, one collapsed row each.
-    reference = "".join([
-        panel("_closed", named("Closed decisions", str(len(settled))), "".join(decision_html(d) for d in settled))
-        if settled else "",
-        panel("_readme", named("More about this work", e(", ".join(headings(extra)))), md_to_html(extra))
-        if headings(extra) else "",
+    reference = NONE.join([
+        panel("_closed", named("Closed decisions", str(len(settled))), NONE.join(decision_html(d) for d in settled))
+        if settled else NONE,
+        panel("_readme", named("More about this work", ", ".join(headings(extra))), md_to_html(extra))
+        if headings(extra) else NONE,
         panel("_log", named("Log", f"{len(log_lines)} entries, newest first"), log,
-              md_inline(log_lines[-1][2:]) if log_lines else "")])
+              md_inline(log_lines[-1][2:]) if log_lines else NONE)])
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))
-    links_row = (panel("_links", named("Links", f"{len(tr.context)}: {e(labels)}"), props_html([link_rows(tr.context)]))
-                 if tr.context else "")
+    links_row = (panel("_links", named("Links", f"{len(tr.context)}: {labels}"), props_html([link_rows(tr.context)]))
+                 if tr.context else NONE)
     state_line = issue_state(tr)
-    issue_html = f"<span hidden id=issue-state>{e(state_line)}</span>" if state_line else ""
-    return f"""{issue_html}
-<h1>{e(tr.title)}</h1><p class=sub>{facts}<br>{e(tr.slug)} · <code>{e(str(tr.root))}</code></p>
-{links_row}
-{goal_html}
-{now_html}
-{sequence_html}
-{sec("check", "Check", len(errors) + len(warnings), f"<ul>{problems}</ul>") if problems else ""}
-{sec("decisions", "Open decisions", len(open_ds), open_d, True)}
-{sec("reference", "Reference", 0, reference)}"""
+    issue_html = Html("<span hidden id=issue-state>{}</span>").format(state_line) if state_line else NONE
+    return Html("""{issue}
+<h1>{title}</h1><p class=sub>{facts}<br>{slug} · <code>{root}</code></p>
+{links}
+{goal}
+{now}
+{sequence}
+{check}
+{decisions}
+{reference}""").format(
+        issue=issue_html, title=tr.title, facts=facts, slug=tr.slug, root=str(tr.root), links=links_row,
+        goal=goal_html, now=now_html, sequence=sequence_html,
+        check=sec("check", "Check", len(errors) + len(warnings), Html("<ul>{}</ul>").format(problems))
+        if problems else NONE,
+        decisions=sec("decisions", "Open decisions", len(open_ds), open_d, True),
+        reference=sec("reference", "Reference", 0, reference))
 
 
 def issue_state(tr: Tracker) -> str:
@@ -483,7 +578,7 @@ def request_refresh(tr: Tracker) -> None:
         tr.save_state(state)
 
 
-def page_html(title: str, body: str, slug: str = "", ver: str = "") -> str:
+def page_html(title: str, body: Html, slug: str = "", ver: str = "") -> str:
     """viewer/page.html with its placeholders filled; {{body}} is already HTML, the rest are escaped."""
     page = (VIEWER_DIR / "page.html").read_text()
     for key, value in (("title", title), ("slug", slug), ("version", ver), ("token", TOKEN)):
@@ -585,9 +680,9 @@ def serve(port: int = 0) -> None:
                     return self.reply(200, asset.read_text(), ASSET_TYPES[asset.suffix])
                 return self.reply(404, "not found", "text/plain")
             if not parts:
-                items = "".join(f'<li><a href="/t/{html.escape(t.slug)}/">{html.escape(t.title)}</a> '
-                                f'<span class=meta>{html.escape(t.slug)}</span></li>' for t in all_trackers())
-                return self.reply(200, page_html("Trackers", f"<h1>Trackers</h1><ul>{items}</ul>"))
+                items = NONE.join(Html('<li><a href="/t/{0}/">{1}</a> <span class=meta>{0}</span></li>').format(
+                    t.slug, t.title) for t in all_trackers())
+                return self.reply(200, page_html("Trackers", Html("<h1>Trackers</h1><ul>{}</ul>").format(items)))
             tr = next((t for t in all_trackers() if parts[0] == "t" and len(parts) > 1 and t.slug == parts[1]), None)
             if not tr:
                 return self.reply(404, "no such tracker", "text/plain")
@@ -641,9 +736,8 @@ def serve(port: int = 0) -> None:
                 return self.reply(404, "not found", "text/plain")
             if path.suffix == ".md":
                 name = "/".join(parts)
-                return self.reply(200, page_html(name, f"<p class=sub><a href=\"/t/{html.escape(tr.slug)}/\">"
-                                                       f"{html.escape(tr.title)}</a> · {html.escape(name)}</p>"
-                                                       + md_to_html(path.read_text(errors="replace"))))
+                return self.reply(200, page_html(name, Html('<p class=sub><a href="/t/{}/">{}</a> · {}</p>').format(
+                    tr.slug, tr.title, name) + md_to_html(path.read_text(errors="replace"))))
             ctype = EVIDENCE_TYPES.get(path.suffix.lower())
             data = path.read_bytes()
             if not ctype:

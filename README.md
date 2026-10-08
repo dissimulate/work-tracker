@@ -147,7 +147,7 @@ Environment variables. All are optional.
 6. `views`: text views and the brief
 7. `github`: `sync`
 8. `watcher`: `tracker watch` and the user's grant
-9. `viewer`: the page and its server (look: `viewer/page.html`, `style.css`, `app.js`)
+9. `viewer`: the page and its server (look: `viewer/page.html`, `style.css`, `app.js`). Markup is `Html`, which escapes the text put into it; the sequence's columns are its `Column` table
 10. `hooks`
 11. `cli`
 

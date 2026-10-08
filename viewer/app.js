@@ -9,38 +9,29 @@ let version = document.body.dataset.version;
 let filter = 'all';
 
 // The sequence's sort: a column and a direction, kept in `?sort=` (`-` first for descending) so a reload or a shared
-// link keeps it. `step` is the dependency order the server sends, and the default.
-// Each column's value per row: a number, or text compared with numbers in it as numbers ("T-2" before "T-10").
-const SORTS = {
-  step: d => Number(d.dataset.o),
-  ticket: d => d.dataset.id,
-  priority: d => d.dataset.p === '' ? '' : Number(d.dataset.p),
-  wait: d => d.dataset.sw === '' ? '' : Number(d.dataset.sw),
-  cycle: d => d.dataset.sc === '' ? '' : Number(d.dataset.sc),
-  group: d => d.dataset.g,
-  status: d => Number(d.dataset.r),
-  waits: d => Number(d.dataset.w),
-  unblocks: d => Number(d.dataset.u),
-};
-const LABELS = { step: 'dependency order', ticket: 'ticket', group: 'group', status: 'status', priority: 'priority',
-  wait: 'wait time', cycle: 'cycle time',
-  waits: 'waits on', unblocks: 'unblocks' };
+// link keeps it. `step` is the dependency order the server sends, and the default. The server names the keys: each
+// heading button's data-sort, and each row's value for it in data-sort-<key> (Column in viewer.py).
 let sort = readSort();
+
+function sorter(key) {
+  return document.querySelector(`.seq-head [data-sort="${CSS.escape(key)}"]`);
+}
 
 function readSort() {
   const raw = new URLSearchParams(location.search).get('sort') || '';
   const key = raw.replace(/^-/, '');
-  // Own keys only: `?sort=constructor` would find Object's and break the page.
-  return Object.hasOwn(SORTS, key) && key !== 'step' ? { key, desc: raw.startsWith('-') }
-    : { key: 'step', desc: false };
+  return key && key !== 'step' && sorter(key) ? { key, desc: raw.startsWith('-') } : { key: 'step', desc: false };
 }
 
-// Rows with no value (no group) go last in either direction; equal values keep the dependency order.
+const value = (d, key) => d.getAttribute('data-sort-' + key) ?? '';
+
+// Values compare with the numbers in them as numbers ("T-2" before "T-10", "9" before "10"). Rows with no value (no
+// group) go last in either direction; equal values keep the dependency order.
 function compare(a, b) {
-  const get = SORTS[sort.key], x = get(a), y = get(b);
+  const x = value(a, sort.key), y = value(b, sort.key);
   if ((x === '') !== (y === '')) return x === '' ? 1 : -1;
-  const by = typeof x === 'number' ? x - y : x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' });
-  return (sort.desc ? -by : by) || SORTS.step(a) - SORTS.step(b);
+  const by = x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' });
+  return (sort.desc ? -by : by) || value(a, 'step') - value(b, 'step');
 }
 
 function applySort() {
@@ -63,7 +54,7 @@ function setSort(key) {
   applyFilter();
   const said = document.getElementById('sort-said');
   if (said) said.textContent = sort.key === 'step' ? 'Sorted in dependency order'
-    : `Sorted by ${LABELS[sort.key]}, ${sort.desc ? 'descending' : 'ascending'}`;
+    : `Sorted by ${sorter(sort.key).dataset.said}, ${sort.desc ? 'descending' : 'ascending'}`;
 }
 
 const GATES = ['ready', 'blocked']; // matched on data-b, not the status
