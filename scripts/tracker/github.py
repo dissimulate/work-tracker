@@ -10,9 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .markdown import format_value
-from .model import (PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, append_log, branch_entry, locked, pr_key, put_entry,
-    today, unblocked, Record, Tracker)
-from .git import default_branches, remote_of, repo_slug
+from .model import (OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, append_log, branch_entry, locked, pr_key,
+    put_entry, set_branch, today, unblocked, Record, Tracker)
+from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
 PR_FIELDS = "number,headRefName,state,isDraft,mergedAt,baseRefName,updatedAt,isCrossRepository"
@@ -152,7 +152,7 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
         return []
     # The open PRs the tickets know already: their review facts are asked for with the lists.
     known = {(tr.repo_of(t), int(t.get("pr"))) for t in tr.tickets
-             if t.get("pr_state") in ("open", "draft") and str(t.get("pr")).isdigit() and tr.repo_of(t)}
+             if t.get("pr_state") in OPEN_PR and str(t.get("pr")).isdigit() and tr.repo_of(t)}
     with ThreadPoolExecutor(len(tr.repos) + 1) as pool:  # at once: a sync costs the time of its slowest call
         asked = pool.submit(gh_reviews, known)
         prs_by_repo = dict(zip(tr.repos, pool.map(gh_prs, tr.repos)))
@@ -224,7 +224,7 @@ def match_pr(m: Match, cwd: str | Path) -> tuple[Match, str]:
     title, else in the body. One ticket: record the branch on it and match it. Several: a line that names them, for
     the user to choose. Asked at most once per PR_MATCH_TTL_S per branch; only at `start` and session start."""
     tr = m.tracker
-    repo = repo_slug(remote_of(cwd))
+    repo = cwd_repo(cwd)
     if m.tickets or not m.branch or m.branch in default_branches(cwd) or repo not in (r.lower() for r in tr.repos):
         return m, ""
     state = tr.state()
@@ -246,9 +246,7 @@ def match_pr(m: Match, cwd: str | Path) -> tuple[Match, str]:
         if len(hits) == 1:
             t = Tracker(tr.root).lookup(hits[0].id)
             if t and not t.get("branch"):
-                t.save({"branch": m.branch, "updated": today()})
-                append_log(tr, f"{t.id} is built on branch {m.branch} (named in the {where} of PR #{pr['number']})",
-                           [t.id])
+                set_branch(tr, t, m.branch, f"named in the {where} of PR #{pr['number']}")
                 return match_cwd(cwd, tracker=Tracker(tr.root)), ""
             note = (f"Branch {m.branch} is on no ticket. Its PR #{pr['number']} names {hits[0].id}, which is "
                     f"built on branch {hits[0].get('branch')}; if this branch is for it too, `tracker use "

@@ -98,3 +98,8 @@ def repo_slug(remote: str) -> str:
     """`owner/name` from a git remote URL (ssh or https), lower-cased."""
     m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", remote)
     return m[1].lower() if m else ""
+
+
+def cwd_repo(cwd: str | Path) -> str:
+    """`owner/name` of the repo that holds `cwd`, from its remote; "" without one."""
+    return repo_slug(remote_of(cwd))

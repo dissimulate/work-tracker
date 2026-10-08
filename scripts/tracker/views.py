@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from statistics import median
 
-from .model import (BIN, CLOSED_TICKET, ISOLATION_RULE, SPANS, STAGES, STEP_MESSAGE, TEXT_MAX, cut, link_lines,
-    resolution, sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
-from .session import ago, branch_handoff, cwd_repo, handoff_line, lag, Match
+from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, SPANS, STAGES, STEP_MESSAGE, TEXT_MAX,
+    cut, link_lines, resolution, sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
+from .git import cwd_repo
+from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
 
 # ---------------------------------------------------------------- views
@@ -35,10 +36,9 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
     w_group = max([len(str(t.get("group") or "—")) for t in rows] + [1])
     for t in rows:
         closed = t.stage in CLOSED_TICKET
-        nxt = " ".join(str((not closed and t.get("next")) or t.get("summary") or t.get("title")).split())
-        nxt = gate(tr, t) + (nxt if len(nxt) <= 90 else nxt[:89] + "…")
+        nxt = gate(tr, t) + short((not closed and t.get("next")) or t.get("summary") or t.get("title"), 90)
         out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}")
-    moves = move_lines(tr) if not stages or stages & {"in-progress", "in-review"} else []
+    moves = move_lines(tr) if not stages or stages & IN_FLIGHT else []
     out += [""] + moves + [""] * bool(moves) + order_lines(tr)
     decisions = tr.open_decisions()
     if decisions:
@@ -58,7 +58,7 @@ def move_lines(tr: Tracker) -> list[str]:
         move = whose_move(tr, t)
         if move:
             moves.setdefault(move.text(), ((not move.mine, move.rank, move.text()), []))[1].append(t.id)
-        elif t.stage in ("in-progress", "in-review"):
+        elif t.stage in IN_FLIGHT:
             unread.append(t.id)
     if not moves and not unread:
         return []
@@ -164,29 +164,19 @@ CONTEXT_LOG = 3  # log lines `context` shows by default
 HISTORY_LAST = 30  # log lines `history` shows by default
 
 
-def history_lines(tr: Tracker, refs: list[str], since: str, last: int) -> list[str]:
+def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset()) -> list[str]:
     """The log's last `last` lines (0: all), oldest first: those whose refs name any of `refs`, dated `since` or
-    later."""
+    later. A line that opened or settled a decision in `shown` is left out: the view shows that decision."""
     path = tr.root / "log.md"
     lines = [ln[2:] for ln in (path.read_text().splitlines() if path.exists() else [])
              if (m := LOG_LINE.match(ln)) and m[1] >= since
-             and (not refs or set(refs) & set((m[2] or "").split()))]
+             and (not refs or set(refs) & set((m[2] or "").split()))
+             and not ((d := DECISION_LOG.match(ln, m.end())) and d[1] in shown)]
     return lines[-last:] if last > 0 else lines
 
 
-def log_for(tr: Tracker, ident: str, n: int, shown: set[str] = frozenset()) -> list[str]:
-    """The last n log lines whose refs name this id. A line that opened or settled a decision in `shown` is left out:
-    the view shows that decision."""
-    path = tr.root / "log.md"
-    if n <= 0 or not path.exists():
-        return []
-    return [ln[2:] for ln in path.read_text().splitlines()
-            if (m := LOG_LINE.match(ln)) and ident in (m[2] or "").split()
-            and not ((d := DECISION_LOG.match(ln, m.end())) and d[1] in shown)][-n:]
-
-
 def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str] = frozenset()) -> list[str]:
-    lines = log_for(tr, rec.id, n, shown)
+    lines = history_lines(tr, [rec.id], "", n, shown) if n > 0 else []
     return ["", f"Recent log for {rec.id} (oldest first; `history --ref {rec.id} --last 0` for all):",
             *(f"  {cut(x, width)}" for x in lines)] if lines else []
 
@@ -226,9 +216,7 @@ def carry_lines(tr: Tracker, tickets: list[Record], deep: bool = False, limit: i
         shown.append((i, b))
     if shown:
         out += ["", "Carry forward from dependencies:", *(f"  {i}: {b}" for i, b in shown)]
-    if len(shown) < len(cf):
-        rest = list(dict.fromkeys(i for i, _ in cf[len(shown):]))
-        out.append(f"  … {len(cf) - len(shown)} more from {', '.join(rest)} (`tracker context {which}`)")
+    out += more_line(cf, len(shown), f"tracker context {which}")
     seen = {t.id for t in tickets + direct}
     earlier = [(a.id, b) for a in {a.id: a for t in tickets for a in ancestors(tr, t) if a.id not in seen}.values()
                for b in a.carry_forward]
@@ -240,11 +228,14 @@ def carry_lines(tr: Tracker, tickets: list[Record], deep: bool = False, limit: i
         shown = earlier if deep else earlier[:CHAIN_CARRY_FORWARD_MAX]
         out += ["", "Carry forward from earlier in the chain (what the dependencies built on):"]
         out += [f"  {i}: {b}" for i, b in shown]
-        if len(shown) < len(earlier):
-            rest = list(dict.fromkeys(i for i, _ in earlier[len(shown):]))
-            out.append(f"  … {len(earlier) - len(shown)} more from {', '.join(rest)} "
-                       f"(`tracker context {which} --deep`)")
+        out += more_line(earlier, len(shown), f"tracker context {which} --deep")
     return out
+
+
+def more_line(pairs: list[tuple[str, str]], shown: int, command: str) -> list[str]:
+    """`  … 3 more from T-1, T-2 (`<command>`)` for the (ticket, bullet) pairs past the first `shown`."""
+    rest = list(dict.fromkeys(i for i, _ in pairs[shown:]))
+    return [f"  … {len(pairs) - shown} more from {', '.join(rest)} (`{command}`)"] if rest else []
 
 
 def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[str]:
@@ -426,7 +417,7 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
             ready = [t.id for t, _ in tr.startable()]
             parts.append(f"No open ticket on {m.branch}. To start one here: `tracker set <id> status=in-progress`"
                          + (f" (can start: {', '.join(ready)})" if ready else "") + ".")
-        parts.append("\n".join(index_lines(tr, set(STAGES) - CLOSED_TICKET, titles=compact, width=BRIEF_LINE_CHARS)))
+        parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS)))
     if synced:
         parts.append("Synced from GitHub: " + "; ".join(synced))
     ask = issue_request(tr)

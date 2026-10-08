@@ -24,7 +24,7 @@ def parse_value(raw: str):
 
 
 def needs_quotes(s: str, extra: str = "") -> bool:
-    return (s != s.strip() or s[0] in "[{\"'#&*!|>%@`" + extra or ": " in s or " #" in s
+    return (s != s.strip() or s[0] in "[{\"'#&*!|>%@`" or ": " in s or " #" in s
             or any(c in s for c in extra) or any(ord(c) < 32 for c in s))
 
 

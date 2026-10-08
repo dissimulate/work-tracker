@@ -35,7 +35,9 @@ WINDOWS = os.name == "nt"
 TICKET_STATUSES = ["todo", "in-progress", "done", "dropped"]  # stored: what you set
 STAGES = ["todo", "in-progress", "in-review", "merged", "done", "dropped"]  # shown: the status, overlaid by the PR
 PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
+OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
 CLOSED_TICKET = {"merged", "done", "dropped"}  # stages
+OPEN_STAGES = set(STAGES) - CLOSED_TICKET
 DECISION_STATUSES = ["open", "closed"]
 LIST_KEYS = {"depends_on", "refs", "labels"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
@@ -495,8 +497,8 @@ class Tracker:
         readme = root / "README.md"
         text = readme.read_text() if readme.exists() else ""
         lines, self.readme_body = split_frontmatter(text)
-        self.meta, self.readme_problems = parse_meta(lines)
-        self.readme_problems = frontmatter_problems(text) + self.readme_problems
+        self.meta, problems = parse_meta(lines)
+        self.readme_problems = frontmatter_problems(text) + problems
 
     # Loaded on first use: a hook that only matches a branch never reads the decisions.
     @cached_property
@@ -546,6 +548,10 @@ class Tracker:
     def records(self) -> list[Record]:
         return self.tickets + self.decisions
 
+    def readme(self) -> Record:
+        """The README as a record, which `set tracker`, the body edits and `migrate` change as they change a ticket."""
+        return load_record(self.root / "README.md", "tracker")
+
     def index(self) -> dict:
         """Ids and Issue ids, then (as asked for) each ticket's dependencies and each record's waiting tickets. Built
         once per state of the files: any write through this module, or a record added to the lists, rebuilds it."""
@@ -576,6 +582,11 @@ class Tracker:
                 die(f"PR #{num} names {', '.join(t.id for t in hits)}: pass <owner/name>#{num}")
             return hits[0] if hits else None
         return next((t for t in self.tickets if t.get("branch") == ident), None)
+
+    def canonical(self, ident: str) -> str:
+        """The id of the record `ident` names, else `ident` as written (an external blocker)."""
+        rec = self.lookup(ident)
+        return rec.id if rec else ident
 
     def find(self, ident: str) -> Record:
         """A record by id or Issue id; for a command's argument, also by PR (`#123`) or branch."""
@@ -613,7 +624,7 @@ class Tracker:
         """The started tickets on the branch that a ticket's open PR is based on: its PR cannot merge before theirs.
         Computed from the PR's `base`, so it ends when the PR is retargeted."""
         base = t.get("base")
-        if not base or t.get("pr_state") not in ("open", "draft"):
+        if not base or t.get("pr_state") not in OPEN_PR:
             return []
         return [o for o in self.tickets if o is not t and o.get("branch") == base and o.get("status") != "todo"
                 and same_repo(self.repo_of(o), self.repo_of(t))]
@@ -671,7 +682,7 @@ class Tracker:
 
     def review(self, t: Record) -> dict | None:
         """The review facts of a ticket's open PR; None without an open PR, or before `sync` read them."""
-        if not t.get("pr") or t.get("pr_state") not in ("open", "draft"):
+        if not t.get("pr") or t.get("pr_state") not in OPEN_PR:
             return None
         return self.reviews.get(pr_key(self.repo_of(t), t.get("pr")))
 
@@ -922,7 +933,7 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     if t.stage not in IN_FLIGHT:
         return None
     r = tr.review(t)
-    if r is None and t.get("pr_state") in ("open", "draft"):
+    if r is None and t.get("pr_state") in OPEN_PR:
         return None
     r = r or {}
     threads = r.get("threads", 0)
@@ -975,6 +986,13 @@ def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     with open(tr.root / "log.md", "a") as f:
         f.write(line + "\n")
     return line
+
+
+def set_branch(tr: Tracker, t: Record, branch: str, note: str = "") -> None:
+    """Record the branch a ticket is built on, where sync finds its PR and every worktree finds the ticket; log it,
+    with `note` (how the branch was found)."""
+    t.save({"branch": branch, "updated": today()})
+    append_log(tr, f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id])
 
 
 def short(text: str, n: int = 90) -> str:

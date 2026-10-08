@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, WINDOWS, all_trackers, append_log, atomic_write,
     branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record, Tracker)
-from .git import branch_of, changed_files, default_branches, git, head_of, remote_of, repo_slug, worktree, worktree_key
+from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
 
 
 def named_in(branch: str, t: Record) -> bool:
@@ -119,7 +119,7 @@ DECLINE_S = 86400
 
 def declined(cwd: str | Path) -> bool:
     try:
-        at = json.loads(DECLINED_FILE.read_text()).get(state_key(repo_slug(remote_of(cwd)), branch_of(cwd)), 0)
+        at = json.loads(DECLINED_FILE.read_text()).get(state_key(cwd_repo(cwd), branch_of(cwd)), 0)
     except (OSError, ValueError, AttributeError):
         return False
     return time.time() - at < DECLINE_S
@@ -133,7 +133,7 @@ def decline(cwd: str | Path) -> None:
             old = {}
         now = time.time()
         keep = {k: v for k, v in old.items() if isinstance(v, (int, float)) and now - v < DECLINE_S}
-        keep[state_key(repo_slug(remote_of(cwd)), branch_of(cwd))] = int(now)
+        keep[state_key(cwd_repo(cwd), branch_of(cwd))] = int(now)
         atomic_write(DECLINED_FILE, json.dumps(keep, indent=1))
 
 
@@ -176,7 +176,7 @@ def match_cwd(cwd: str | Path, sid: str | None = None, tracker: Tracker | None =
 def branch_tickets(own: Tracker, cwd: str | Path, branch: str) -> tuple[list[Record], str]:
     """The tickets on a branch, and how they were found (`Match.how`)."""
     if branch:
-        slug = repo_slug(remote_of(cwd))
+        slug = cwd_repo(cwd)
 
         def here(r: Record) -> bool:
             repo = own.repo_of(r).lower()
@@ -197,7 +197,7 @@ def branch_tickets(own: Tracker, cwd: str | Path, branch: str) -> tuple[list[Rec
 
 def in_repos(tr: Tracker, cwd: str | Path) -> bool:
     """The cwd is a repo this tracker's work lives in (any repo when the tracker names none)."""
-    return not tr.repos or repo_slug(remote_of(cwd)) in (r.lower() for r in tr.repos)
+    return not tr.repos or cwd_repo(cwd) in (r.lower() for r in tr.repos)
 
 
 def branch_matches(cwd: str | Path) -> list[Match]:
@@ -208,7 +208,7 @@ def branch_matches(cwd: str | Path) -> list[Match]:
 
 
 def trackers_for_repo(cwd: str | Path) -> list[Tracker]:
-    slug = repo_slug(remote_of(cwd))
+    slug = cwd_repo(cwd)
     return [t for t in all_trackers() if slug and slug in (r.lower() for r in t.repos)]
 
 
@@ -271,11 +271,6 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
 # user count as new work, so a pull, a rebase or a reset does not. The hooks log commits by themselves
 # (`record_commits`); the mark also counts the commits they logged since the branch's tickets' `next` last changed, so
 # a `next` that the work has passed shows.
-
-def cwd_repo(cwd: str | Path) -> str:
-    """`owner/name` of the repo that holds `cwd`, from its remote; "" without one."""
-    return repo_slug(remote_of(cwd))
-
 
 def get_mark(tr: Tracker, cwd: str | Path, branch: str) -> dict | None:
     mark = branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)

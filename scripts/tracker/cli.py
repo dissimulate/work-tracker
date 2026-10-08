@@ -11,12 +11,12 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS,
-    EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OWNER_HINT, ROOT, SAFE_NAME, SCHEMA,
-    STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
+from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE,
+    EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME,
+    SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
     blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url, load_record, locked, names,
-    norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence, short, sort_key, spawn, today,
-    unblocked, utc_now, Busy, Record, Tracker)
+    norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
+    spawn, today, unblocked, utc_now, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
@@ -76,7 +76,7 @@ def cmd_index(args):
     if stages and stages - set(STAGES):
         die(f"--status takes {'|'.join(STAGES)}")
     if args.active:
-        stages = set(STAGES) - CLOSED_TICKET
+        stages = OPEN_STAGES
     lines = index_lines(tr, stages, args.group)
     print("\n".join(lines[:1] + span_lines(tr) + lines[1:]))
 
@@ -86,12 +86,9 @@ def cmd_here(args):
     m = match_cwd(cwd, tracker=find_tracker(args))
     if not m:
         repo = trackers_for_repo(cwd)
-        if repo:
-            print(f"this session and branch '{branch_of(cwd)}' are on no ticket. Trackers for this repo: "
-                  + ", ".join(t.slug for t in repo) + ". `tracker start <name>` ties this session to a tracker.")
-        else:
-            print(f"this session and branch '{branch_of(cwd) or '?'}' are on no ticket in any tracker. "
-                  "`tracker start <name>` ties this session to a tracker.")
+        print(f"this session and branch '{branch_of(cwd) or '?'}' are on no ticket"
+              + (f". Trackers for this repo: {', '.join(t.slug for t in repo)}" if repo else " in any tracker")
+              + ". `tracker start <name>` ties this session to a tracker.")
         return
     print(brief(m, cwd, full=args.full, with_protocol=False))
 
@@ -101,7 +98,7 @@ def cmd_context(args):
     whole = None if here and here.lookup(args.id) else tracker_at(args.id)
     if whole:  # a tracker's name, where a ticket or decision id belongs: its open work, and how to read one record
         print("\n".join([f"{whole.slug} is a tracker; `tracker context <id>` takes one of its ticket or decision ids. "
-                         "Its open work:", "", *index_lines(whole, set(STAGES) - CLOSED_TICKET)]))
+                         "Its open work:", "", *index_lines(whole, OPEN_STAGES)]))
         return
     tr, rec = locate(args, args.id)
     print("\n".join(context_lines(tr, rec, full=not args.brief, deep=args.deep, log=args.log)))
@@ -319,8 +316,8 @@ def cmd_wait(args):
     if t.kind != "ticket":
         die(f"{t.id} is a decision; a ticket waits on it: `tracker wait <ticket> on {t.id}`")
     if args.mode == "off":
-        drop = {(tr.lookup(x).id if tr.lookup(x) else x).lower() for x in args.items}
-        keep = [x for x in t.list("depends_on") if (tr.lookup(x).id if tr.lookup(x) else x).lower() not in drop]
+        drop = {tr.canonical(x).lower() for x in args.items}
+        keep = [x for x in t.list("depends_on") if tr.canonical(x).lower() not in drop]
         if len(keep) == len(t.list("depends_on")):
             stacked = [o.id for o in tr.stacked_on(t) if o.id.lower() in drop]
             die(f"{t.id} waits on {', '.join(stacked)} because its PR is based on their branch "
@@ -410,9 +407,7 @@ def record_for(args, ident: str) -> tuple[Tracker, Record]:
     """A ticket or decision, or the README for `tracker` / `readme`."""
     if ident.lower() in ("readme", "tracker"):
         tr = resolve(args)
-        rec = load_record(tr.root / "README.md", "tracker")
-        rec.meta["id"] = "README"
-        return tr, rec
+        return tr, tr.readme()
     return locate(args, ident)
 
 
@@ -811,6 +806,15 @@ def tracker_matches(words: list[str]) -> tuple[list[Tracker], bool]:
                                         False)
 
 
+def named_trackers(words: list[str]) -> tuple[list[Tracker], bool, str]:
+    """`tracker_matches`, and the head `one_tracker` prints when they are not one sure tracker."""
+    hits, sure = tracker_matches(words)
+    head = f"'{' '.join(words)}' " + ("matches more than one tracker:" if hits and sure else
+                                      "names no tracker for sure; the closest:" if hits else
+                                      "matches no tracker; trackers:")
+    return hits, sure, head
+
+
 def one_tracker(hits: list[Tracker], sure: bool, head: str, cmd: str) -> Tracker:
     """The one tracker a name matched for sure; else `head`, the options and exit 3, so the model asks the user."""
     if len(hits) == 1 and sure:
@@ -844,10 +848,7 @@ def cmd_start(args):
     if focus and not args.name:
         hits, sure, head = [locate(args, focus[0])[0]], True, ""
     elif args.name:
-        hits, sure = tracker_matches(args.name)
-        head = f"'{' '.join(args.name)}' " + ("matches more than one tracker" if len(hits) > 1 and sure
-                                              else "matches no tracker")
-        head += " for sure; the closest:" if hits and not sure else ":" if hits else "; trackers:"
+        hits, sure, head = named_trackers(args.name)
     else:
         found = branch_matches(cwd)
         hits, sure = [m.tracker for m in found], True
@@ -878,10 +879,7 @@ def cmd_watch(args):
         die("`tracker watch` starts only when the user asks: they run it in a terminal, or invoke the watch skill "
             "in an agent session. Do not start it yourself.", REFUSED)
     if args.name:
-        hits, sure = tracker_matches(args.name)
-        head = f"'{' '.join(args.name)}' " + ("matches more than one tracker:" if hits and sure else
-                                              "names no tracker for sure; the closest:" if hits else
-                                              "matches no tracker; trackers:")
+        hits, sure, head = named_trackers(args.name)
     else:
         found = find_tracker(args)
         hits, sure, head = ([found], True, "") if found else ([], False, "which tracker? trackers:")
@@ -911,9 +909,7 @@ def cmd_use(args):
         # Recorded on each ticket, where sync and every worktree find it; the branch keeps its other tickets.
         for t in recs:
             if t.get("branch") != branch:
-                moved = f" (was {t.get('branch')})" if t.get("branch") else ""
-                t.save({"branch": branch, "updated": today()})
-                append_log(tr, f"{t.id} is built on branch {branch}{moved}", [t.id])
+                set_branch(tr, t, branch, f"was {t.get('branch')}" if t.get("branch") else "")
         print(f"{branch}: {', '.join(t.id for t in tr.tickets_on(branch))}")
         return
     state = tr.state()

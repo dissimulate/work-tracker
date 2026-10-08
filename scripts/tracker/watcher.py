@@ -201,7 +201,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.stage in IN_FLIGHT]
     on = {x.sid: agent_tickets(tr, x) for x in live}
-    opened = [d.id for d in tr.decisions if d.get("status", "open") == "open"]
+    opened = [d.id for d in tr.open_decisions()]
 
     def agent(x: Live) -> str:
         return f"agent {x.name} {'busy' if x.status == 'busy' else 'idle'}" + \

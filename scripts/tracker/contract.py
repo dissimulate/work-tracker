@@ -10,7 +10,7 @@ from .model import (BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_
     DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE,
     OPEN_DECISIONS_WARN, PR_STAGE, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RETIRED_KEYS, SCHEMA, SCOPE_PARTS,
     STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS,
-    TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, load_record, names, norm_id,
+    TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, names, norm_id,
     relabel, sequence, Record, Tracker)
 
 # ---------------------------------------------------------------- check
@@ -272,7 +272,7 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
                 t.save(upd)
     for d in tr.decisions:
         waiting = {t.id for t in tr.waiting_on(d.id)}
-        drop = [r for r in d.list("refs") if (tr.lookup(r).id if tr.lookup(r) else r) in waiting]
+        drop = [r for r in d.list("refs") if tr.canonical(r) in waiting]
         if drop:
             out.append(f"{d.id}: refs drops {', '.join(drop)} (they wait on it; depends_on says so)")
             if apply:
@@ -287,12 +287,12 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
         out.append(f"README.md: labels += {', '.join(extra)} (labels in use that are not defaults)")
         if apply:
             own = [x for x in tr.labels if x not in DEFAULT_LABELS]
-            load_record(tr.root / "README.md", "tracker").save({"labels": own + extra})
+            tr.readme().save({"labels": own + extra})
     if tr.schema < SCHEMA:
         out.append(f"README.md: schema={SCHEMA} (the tracker format this version writes)")
         if apply:
-            load_record(tr.root / "README.md", "tracker").save({"schema": SCHEMA})
-    for r in [load_record(tr.root / "README.md", "tracker"), *tr.records]:
+            tr.readme().save({"schema": SCHEMA})
+    for r in [tr.readme(), *tr.records]:
         unknown = [k for k in r.meta if k not in KEYS[r.kind] and k not in RETIRED_KEYS[r.kind]]
         if unknown:
             out.append(f"{r.path.name}: unknown keys {', '.join(unknown)} — not changed; remove or rename by hand")

@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from .model import ISOLATION_RULE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, append_log, locked, short, spawn, today, Tracker
+from .model import ISOLATION_RULE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, locked, set_branch, short, spawn, Tracker
 from .git import default_branches
 from .session import (behind, branch_matches, changes_since, declined, get_mark, in_repos, inside_home, lag,
     load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity, watch, work_dir,
@@ -31,6 +31,11 @@ def hook_input() -> dict:
         return json.load(sys.stdin)
     except ValueError:
         return {}
+
+
+def where(data: dict) -> tuple[str, str]:
+    """The hook's cwd and session id."""
+    return data.get("cwd") or os.getcwd(), str(data.get("session_id") or "")
 
 
 def emit_context(event: str, text: str, notice: str = "") -> None:
@@ -66,8 +71,7 @@ def offer(found: list[Match]) -> tuple[str, str]:
 
 
 def hook_session_start(data: dict) -> None:
-    cwd = data.get("cwd") or os.getcwd()
-    sid = str(data.get("session_id") or "")
+    cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         # CLAUDE_CODE_SESSION_ATTENDED: 1 when a person uses the session, 0 when no one can answer (`claude -p`).
@@ -95,8 +99,7 @@ def adopt_branch(m: Match, cwd: str | Path) -> None:
         tr = Tracker(m.tracker.root)
         t = tr.lookup(m.tickets[0].id)
         if t and not t.get("branch"):
-            t.save({"branch": m.branch, "updated": today()})
-            append_log(tr, f"{t.id} is built on branch {m.branch}", [t.id])
+            set_branch(tr, t, m.branch)
 
 
 def next_request(m: Match, cwd: str | Path, sid: str) -> str:
@@ -118,8 +121,8 @@ def hook_stop(data: dict) -> None:
     """The end of a turn or of the session: log the commits no other hook saw (made in the terminal, or by a command
     the post-bash filter did not let through). Never blocks: the model records only what git does not hold, when
     `next_request` asks."""
-    cwd = data.get("cwd") or os.getcwd()
-    m = match_cwd(cwd, str(data.get("session_id") or ""))
+    cwd, sid = where(data)
+    m = match_cwd(cwd, sid)
     if not m or not m.branch:
         return
     adopt_branch(m, cwd)
@@ -138,8 +141,7 @@ def hook_post_bash(data: dict) -> None:
     pr, commit = PR_TRIGGER.search(command), COMMIT_TRIGGER.search(command)
     if not (pr or commit):
         return
-    cwd = data.get("cwd") or os.getcwd()
-    sid = str(data.get("session_id") or "")
+    cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
@@ -159,8 +161,7 @@ def hook_post_bash(data: dict) -> None:
 
 def hook_edit(data: dict) -> None:
     """A hand edit of a tracker file (hook.sh starts no other): count its change as this session's (`own_edit`)."""
-    sid = str(data.get("session_id") or "")
-    cwd = data.get("cwd") or os.getcwd()
+    cwd, sid = where(data)
     m = match_cwd(work_dir(cwd), sid)
     tool = data.get("tool_input") or {}
     paths = [tool["file_path"]] if tool.get("file_path") else re.findall(
@@ -211,7 +212,7 @@ def watch_request(data: dict) -> bool:
     (`stop`). Only a prompt the user types fires this hook, so the model cannot give itself one. A session on a
     tracker does the work, so it does not watch."""
     m = WATCH_PROMPT.fullmatch(str(data.get("prompt") or "").strip())
-    sid = str(data.get("session_id") or "")
+    sid = where(data)[1]
     if not m or not sid:
         return False
     stop = m[1].split() == ["stop"]
@@ -231,8 +232,7 @@ def hook_prompt(data: dict) -> None:
     brings the state line at once, once per mark. A stale GitHub sync starts in the background (`refresh`)."""
     if watch_request(data):
         return
-    sid = str(data.get("session_id") or "")
-    cwd = data.get("cwd") or os.getcwd()
+    cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
@@ -285,7 +285,7 @@ def hook_answered(data: dict) -> None:
     go ahead settles none."""
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
-    if match_cwd(data.get("cwd") or os.getcwd(), str(data.get("session_id") or "")):
+    if match_cwd(*where(data)):
         emit_context("PostToolUse", "[work-tracker] If the answer settles a direction decision, record it: "
                      "`tracker decide D-<n> --resolve \"...\" --by <who>`, or `tracker decide \"<title>\" --resolve "
                      "\"...\" --by <who>` for one made on the spot.")
@@ -294,7 +294,7 @@ def hook_answered(data: dict) -> None:
 def hook_subagent_start(data: dict) -> None:
     """A subagent of a session on a tracker reads it, but leaves the writing to the session, which sees the whole turn
     and records it once."""
-    m = match_cwd(data.get("cwd") or os.getcwd(), str(data.get("session_id") or ""))
+    m = match_cwd(*where(data))
     if m:
         ids = ", ".join(t.id for t in m.focus)
         emit_context("SubagentStart", f"[work-tracker] The session that started you works on tracker {m.tracker.slug}"
@@ -318,11 +318,12 @@ def run_hook(event: str) -> None:
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
     try:
-        os.environ["TRACKER_SESSION"] = str(data.get("session_id") or "")
+        sid = where(data)[1]
+        os.environ["TRACKER_SESSION"] = sid
         HOOKS[event](data)
         status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "session-end": "ended"}.get(event)
         if status and not data.get("agent_id"):
-            session_activity(str(data.get("session_id") or ""), status)
+            session_activity(sid, status)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         print(f"work-tracker hook {event} failed: {exc}", file=sys.stderr)
         sys.exit(0)
