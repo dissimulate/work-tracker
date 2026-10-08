@@ -561,6 +561,11 @@ class Writes(unittest.TestCase):
         self.assertEqual(run(*t, "show", "L-1", "--section", "links").count("evidence/run.md"), 1)
         self.assertIn("no file evidence/../README.md", run(*t, "attach", "../README.md", "--append", "x", code=2))
 
+        # A subagent asks `context` for the tracker by name: it gets the open work, and how to read one record.
+        whole = run("context", s)
+        self.assertIn(f"{s} is a tracker; `tracker context <id>` takes one", whole)
+        self.assertIn("L-2", whole)
+
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)
         self.assertIn("(no section 'goal')\n\n== README · Limits · planning\n(no section 'carry')\n\n## Goal", shown)
@@ -686,6 +691,7 @@ class Hooks(unittest.TestCase):
 
         helper = said(hook("subagent-start", sid, work, agent_id="a1", agent_type="Explore"))
         self.assertIn("do not write it", helper)
+        self.assertIn("`tracker index` for the whole work", helper)  # not `context <tracker name>`
         self.assertIn(model.ISOLATION_RULE, helper)  # a subagent writes code and commits too
 
         # The hooks log every commit; the model is asked only whether `next` still holds, once per `next`.

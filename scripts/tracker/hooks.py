@@ -300,8 +300,9 @@ def hook_subagent_start(data: dict) -> None:
     if m:
         ids = ", ".join(t.id for t in m.focus)
         emit_context("SubagentStart", f"[work-tracker] The session that started you works on tracker {m.tracker.slug}"
-                     + (f", ticket {ids}" if ids else "") + ". Read it when you need to (`tracker context <id>`, "
-                     "`tracker show <id> --section <name>`), but do not write it: run no `tracker` command that "
+                     + (f", ticket {ids}" if ids else "") + ". Read it when you need to (`tracker index` for the "
+                     "whole work; `tracker context <id>` and `tracker show <id> --section <name>` for one ticket or "
+                     "decision, by its id, not the tracker's name), but do not write it: run no `tracker` command that "
                      "changes it, and edit no tracker file. The hooks log your commits; put what else it should "
                      "record (a finished step, a fact a later ticket needs, a decision, a blocker) in your final "
                      f"answer: the session records it. {ISOLATION_RULE}")

@@ -20,7 +20,7 @@ from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECI
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
-    session_id, session_tracker, trackers_for_repo, watch, work_dir)
+    session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
     index_lines, order_lines, span_lines, start_text)
@@ -97,6 +97,12 @@ def cmd_here(args):
 
 
 def cmd_context(args):
+    here = find_tracker(args)
+    whole = None if here and here.lookup(args.id) else tracker_at(args.id)
+    if whole:  # a tracker's name, where a ticket or decision id belongs: its open work, and how to read one record
+        print("\n".join([f"{whole.slug} is a tracker; `tracker context <id>` takes one of its ticket or decision ids. "
+                         "Its open work:", "", *index_lines(whole, set(STAGES) - CLOSED_TICKET)]))
+        return
     tr, rec = locate(args, args.id)
     print("\n".join(context_lines(tr, rec, full=not args.brief, deep=args.deep, log=args.log)))
 
