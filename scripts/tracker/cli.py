@@ -509,13 +509,51 @@ def cmd_show(args):
     print("\n".join(out).rstrip())
 
 
+def append_evidence(folder: Path, file: str, text: str) -> str:
+    """`attach --append`: add text at the end of a file the evidence/ folder holds, named by its path or its name
+    there. Returns its name there."""
+    path = Path(file).expanduser().resolve()
+    name = str(path.relative_to(folder)) if path.is_relative_to(folder) else file
+    dest = folder / name
+    if not SAFE_NAME.fullmatch(dest.name) or not dest.resolve().is_relative_to(folder) or not dest.is_file():
+        die(f"no file {EVIDENCE_DIR}/{name} to append to: `tracker attach <file>` keeps a new one")
+    old = dest.read_text()
+    gap = "" if not old or old.endswith("\n\n") else "\n" if old.endswith("\n") else "\n\n"
+    dest.write_text(f"{old}{gap}{text.strip(chr(10))}\n")
+    return name
+
+
 def cmd_attach(args):
     """Keep a file in the tracker's evidence/ folder and link it from the records it supports."""
     tr = resolve(args)
+    folder = (tr.root / EVIDENCE_DIR).resolve()
+    if args.append is not None:
+        if args.name or args.force:
+            die("--append adds to the file named: no --name or --force with it")
+        name = append_evidence(folder, args.file, args.append)
+        attached = "Appended to"
+    else:
+        name, attached = keep_evidence(args, folder), "Attached"
+    link = f"[{name}]({EVIDENCE_DIR}/{name})" + (f" — {args.note.strip()}" if args.note else "")
+    refs = []
+    for ident in id_list(args.ref):
+        rec = tr.find(ident)
+        if rec.kind == "ticket":
+            if not any(f"({EVIDENCE_DIR}/{name})" in x.text for x in rec.links):
+                append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
+        elif not (args.append is not None and f"({EVIDENCE_DIR}/{name})" in rec.body):
+            append_to_section(rec, "Options", f"- {today()}: {EVIDENCE}: {link}")
+        touch(rec)
+        refs.append(rec.id)
+    append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
+    print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
+
+
+def keep_evidence(args, folder: Path) -> str:
+    """Copy the file into the evidence/ folder, unless it is there; its name there."""
     src = Path(args.file).expanduser().resolve()
     if not src.is_file():
         die(f"no file {args.file}")
-    folder = (tr.root / EVIDENCE_DIR).resolve()
     if src.is_relative_to(folder):
         name = str(src.relative_to(folder))
     else:
@@ -524,22 +562,11 @@ def cmd_attach(args):
             die(f"'{name}' is not a file name: use letters, digits, `.`, `_` and `-`")
         dest = folder / name
         if dest.exists() and dest.read_bytes() != src.read_bytes() and not args.force:
-            die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, or --force to replace it")
+            die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, --force to replace it, or `--append -` "
+                "to add text to it")
         folder.mkdir(exist_ok=True)
         shutil.copy2(src, dest)
-    link = f"[{name}]({EVIDENCE_DIR}/{name})" + (f" — {args.note.strip()}" if args.note else "")
-    refs = []
-    for ident in id_list(args.ref):
-        rec = tr.find(ident)
-        if rec.kind == "ticket":
-            if not any(f"({EVIDENCE_DIR}/{name})" in x.text for x in rec.links):
-                append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
-        else:
-            append_to_section(rec, "Options", f"- {today()}: {EVIDENCE}: {link}")
-        touch(rec)
-        refs.append(rec.id)
-    append_log(tr, f"Attached {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
-    print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
+    return name
 
 
 def similar(a: str, b: str) -> float:
@@ -1009,6 +1036,8 @@ def build_parser():
     sp.add_argument("--note", help="what it shows")
     sp.add_argument("--name", help=f"its file name in {EVIDENCE_DIR}/ (default: the file's own)")
     sp.add_argument("--force", action="store_true", help="replace a file of that name with other content")
+    sp.add_argument("--append", metavar="TEXT", help=f"add the text (`-`: from stdin) at the end of the file named, "
+                                                   f"which {EVIDENCE_DIR}/ holds already")
     sp = add("new", cmd_new, "create a ticket from its template (decisions: `decide`)")
     sp.add_argument("id", nargs="?")
     sp.add_argument("--title", required=True)
@@ -1159,7 +1188,8 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
-TEXT_DESTS = ("message", "text", "next", "done", "pause", "carry", "question", "note", "resolve", "replace", "pairs")
+TEXT_DESTS = ("message", "text", "next", "done", "pause", "carry", "question", "note", "resolve", "replace", "append",
+              "pairs")
 
 
 def no_id(args) -> None:

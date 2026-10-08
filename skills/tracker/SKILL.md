@@ -62,7 +62,7 @@ Record each fact at the moment it forms, in its home:
 | the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>"`, or the whole Plan with `tracker put <id> plan -` and a heredoc; and a log line saying why |
 | a section changes as a whole (Carry forward kept short, Links sorted), or the README needs a section of its own (`put tracker "Why this order" -` makes it) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
-| a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"` |
+| a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |

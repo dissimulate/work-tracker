@@ -549,6 +549,18 @@ class Writes(unittest.TestCase):
                       run(*t, "show", "tracker", "--section", "why"))
         self.assertIn("names none of L-1's sections", run(*t, "put", "L-1", "order", "x", code=2))
 
+        # More text for an evidence file the tracker keeps: `attach --append`, not `cat >>`.
+        made = Path(tempfile.mkdtemp(dir=BASE)) / "run.md"
+        made.write_text("run 1\n")
+        run(*t, "attach", str(made), "--ref", "L-1")
+        made.write_text("other\n")
+        self.assertIn("`--append -`", run(*t, "attach", str(made), code=2))
+        with piped("## Run 2\n\nIt `works`."):
+            self.assertIn("log line written", run(*t, "attach", "run.md", "--ref", "L-1", "--append", "-"))
+        self.assertEqual((model.HOME / s / "evidence/run.md").read_text(), "run 1\n\n## Run 2\n\nIt `works`.\n")
+        self.assertEqual(run(*t, "show", "L-1", "--section", "links").count("evidence/run.md"), 1)
+        self.assertIn("no file evidence/../README.md", run(*t, "attach", "../README.md", "--append", "x", code=2))
+
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)
         self.assertIn("(no section 'goal')\n\n== README · Limits · planning\n(no section 'carry')\n\n## Goal", shown)
