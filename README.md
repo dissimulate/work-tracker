@@ -154,7 +154,7 @@ Environment variables. All are optional.
 
 ### Evals
 
-`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hooks lead the model to record work through the CLI (a step with `step --next`, a hook-logged commit not logged again, one decision for a settled direction and none for an approval, a section replaced with `put`, not by hand), and to answer what can start next with the branch it stacks on. They are real model runs, billed to your plan: run them after a change to those texts, not as a routine check.
+`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hooks lead the model to record work through the CLI (a step with `step --next`, a hook-logged commit not logged again, no log line for a push or a test run, no `check` or `log` after a write, one decision for a settled direction and none for an approval, a section replaced with `put`, not by hand), and to answer what can start next with the branch it stacks on. They are real model runs, billed to your plan: run them after a change to those texts, not as a routine check.
 
 ```
 claude plugin eval . --scaffold --allow-tools Bash --ablation none -j 8
