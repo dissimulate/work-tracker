@@ -285,7 +285,7 @@ details.sec[open] > summary h2::before { transform: rotate(45deg) translate(-2px
 .nowlist > .watch { max-width: none; padding: 8px var(--pad); font-size: var(--fs-s); color: var(--muted); }
 .nowlist > .watch.ended { box-shadow: inset 3px 0 var(--blocked); }
 
-/* A Claude session on a row's work, left of the row and centred on its head: a faded ring, which spins while the
+/* An agent session on a row's work, left of the row and centred on its head: a faded ring, which spins while the
    session works (busy). It sits --agent-gap past the list's border; main's side padding leaves room for it. */
 .nowlist summary { position: relative; }
 

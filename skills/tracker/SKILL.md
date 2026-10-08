@@ -6,7 +6,7 @@ argument-hint: "[tracker command, e.g. index --active]"
 
 # Work tracker
 
-A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the page the user watches (`tracker open`). It lives in `$TRACKER_HOME` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
+A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the page the user watches (`tracker open`). It lives in `$TRACKER_HOME/<slug>/` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
 
 The CLI is `tracker`; `tracker <command> --help` gives each command's syntax. If this skill is invoked with arguments, run `tracker $ARGUMENTS` and report the result; with none, run `tracker start`.
 
@@ -25,7 +25,7 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 
 **One source per fact.** Each fact has one home; every view is computed from it, so write it there once:
 
-- **Order and blockers**: the waiting ticket's `depends_on`; an open PR based on another ticket's branch also waits on it (from the PR, not written). Ready, blocked, unblocks and the critical path are computed.
+- **Order and blockers**: the waiting ticket's `depends_on` (the README may keep *why* an order was chosen); an open PR based on another ticket's branch also waits on it (from the PR, not written). Ready, blocked, unblocks and the critical path are computed.
 - **Where a ticket starts**: computed from the same. A todo ticket that waits only on tickets under way can start stacked on their branch; `tracker ready` and `context` name it. Do not write the base into the Plan, `next` or the log.
 - **A branch's tickets**: each ticket's `branch`. A branch holds any number; the session works on the ones under way (in progress or in review).
 - **PR state**: written by `sync`. Once a ticket is in progress, its PR shows it in review or merged. You set only the work status.
@@ -64,9 +64,9 @@ Record each fact at the moment it forms, in its home:
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
-| a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>` |
+| a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
-| a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (an MCP server for Shortcut, Jira, Linear …) and `tracker issue <id> --priority "<its word>" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
+| a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (such as an MCP server) and `tracker issue <id> --priority "<its word>" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker (a hook tells each one): put what a subagent needs in its prompt (the output of `tracker context <id> --brief`, or the part that matters), and record what it reports, as you record your own work.
@@ -78,7 +78,6 @@ Record each fact at the moment it forms, in its home:
   - raised: `tracker decide "<title>" --refs <ids> --question "<what and why it matters>" [--owner <who>]`; it stops tickets: `--blocks <ids>`
   - new option or fact: `tracker decide D-<n> --note "..."`
   - settled: `tracker decide D-<n> --resolve "<answer>" --by <who>`; settled on the spot: `tracker decide "<title>" --resolve "..." --by <who>`
-- **Order and blockers** live in `depends_on` alone; the README may keep *why* an order was chosen. An external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"`.
 - **Hook lines** tagged `[work-tracker]` are the tracker's requests: act on each one in the same turn.
 
 Completion: each ticket under way has a `next` true as of now (a `[work-tracker]` line says when commits pass it), every fact above is in its home, and each `check` error a write printed is fixed.

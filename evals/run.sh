@@ -1,13 +1,11 @@
 #!/bin/sh
-# Runs the model evals with this repo's settings (README "Evals"). Each run is a full Claude session on your plan:
-# run it only when the user asks, after a significant change to the skill, the brief or the hook texts.
+# Runs the model evals with this repo's settings. README "Evals" says when to run them and what each tag covers.
 #
 #   evals/run.sh quick <tag>...      the cases with any of the tags, once each, on Sonnet
 #   evals/run.sh quick all           every case, once each, on Sonnet
 #   evals/run.sh release             every case, its own run count (3 unless its prompt.md sets `runs`), on Opus
 #
 # Options after the mode's words go to `claude plugin eval` as they are, e.g. `--case <name>` or `--keep-temp`.
-# Tags: write, log, decision, issue, read; each case's prompt.md lists its own.
 #
 # What each fixed option does:
 #   --scaffold        each case's scaffold.sh makes a git repo and a `demo` tracker in the run's workspace
@@ -24,7 +22,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 usage() {
-  sed -n '5,7p' "$0" | sed 's/^# *//' >&2
+  sed -n '4,6p' "$0" | sed 's/^# *//' >&2
   exit 2
 }
 

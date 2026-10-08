@@ -185,7 +185,8 @@ def cmd_set(args):
     if rec.kind == "ticket" and updates.get("status") == "in-progress":
         if "branch" not in updates:
             notes += start_here(tr, rec, updates)
-        # The first start, from todo: a cycle time runs from it. A ticket started before 0.29 gets none, not a guess.
+        # The first start, from todo: the wait time ends and the cycle time starts at it. A ticket started before 0.29
+        # gets none, not a guess.
         if not rec.get("started_at") and rec.get("status") == "todo":
             updates["started_at"] = utc_now()
     if rec.kind != "tracker":
@@ -216,7 +217,7 @@ def start_here(tr: Tracker, t: Record, updates: dict) -> list[str]:
         return []
     key = worktree_key(cwd, branch)
     state = tr.state()
-    chosen = state.get("use", {}).get(key, [])  # unfinished tickets only
+    chosen = state.get("use", {}).get(key, [])  # state() keeps only unfinished tickets
     if t.id not in chosen:
         state.setdefault("use", {})[key] = chosen + [t.id]
         tr.save_state(state)
@@ -398,7 +399,7 @@ def cmd_ready(args):
 # ---------------------------------------------------------------- body edits
 # `add` and `drop` change one line of a section of a ticket, a decision or the README, and `put` the whole section, so
 # a fact goes in without a hand edit of the file. A list section takes one bullet per `add`; link lines are checked as
-# `check` would. The edits themselves are model's.
+# `check` would. The edits themselves are in `model`.
 
 LIST_SECTIONS = {"Carry forward", "Links", "Context"}
 LINK_SECTIONS = {"Links", "Context"}
@@ -958,8 +959,8 @@ def build_parser():
     import argparse  # here, not at the top: a hook run never needs it
     p = argparse.ArgumentParser(prog="tracker", description=__doc__.split("\n\n")[0], epilog="Any text argument "
                                 "can be `-`: the text then comes from stdin, as a heredoc passes it (<<'EOF').")
-    p.add_argument("--tracker", help="tracker slug (default: the session's, from `tracker start`; else TRACKER, "
-                                     "the cwd, or the repo's only tracker)")
+    p.add_argument("--tracker", help="tracker slug (default: TRACKER; else the tracker folder the cwd is in, the "
+                                     "session's from `tracker start`, or the repo's only tracker)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def add(name, fn, help_):
@@ -974,9 +975,11 @@ def build_parser():
     sp.add_argument("--title", required=True)
     sp.add_argument("--owner", required=True)
     sp.add_argument("--repo", help="GitHub owner/name (comma list if the work spans repos); enables `sync`")
-    add("rules", cmd_rules, "the tracker's contract: files, keys and who writes them, statuses, link labels, "
-                            "machine state, the decision bar and the order rule")
-    sp = add("index", cmd_index, "one line per ticket, whose move each ticket under way waits on, then open decisions")
+    add("rules", cmd_rules, "the tracker's contract: isolation, files, keys and who writes them, text limits, "
+                            "statuses, link labels, machine state, the decision bar, and the order, start and move "
+                            "rules")
+    sp = add("index", cmd_index, "one line per ticket, whose move each ticket under way waits on, then open decisions; "
+                            "under the headline, the wait and cycle time lines")
     sp.add_argument("--status", help=f"comma list of stages ({'|'.join(STAGES)})")
     sp.add_argument("--active", action="store_true", help="hide closed tickets (merged, done, dropped)")
     sp.add_argument("--group")
@@ -1026,7 +1029,7 @@ def build_parser():
     sp.add_argument("section")
     sp.add_argument("text")
     sp = add("show", cmd_show, "records' own text by id, whole or only some sections, without the template's "
-                               "comments: show AS-20 --section carry / show D-01 D-02 --section resolution")
+                               "comments: show T-8 --section carry / show D-01 D-02 --section resolution")
     sp.add_argument("ids", nargs="+", metavar="ID", help="ticket or decision ids (a comma list works too), "
                                                           "`tracker` for the README, or `log` for its last lines")
     sp.add_argument("--section", help="comma list of sections, by a prefix of the name: plan, carry, links, question, "
@@ -1108,7 +1111,7 @@ def build_parser():
     sp.add_argument("--pause", metavar="HANDOFF", help="stopping mid-work: what is done, what is half-done and "
                                                        "uncommitted, and the next step")
     sp = add("start", cmd_start, "tie a tracker to this agent session, by its slug or words of its title "
-                                 "(`start analytics studio`); prints the brief. Lists options when unsure (exit 3). "
+                                 "(`start payments rework`); prints the brief. Lists options when unsure (exit 3). "
                                  "Never changes git")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title; none: the tracker "
                                             "with an open ticket on this branch (in a session with a tracker: its "
@@ -1153,8 +1156,8 @@ def log_size(tr: Tracker) -> int:
 
 def with_check(run, args) -> None:
     """Run a write command, then print the `check` problems it added to the tracker, and end with a line that says
-    whether it wrote its own log line and that `check` found nothing new: no `tracker check` or `tracker log` needs
-    to follow a write. `init` and `migrate` check for themselves."""
+    whether it wrote its own log line and whether `check` found new problems: no `tracker check` or `tracker log`
+    needs to follow a write. `init` and `migrate` check for themselves."""
     tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
     before = set(problem_lines(tr)) if tr else set()
     size = log_size(tr) if tr else 0

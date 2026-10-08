@@ -42,8 +42,8 @@ class Match:
 
     @property
     def focus(self) -> list[Record]:
-        """The tickets the session works on: those under way, else the unfinished ones. The brief shows these in
-        full and the rest in one line."""
+        """Of `mine`, those under way, else the unfinished ones: the tickets the brief shows (`summary` names the
+        rest)."""
         return self.active or [t for t in self.mine if t.stage not in CLOSED_TICKET]
 
     def summary(self) -> str:
@@ -55,12 +55,11 @@ class Match:
 
 # ---------------------------------------------------------------- sessions
 # `tracker start <name>` ties a tracker to one agent session; the branch still names the ticket. A session with no
-# tracker (and no TRACKER) gets nothing from the hooks. scripts/hook.sh puts the session id in TRACKER_SESSION for
-# the session's Bash commands; hooks get it in their input. Per session, `focus` keeps the tickets `tracker start --on`
-# chose, and `seen` what the brief showed about its tickets, so the prompt hook can say what other sessions or GitHub
-# changed since.
+# tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`).
+# scripts/hook.sh puts the session id in TRACKER_SESSION for the session's Bash commands; hooks get it in their input.
+# Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
 
-SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh runs Python only when the file exists
+SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
 SESSIONS_MAX = 200
 
 
@@ -150,8 +149,8 @@ def session_focus(tr: Tracker, sid: str) -> list[str]:
 
 
 def context_tracker(sid: str | None = None) -> Tracker | None:
-    """The tracker context: the tracker `tracker start` chose for this session (`sid`, default TRACKER_SESSION), or
-    the one TRACKER names. Without one, the hooks do nothing."""
+    """The tracker context: the tracker `tracker start` chose for this session (`sid`, default `session_id()`), or
+    the one TRACKER names."""
     own = session_tracker(session_id() if sid is None else sid)
     return own or tracker_at(os.environ.get("TRACKER", ""))
 
@@ -160,9 +159,9 @@ def match_cwd(cwd: str | Path, sid: str | None = None, tracker: Tracker | None =
     """The tickets on this session's branch, in the tracker context (`tracker`, else `context_tracker`); None without
     one. In order: every ticket whose `branch` is this branch (a branch holds any number); else the ones `tracker
     use` chose for this worktree and branch; else the unfinished tickets whose id or Issue id the branch name holds.
-    With none of them, the tracker matches with no tickets. The open tickets `tracker start --on` chose for the
-    session (`sid`, default TRACKER_SESSION) join them, and `Match.focus` picks from those alone. A ticket in another
-    repo never matches: branch names repeat across repos."""
+    A ticket in another repo never matches: branch names repeat across repos. With none of them, the tracker matches
+    with no tickets. The open tickets `tracker start --on` chose for the session (`sid`, default `session_id()`) join
+    them, and `Match.focus` picks from those alone."""
     own = tracker or context_tracker(sid)
     if not own:
         return None
@@ -214,8 +213,8 @@ def trackers_for_repo(cwd: str | Path) -> list[Tracker]:
 
 
 def find_tracker(args) -> Tracker | None:
-    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`tracker start`) or the repo
-    points to."""
+    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`tracker start`) or the repo (the
+    only tracker that lists it) points to."""
     slug = getattr(args, "tracker", None) or os.environ.get("TRACKER")
     if slug:
         return tracker_at(slug) or die(f"no tracker '{slug}' in {HOME}")
@@ -244,8 +243,8 @@ def resolve(args) -> Tracker:
 
 
 def locate(args, ident: str) -> tuple[Tracker, Record]:
-    """A record named by a command's argument, and its tracker. `slug:ID` names both. Otherwise the tracker this
-    session, cwd or branch points to is asked first (PR and branch too); then, unless --tracker or TRACKER named it,
+    """A record named by a command's argument, and its tracker. `slug:ID` names both. Otherwise the tracker
+    `find_tracker` names is asked first (PR and branch too); then, unless --tracker or TRACKER named it,
     every tracker by ticket or Issue id: this repo's first, then all. More than one hit is an error that lists them."""
     slug, sep, rest = ident.partition(":")
     if sep:
@@ -407,8 +406,8 @@ def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:
 
 def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
                     refs: list[str] | None = None) -> list[str]:
-    """`synced`, `pause` and `step`: log the commits the hooks have not against `refs` (default: the session's
-    tickets under way), move the mark to HEAD, and set or clear the handoff. Returns what it did."""
+    """`synced`, `pause` and `step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
+    the mark to HEAD, and set or clear the handoff. Returns what it did."""
     tr, done = m.tracker, []
     mark = get_mark(tr, cwd, m.branch)
     commits = new_commits(cwd, mark) if mark else []
@@ -439,8 +438,6 @@ def on_branch(args) -> tuple[Match, Path]:
 
 
 # ---------------------------------------------------------------- watch
-# What a session's brief showed about its tickets, so the prompt hook can report what changed since: each ticket's
-# stage and move; each ticket it waits on, with its Carry forward; each decision that touches it, with its answer.
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, list[str]]:
     """What a session saw of its tickets, to tell it what changed since: of its own tickets the stage and a move that
@@ -476,7 +473,7 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
         elif not was:
             out.append(f"now waits on {ident} ({now[1]})")
         else:
-            # The session's own ticket moving to review is its own doing, or sync's: only its end is news.
+            # The session's own ticket changes stage by its own doing, or sync's: only its end is news.
             if was[1] != now[1] and (now[0] != "own" or now[1] in CLOSED_TICKET):
                 out.append(f"{ident} is now {now[1]}")
             if now[0] == "own" and len(was) > 2 and was[2] != now[2] and now[2]:  # older sessions kept no move
@@ -545,14 +542,14 @@ def own_edit(sid: str, m: Match, ident: str) -> None:
 # Claude Code keeps one file per running `claude` process: <config dir>/sessions/<pid>.json, with its pid, sessionId,
 # cwd, name, status ("busy" while the model works, "idle" while it waits for the user) and when the status last
 # changed (statusUpdatedAt, epoch ms). Other hosts use the activity recorded by their hooks. An ended session or
-# one with no hook activity for a day does not count. Claude's process files take precedence when available.
+# one with no hook activity for a day does not count. A session with a process file is judged by that file alone.
 
 CLAUDE_SESSIONS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "sessions"
 ACTIVITY_MAX_AGE_S = 86400
 
 
 def session_activity(sid: str, status: str) -> None:
-    """Keep a tracked session's hook activity. Preserve when its status last changed."""
+    """Keep a tracked session's status from its hooks, and when the status last changed."""
     entry = load_session(sid)
     if not entry.get("tracker"):
         return

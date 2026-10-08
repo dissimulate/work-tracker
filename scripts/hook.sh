@@ -23,8 +23,9 @@ field() {
 
 field session_id
 case $value in *[!A-Za-z0-9._-]*) sid= ;; *) sid=$value ;; esac
-# Claude's shell commands get their id and PATH through its env file. Other hosts use their session environment
-# (`session_id` in Python) and the skill's path to bin/tracker.
+# Claude's shell commands get their id and PATH through its env file. Other hosts get both as a command prefix in
+# context (`command_context` in Python), else read their own session id (`session_id`) and take bin/tracker's path
+# from the skill.
 if [ "$event" = session-start ] && [ -n "$CLAUDE_ENV_FILE" ] && [ -n "$sid" ]; then
   echo "export TRACKER_SESSION=$sid" >> "$CLAUDE_ENV_FILE"
   bin=$(cd "${0%/*}/../bin" && pwd)
@@ -68,7 +69,7 @@ case $event in
     [ -n "$sid" ] && [ -f "$session.json" ] || exit 0
     field file_path  # a tracker file: Python counts the change as this session's. On Windows, Python decides
     case $value in "$home"/*|[A-Za-z]:*) ;; *)
-      # apply_patch carries paths in its command; relative paths can be inside the tracker cwd.
+      # apply_patch has no file_path: its paths are in its command, absolute or relative to a cwd in $home.
       case $input in *"$home"*) ;; *) exit 0 ;; esac
       ;;
     esac

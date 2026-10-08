@@ -90,8 +90,8 @@ RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "tracker":
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
               "sync": "`tracker sync` writes it from the PR", "auto": "the tracker writes it",
               "issue": "`tracker issue` writes it from the ticket's issue tracker"}
-# Machine state in .state.json: what `tracker rules` says about it. Never in frontmatter. A branch's entries are keyed
-# `owner/name:branch` (see state_key), so a tracker can span repos.
+# Machine state in .state.json, never in frontmatter: what `tracker rules` says about it. A branch's entries are keyed
+# by state_key, so a tracker can span repos.
 STATE_KEEP_DAYS = 14
 STATE_RULES = {
     "mark": "the HEAD up to which a branch's commits are logged. The hooks log them against its tickets under way "
@@ -118,8 +118,8 @@ STATE_RULES = {
 
 ISSUE_STALE_S = 86400  # an open ticket's issue fields are read again after this
 
-# Issue trackers' priority words, most urgent first: Shortcut and Jira (Highest … Lowest), Linear (Urgent … Low),
-# and P0-P9. A word not here ranks after them; "none" and "no priority" are no priority.
+# Issue trackers' common priority words, most urgent first (Highest … Lowest, Urgent … Low), and P0-P9. A word not
+# here ranks last, with P9; "none" and "no priority" are no priority.
 PRIORITY_RANKS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
                   "low": 3, "lowest": 4, "trivial": 4}
 PRIORITY_UNKNOWN = 9
@@ -275,7 +275,7 @@ ISOLATION_RULE = (
     "fact in its own words, and cite only ids that exist there: a ticket's Issue id, a PR number, a URL. The "
     "tracker's own ids (D-n decisions, ticket ids that are not Issue ids), its name and its sections stay in it.")
 # What a `step` message holds, said wherever a text asks for a step: the brief's protocol and its lag line, and the
-# hook after a commit. The model writes the message right after reading one of them.
+# hooks' request after commits (next_request). The model writes the message right after reading one of them.
 STEP_MESSAGE = ("a message only for what the commits do not say (a result, a measurement, why), never what they or "
                 "the PR hold: the work a commit names, a push, a merge, a review round, a test run")
 TICKET_SECTIONS = ["Plan", "Carry forward", "Links"]  # required, in this order, and no others
@@ -675,8 +675,8 @@ class Tracker:
             return None
         return self.reviews.get(pr_key(self.repo_of(t), t.get("pr")))
 
-    # -- machine state (.state.json): see STATE_RULES. Every read drops what no longer applies, so each write keeps
-    # the file current.
+    # -- machine state (.state.json): see STATE_RULES. state() drops what no longer applies, so a write of what it
+    # read keeps the file current; raw_state() is the file as it is.
     def raw_state(self) -> dict:
         try:
             state = json.loads((self.root / ".state.json").read_text())
@@ -978,7 +978,7 @@ def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
 
 
 def short(text: str, n: int = 90) -> str:
-    """One line of at most n characters: a log line names a fact whose full text lives in its own file."""
+    """One line of at most n characters."""
     s = " ".join(str(text).split())
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
@@ -991,8 +991,7 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a ticket id, tracker sl
 
 
 # ---------------------------------------------------------------- body edits
-# Every change to a record's body goes through one of these: `tracker add`, `drop`, `decide --resolve`, `wait` and
-# `attach` change one section of a file without a hand edit, and `migrate` relabels lines.
+# Every command that changes a record's body goes through one of these; each changes one section in place.
 
 def relabel(rec: Record, link: Link, label: str) -> bool:
     """Change one ## Links line's label in place."""

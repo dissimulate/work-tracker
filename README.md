@@ -40,7 +40,7 @@ Claude's session hook adds `tracker` to its Bash PATH. Codex's session hook give
 
 ### Install in Codex
 
-Add this folder to a [personal or repo marketplace](https://developers.openai.com/plugins/build/plugins), then run `codex plugin add work-tracker@<marketplace-name>`. Codex accepts the existing Claude-compatible manifest. Review and trust the plugin's hooks in Codex, then start a new chat. Both hosts use the same tracker files; `TRACKER_HOME` changes their root when needed.
+Add this folder to a [personal or repo marketplace](https://developers.openai.com/plugins/build/plugins), then run `codex plugin add work-tracker@<marketplace-name>`. Codex accepts the existing Claude-compatible manifest. Review and trust the plugin's hooks in Codex, then start a new chat. Both hosts use the same tracker files.
 
 ## Requirements
 
@@ -67,7 +67,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other.
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
-- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (an MCP server you have signed in to, such as Shortcut's, Jira's or Linear's) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: open and never read, read more than a day ago or read before the viewer's last Refresh; closed, only once and only with a recorded start, for its wait time. With no such tool the agent leaves them blank.
+- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: open and never read, read more than a day ago or read before the viewer's last Refresh; closed, only once and only with a recorded start, for its wait time. With no such tool the agent leaves them blank.
 
 ### Tickets, branches and sessions
 
@@ -120,7 +120,7 @@ Environment variables. All are optional.
 | Variable | Default | Does |
 |---|---|---|
 | `TRACKER_HOME` | `~/.claude/trackers` | where the trackers are |
-| `TRACKER` | none | the tracker slug a session and its commands use when `tracker start` chose none |
+| `TRACKER` | none | a tracker slug: commands use it first, the hooks when `tracker start` chose none |
 | `TRACKER_NUDGE_EVERY` | 5 | messages between state lines |
 | `TRACKER_VIEWER_IDLE` | 180 | seconds before an unused viewer stops |
 | `TRACKER_VIEWER_SYNC` | 120 | seconds between the viewer's GitHub syncs |
@@ -154,7 +154,7 @@ Environment variables. All are optional.
 
 ### Evals
 
-`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hooks lead the model to record work through the CLI (a step with `step --next`, a hook-logged commit not logged again, no log line for a push or a test run, no `check` or `log` after a write, one decision for a settled direction and none for an approval, a section replaced with `put`, not by hand), and to answer what can start next with the branch it stacks on. Each run is a full Claude session, billed to your plan: run them only after a significant change to those texts, not as a routine check. Run them with `evals/run.sh`, which holds the options:
+`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hooks lead the model to record work through the CLI and to answer from the tracker's views; each case's `prompt.md` says what it checks. Each run is a full Claude session, billed to your plan: run them only after a significant change to those texts, not as a routine check. Run them with `evals/run.sh` (its header explains the fixed options):
 
 ```
 evals/run.sh quick <tag>...   # the cases with any of the tags, once each, on Sonnet
@@ -162,9 +162,14 @@ evals/run.sh quick all        # every case, once each, on Sonnet
 evals/run.sh release          # every case, its own run count, on Opus: before a release
 ```
 
-- Tags name the area a case tests: `write`, `log`, `decision`, `issue`, `read`. Each case's `prompt.md` lists its own.
-- A case runs 3 times in `release`, except those whose `prompt.md` sets `runs: 1`: one plain command, passed in every full run so far.
+- Tags name the area a case tests. Pick the tags of the text you changed:
+  - `write`: the write commands and their output, the skill's Write table
+  - `log`: what is logged: the commit hooks, `step` messages
+  - `decision`: `decide`, the decision bar, the question hook
+  - `issue`: issue fields
+  - `read`: `index`, `ready`, `context` and what can start
+  - the skill's other parts and the brief's protocol reach every case: `quick all`
+- A case runs 3 times in `release`, or once when its `prompt.md` sets `runs: 1` (one plain command that passed in every full run).
 - Options after the mode's words go to `claude plugin eval` as they are, such as `--case <name>` or `--keep-temp`.
 - Each case's `scaffold.sh` sources `evals/lib/demo-tracker.sh`, which makes a git repo and a `demo` tracker in the run's workspace. The sandbox lets the agent write only there, so the tracker is in `.trackers/`, linked from `~/.claude/trackers`.
-- A run reads none of your settings, so the script names the model. `plugin eval` cannot set the effort: Sonnet's default is medium, and no result records the effort used.
 - On macOS with only the Xcode `git` (`/usr/bin/git`), git cannot run in the sandbox, so the cases leave git to the scaffold and the hooks.

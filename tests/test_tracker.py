@@ -89,7 +89,7 @@ def piped(text: str):
 
 
 class InstructionsMatchTheCli(unittest.TestCase):
-    """Every command the skill, the README, the templates and the hook texts give must exist, with its flags."""
+    """Every command the skills, the README, the templates, the hooks and the code give must exist, with its flags."""
 
     def test_commands_and_flags(self):
         sub = cli.build_parser()[1]
@@ -503,7 +503,7 @@ class Flow(unittest.TestCase):
                    cwd=work)
         self.assertIn("T-2: next set, 1 carry forward, logged; feat/T-2-api up to date", step)
         self.assertIn("logged 1 commit(s)", step)
-        run(*t, "step", "T-2", "--done", "api", "--pause", "half", cwd=work, code=2)  # a closed branch keeps no handoff
+        run(*t, "step", "T-2", "--done", "api", "--pause", "half", cwd=work, code=2)  # --done leaves no handoff
         run(*t, "step", "T-2", "--pause", "routes done; auth half done", cwd=work)
         here = run(*t, "here", cwd=work)
         self.assertIn("Handoff", here)
@@ -976,8 +976,8 @@ class SequenceSort(unittest.TestCase):
 
 class IssueFields(unittest.TestCase):
     """A ticket's issue fields (priority, when its issue was created) come from its issue tracker through the model,
-    which reads them with the tracker's tool and records them with `tracker issue`. The tracker says when they are
-    due."""
+    which reads them with its own tool for that issue tracker and records them with `tracker issue`. The tracker says
+    when they are due."""
 
     def tracker(self) -> tuple[str, tuple[str, str]]:
         s = slug()

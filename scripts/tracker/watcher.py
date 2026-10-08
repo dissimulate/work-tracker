@@ -355,7 +355,7 @@ class Watcher:
         return []
 
     def agents(self, tr: Tracker, now: float) -> list[Event]:
-        """The Claude sessions on the tracker: each that starts or ends; each idle so long that it waits on the user,
+        """The agent sessions on the tracker: each that starts or ends; each idle so long that it waits on the user,
         or busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})

@@ -192,7 +192,7 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
 
 
 def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, branch, next action or summary, handoff, dependencies and links."""
+    """A ticket's own facts: its line, branch, repo, next action or summary, move, handoff, dependencies and links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
@@ -370,7 +370,7 @@ def issue_request(tr: Tracker) -> str:
     ids = ", ".join(t.id for t in due[:ISSUE_DUE_SHOWN]) + (f" +{len(due) - ISSUE_DUE_SHOWN}"
                                                              if len(due) > ISSUE_DUE_SHOWN else "")
     return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids} (`tracker issue --due` gives their issue "
-            "links). If a tool for their issue tracker is available (an MCP server for Shortcut, Jira, Linear …), "
+            "links). If a tool for their issue tracker is available (such as an MCP server), "
             "read each issue's priority and creation time and record them: `tracker issue <id> --priority \"<the "
             "tracker's word>\" --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such "
             "tool, leave them and never guess a value.")

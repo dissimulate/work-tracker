@@ -1,4 +1,4 @@
-"""Git facts the tracker reads: branch, HEAD, remote. The tracker never changes git."""
+"""Git facts the tracker reads: branch, HEAD, remote, uncommitted files. The tracker never changes git."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import subprocess
 from functools import cache
 from pathlib import Path
 
-# ---------------------------------------------------------------- git
 
 def run_git(cwd: str | Path, *args: str) -> subprocess.CompletedProcess | None:
     try:

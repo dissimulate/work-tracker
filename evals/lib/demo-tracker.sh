@@ -1,7 +1,7 @@
 # The workspace every case starts from, sourced by each case's scaffold.sh. A scaffold runs before the agent, outside
 # its sandbox, in the empty workspace and with the run's temporary HOME. It makes a git repo on DEMO-2's branch and a
-# `demo` tracker: DEMO-1 done, DEMO-2 in progress with its commits logged, DEMO-3 waiting on it. The sandbox lets the
-# agent's shell write only in the workspace, so the tracker lives in .trackers/ there, linked from
+# `demo` tracker: DEMO-1 done, DEMO-2 in progress with its branch marked up to date, DEMO-3 waiting on it. The
+# sandbox lets the agent's shell write only in the workspace, so the tracker lives in .trackers/ there, linked from
 # ~/.claude/trackers (the default TRACKER_HOME), and git leaves it out. Graders read the tracker's files there.
 set -e
 root=$(cd "$(dirname "$0")/../.." && pwd)

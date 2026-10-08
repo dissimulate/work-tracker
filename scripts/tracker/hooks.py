@@ -22,10 +22,8 @@ from .watcher import set_grant
 PR_TRIGGER = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b|\bgit\s+push\b")
 
 # ---------------------------------------------------------------- hooks
-# scripts/hook.sh filters each event before Python starts: a session with no tracker exits after one file test; an
-# edit starts Python only for a tracker file; a Bash command only when it may commit, push or run `gh pr`. The work
-# the tracker may not show comes from git (`lag`), so edits by any tool or subagent count. A hook adds context only
-# when it changes what the AI should do next, and says each thing once.
+# scripts/hook.sh filters each event before Python starts. A hook adds context only when it changes what the model
+# does next, and says each thing once.
 
 
 def hook_input() -> dict:
@@ -44,7 +42,7 @@ def emit_context(event: str, text: str, notice: str = "") -> None:
 
 
 def command_context() -> str:
-    """Hosts without a shell env file get the CLI path and the hook's authoritative session id in context."""
+    """A host with no shell env file gets the CLI path and the session id in context, as a command prefix."""
     root, sid = os.environ.get("PLUGIN_ROOT"), os.environ.get("TRACKER_SESSION")
     if not root or not sid or os.environ.get("CLAUDE_ENV_FILE"):
         return ""
@@ -117,8 +115,9 @@ def next_request(m: Match, cwd: str | Path, sid: str) -> str:
 
 
 def hook_stop(data: dict) -> None:
-    """The end of a turn: log the commits no other hook saw (made in the terminal, or by a command the post-bash filter
-    let through). Never blocks: the model records only what git does not hold, when `next_request` asks."""
+    """The end of a turn or of the session: log the commits no other hook saw (made in the terminal, or by a command
+    the post-bash filter did not let through). Never blocks: the model records only what git does not hold, when
+    `next_request` asks."""
     cwd = data.get("cwd") or os.getcwd()
     m = match_cwd(cwd, str(data.get("session_id") or ""))
     if not m or not m.branch:
@@ -159,8 +158,7 @@ def hook_post_bash(data: dict) -> None:
 
 
 def hook_edit(data: dict) -> None:
-    """hook.sh starts this for a hand edit of a tracker file: count its change as this session's, so the next message
-    does not report it as another session's."""
+    """A hand edit of a tracker file (hook.sh starts no other): count its change as this session's (`own_edit`)."""
     sid = str(data.get("session_id") or "")
     cwd = data.get("cwd") or os.getcwd()
     m = match_cwd(work_dir(cwd), sid)
@@ -317,7 +315,6 @@ HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks th
 
 
 def run_hook(event: str) -> None:
-    """What scripts/hook.sh runs for an event, with the hook JSON on stdin."""
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
     try:

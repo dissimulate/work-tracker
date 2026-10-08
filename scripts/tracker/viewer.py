@@ -188,7 +188,7 @@ def move_chip(move: Move | None) -> Html:
 
 
 def agent_word(s: Live) -> str:
-    """`working since 09:52`: a Claude session's status, and since when (a clock time: the page does not change
+    """`working since 09:52`: an agent session's status, and since when (a clock time: the page does not change
     while the status holds)."""
     word = {"busy": "working"}.get(s.status, s.status or "running")
     return f"{word} since {clock(s.since)}" if s.since else word
@@ -201,7 +201,7 @@ def clock(ts: float) -> str:
 
 
 def agent_icon(sessions: list[Live]) -> Html:
-    """Left of a Now row, the Claude sessions on its work: a ring that spins while one of them works (busy) and stays
+    """Left of a Now row, the agent sessions on its work: a ring that spins while one of them works (busy) and stays
     still while all are idle (they wait for the user)."""
     if not sessions:
         return NONE
@@ -213,8 +213,8 @@ def agent_icon(sessions: list[Live]) -> Html:
 
 def version(tr: Tracker) -> str:
     """`<data>.<code>.<synced>`: the first part changes with any tracker file, the sessions running on it or its
-    watcher (the page swaps its content), the second with any viewer/ file or this script (the page reloads), the
-    third is the last GitHub sync (epoch s)."""
+    watcher (the page swaps its content), the second with any viewer/ file or module of this package (the page
+    reloads), the third is the last GitHub sync (epoch s)."""
     live = json.dumps([[x.sid, x.status, x.since, x.branch, x.focus] for x in live_sessions(tr.slug)]
                       + [watcher_of(tr)])
     code = files_hash([*sorted(VIEWER_DIR.iterdir()), *sorted(PACKAGE.glob("*.py"))])
@@ -479,7 +479,7 @@ def sequence_html(tr: Tracker) -> Html:
 
 # ---------------------------------------------------------------- now
 
-STALE_MARK_S = 86400  # a branch whose commits were last logged before this shows it unopened
+STALE_MARK_S = 86400  # a branch whose commits were last logged longer ago than this shows that age in its closed row
 
 
 def now_html(tr: Tracker) -> Html:
@@ -636,7 +636,7 @@ def page_html(title: str, body: Html, slug: str = "", ver: str = "") -> str:
 # ---------------------------------------------------------------- viewer server
 
 VIEWER_FILE = HOME / ".viewer.json"
-# Longer than Chrome's once-a-minute timer throttling in background tabs, so a hidden tab keeps it alive.
+# Longer than a browser's once-a-minute timer throttling in background tabs, so a hidden tab keeps it alive.
 VIEWER_IDLE_S = int(os.environ.get("TRACKER_VIEWER_IDLE", "180"))
 
 
@@ -822,7 +822,7 @@ def serve(port: int = 0) -> None:
     atomic_write(VIEWER_FILE, json.dumps({"port": server.server_address[1], "pid": os.getpid()}))
 
     def watchdog():
-        """Stop when idle; restart onto this script when it changes."""
+        """Stop when idle; restart onto the package's code when it changes and imports."""
         while time.monotonic() - server.last_seen < VIEWER_IDLE_S:
             time.sleep(2)
             if code_ready():
