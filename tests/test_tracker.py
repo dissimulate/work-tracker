@@ -533,6 +533,14 @@ class Writes(unittest.TestCase):
         self.assertIn("log line written · `check`: no new problems", run(*t, "new", "L-9", "--title", "Nine"))
         self.assertNotIn("log line written", run(*t, "log", "a note"))  # it says `logged`
 
+        run(*t, "new", "L-2", "--title", "Two")
+        run(*t, "log", "about two", "--ref", "l-2")
+        self.assertEqual(run(*t, "history", "--ref", "L-2").splitlines(),
+                         [f"{model.today()} [L-2] Added L-2 Two", f"{model.today()} [L-2] about two"])
+        self.assertEqual(run(*t, "history", "--last", "1"), f"{model.today()} [L-2] about two\n")
+        self.assertEqual(run(*t, "history", "--since", "2999-01-01"), "no log lines\n")
+        self.assertIn("about two", run(*t, "show", "log"))  # the log is no record, but `show log` reads it
+
         shown = run(*t, "show", "L-1", "tracker", "--section", "carry,goal")
         self.assertIn("== L-1 · One thing · done\n## Carry forward\n\n- Fact 0", shown)
         self.assertIn("(no section 'goal')\n\n== README · Limits · planning\n(no section 'carry')\n\n## Goal", shown)

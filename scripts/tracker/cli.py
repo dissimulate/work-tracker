@@ -22,8 +22,8 @@ from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_sess
     load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
     session_id, session_tracker, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
-from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, brief, context_lines, dep_lines, index_lines, order_lines,
-    span_lines, start_text)
+from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
+    index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
 from .watcher import REFUSED, Watcher, agent_session, granted, session_name, watching
 
@@ -240,6 +240,14 @@ def cmd_log(args):
     refs = [tr.find(r).id for r in id_list(args.ref)]
     append_log(tr, args.message, refs)
     print("logged" + (f" [{' '.join(refs)}]" if refs else ""))
+
+
+def cmd_history(args):
+    tr = resolve(args)
+    if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
+        die("--since takes a date: YYYY-MM-DD")
+    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last)
+    print("\n".join(lines) if lines else "no log lines")
 
 
 def cmd_new(args):
@@ -477,6 +485,9 @@ def cmd_show(args):
     words = csv(args.section)
     out = []
     for ident in id_list(args.ids):
+        if ident.lower() == "log":  # the log holds no sections: its last lines, as `history` gives them
+            out += ["== log (`tracker history` filters it)", *history_lines(resolve(args), [], "", HISTORY_LAST), ""]
+            continue
         rec = record_for(args, ident)[1]
         state = rec.stage if rec.kind == "ticket" else rec.get("status")
         out.append("== " + " · ".join(str(x) for x in (rec.id, rec.get("title"), state) if x))
@@ -974,10 +985,16 @@ def build_parser():
     sp.add_argument("text")
     sp = add("show", cmd_show, "records' own text by id, whole or only some sections, without the template's "
                                "comments: show AS-20 --section carry / show D-01 D-02 --section resolution")
-    sp.add_argument("ids", nargs="+", metavar="ID", help="ticket or decision ids (a comma list works too), or "
-                                                          "`tracker` for the README")
+    sp.add_argument("ids", nargs="+", metavar="ID", help="ticket or decision ids (a comma list works too), "
+                                                          "`tracker` for the README, or `log` for its last lines")
     sp.add_argument("--section", help="comma list of sections, by a prefix of the name: plan, carry, links, question, "
                                       "options, resolution, context, goal, scope")
+    sp = add("history", cmd_history, "read the log: its last lines, oldest first, or those about some tickets or "
+                                     "decisions, or since a date: history --ref T-8 D-2 --since 2026-10-01")
+    sp.add_argument("--ref", **IDS, help="only the lines about these ids")
+    sp.add_argument("--since", metavar="YYYY-MM-DD", help="only the lines dated this day or later")
+    sp.add_argument("--last", type=int, default=HISTORY_LAST, metavar="N",
+                    help=f"the last N lines (default {HISTORY_LAST}; 0 for all)")
     sp = add("attach", cmd_attach, f"keep a file in the tracker's {EVIDENCE_DIR}/ folder and link it from the "
                                    "tickets and decisions it supports")
     sp.add_argument("file", nargs="?")

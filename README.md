@@ -29,6 +29,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker context <id>` | one ticket or decision in full, with what it builds on |
 | `tracker decisions --all` | the decisions, open and settled |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
+| `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
 | `tracker open [id]` | the live page |
 | `tracker issue --due` | the tickets whose issue fields (priority, when the issue was created) are due, with their issue links |
 | `tracker check` | problems in the tracker's files |

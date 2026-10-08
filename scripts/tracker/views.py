@@ -161,6 +161,19 @@ DECISION_LOG = re.compile(r"(?:Opened|Decided) (D-\d+)\b")  # the lines `decide`
 CONTEXT_LOG = 3  # log lines `context` shows by default
 
 
+HISTORY_LAST = 30  # log lines `history` shows by default
+
+
+def history_lines(tr: Tracker, refs: list[str], since: str, last: int) -> list[str]:
+    """The log's last `last` lines (0: all), oldest first: those whose refs name any of `refs`, dated `since` or
+    later."""
+    path = tr.root / "log.md"
+    lines = [ln[2:] for ln in (path.read_text().splitlines() if path.exists() else [])
+             if (m := LOG_LINE.match(ln)) and m[1] >= since
+             and (not refs or set(refs) & set((m[2] or "").split()))]
+    return lines[-last:] if last > 0 else lines
+
+
 def log_for(tr: Tracker, ident: str, n: int, shown: set[str] = frozenset()) -> list[str]:
     """The last n log lines whose refs name this id. A line that opened or settled a decision in `shown` is left out:
     the view shows that decision."""
@@ -174,7 +187,7 @@ def log_for(tr: Tracker, ident: str, n: int, shown: set[str] = frozenset()) -> l
 
 def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str] = frozenset()) -> list[str]:
     lines = log_for(tr, rec.id, n, shown)
-    return ["", f"Recent log for {rec.id} (oldest first; `find {rec.id}` for all):",
+    return ["", f"Recent log for {rec.id} (oldest first; `history --ref {rec.id} --last 0` for all):",
             *(f"  {cut(x, width)}" for x in lines)] if lines else []
 
 
