@@ -1,6 +1,6 @@
 {
   "name": "work-tracker",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "description": "Local, file-based plan and progress tracker for a piece of work: Markdown tickets, dependencies and decisions, a live browser viewer, and hooks that keep the AI reading and updating it.",
   "author": { "name": "Adam Brooks" }
 }

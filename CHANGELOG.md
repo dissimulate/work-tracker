@@ -5,6 +5,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ## Unreleased
 
+## 0.30.0 - 2026-10-08
+
 ### Added
 
 - Viewer: a sun/moon button switches themes and saves the choice locally; the system theme is the default.
@@ -14,23 +16,18 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Changed
 
-- A ticket's priority is a number from 0 (most urgent) to 4 (least), the same for every issue tracker; the agent
-  maps an issue's level onto it. Any ticket can have one: `tracker new --priority` and `tracker set <id> priority=<n>`.
-  Run `tracker migrate`: it turns the words recorded before into numbers, and an unknown word is read again.
+- A ticket's priority is a number from 0 (most urgent) to 4 (least), the same for every issue tracker; the agent maps an issue's level onto it. Any ticket can have one: `tracker new --priority` and `tracker set <id> priority=<n>`. Run `tracker migrate`: it turns the words recorded before into numbers, and an unknown word is read again.
 - Viewer: sequence columns fit their visible contents, leaving the remaining width for ticket titles.
 - Viewer: clearer spacing and headings, charcoal dark surfaces, and consistent solid pastel status tags without dots.
 - Viewer: a red move tag marks your turn instead of a blue left border; narrow layouts and reduced motion are improved.
 - Each write ends with one line that says what it did: the log line it wrote and the `check` result.
-- `step`, `log` and `add carry` take longer text: 400 characters for `next`, a summary and a log line, 600 for a
-  Carry forward bullet.
+- `step`, `log` and `add carry` take longer text: 400 characters for `next`, a summary and a log line, 600 for a Carry forward bullet.
 - `tracker context <tracker name>` prints the tracker's open work.
 - The slash command takes a tracker name as `start`, and `view` as `open`.
 - A closed ticket asks for its issue fields only once, and only when it has a recorded start.
 - A session hears of a change to its own tickets only when the ticket becomes its own or ends.
-- The brief, the skill and the hook lines say that a `step` message leaves out pushes, merges, review rounds and test
-  runs.
-- Viewer: wait and cycle time share a Time column, and waits on and unblocks share a Deps column. The columns hide by
-  the table's width.
+- The brief, the skill and the hook lines say that a `step` message leaves out pushes, merges, review rounds and test runs.
+- Viewer: wait and cycle time share a Time column, and waits on and unblocks share a Deps column. The columns hide by the table's width.
 - Viewer: every field is escaped by default.
 
 ### Fixed
