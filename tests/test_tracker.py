@@ -823,13 +823,14 @@ class SequenceSort(unittest.TestCase):
         run(*t, "new", "T-3", "--title", "Uses base", "--depends", "T-2")
         run(*t, "new", "T-4", "--title", "Gone", "--group", "api")
         run(*t, "set", "T-4", "status=dropped", "summary=not needed")
+        run(*t, "new", "T-5", "--title", "Uses that", "--depends", "T-3")
         page = viewer.main_html(model.Tracker(model.HOME / s))
 
         head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
         self.assertEqual(re.findall(r'<button type=button data-sort="(\w+)">([^<]+)</button>', head),
                          [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
-                          ("priority", "Priority"), ("wait", "Wait time"), ("cycle", "Cycle time"),
-                          ("waits", "Waits on"), ("unblocks", "Unblocks")])
+                          ("priority", "Priority"), ("wait", "Wait"), ("cycle", "→ Cycle"),
+                          ("waits", "← Waits on"), ("unblocks", "→ Unblocks")])
 
         def row(ident: str) -> dict[str, str]:
             attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
@@ -838,8 +839,15 @@ class SequenceSort(unittest.TestCase):
         # o: the dependency order the page starts in (dropped last); r: the status's place in todo → dropped.
         self.assertEqual({k: row("T-2")[k] for k in "ogrwu"}, {"o": "0", "g": "api", "r": "0", "w": "0", "u": "1"})
         self.assertEqual({k: row("T-10")[k] for k in "ogrwu"}, {"o": "1", "g": "ui", "r": "0", "w": "0", "u": "0"})
-        self.assertEqual({k: row("T-3")[k] for k in "ogrwu"}, {"o": "2", "g": "", "r": "0", "w": "1", "u": "0"})
-        self.assertEqual({k: row("T-4")[k] for k in "ogrwu"}, {"o": "3", "g": "api", "r": "5", "w": "0", "u": "0"})
+        self.assertEqual({k: row("T-3")[k] for k in "ogrwu"}, {"o": "2", "g": "", "r": "0", "w": "1", "u": "1"})
+        self.assertEqual({k: row("T-4")[k] for k in "ogrwu"}, {"o": "4", "g": "api", "r": "5", "w": "0", "u": "0"})
+
+        # One Deps column: a line ← what the ticket waits on, a line → what it unblocks; the title names both lists.
+        def deps(ident: str) -> str:
+            return re.search(rf'<details data-id="{ident}".*?(<span class="deps lines" .*?)</summary>', page).group(1)
+        self.assertIn('title="waits on: T-2; unblocks: T-5"><span><span class=meta>←</span> ', deps("T-3"))
+        self.assertIn('</span><span><span class=meta>→</span> <a class=id href="#T-5">T-5</a></span>', deps("T-3"))
+        self.assertIn('title="unblocks: T-3"><span><span class=meta>→</span> <a class=id href="#T-3">', deps("T-2"))
 
     def test_an_unknown_status_still_renders(self):
         """A hand-edited status outside STAGES sorts after them, and the page shows the check's error."""
@@ -1095,7 +1103,8 @@ class Spans(unittest.TestCase):
         def spans(ident: str) -> tuple[str, str]:
             return re.search(rf'<details data-id="{ident}"[^>]* data-sw="([^"]*)" data-sc="([^"]*)"', page).groups()
         self.assertEqual((spans("S-1"), spans("S-2")), (("7200", "21600"), ("", "")))
-        self.assertRegex(page, r'data-id="S-1".*?<summary>.*?<span>2 h</span><span>6 h</span>')
+        self.assertRegex(page, r'data-id="S-1".*?<summary>.*?<span title="wait \(issue created → started\): 2 h; '
+                               r'cycle \(started → PR merged\): 6 h">2 h <span class=meta>→</span> 6 h</span>')
         run("--tracker", s, "set", "S-1", "summary=Shipped the API")  # the opened row still leads with its summary
         page = viewer.main_html(model.Tracker(model.HOME / s))
         self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>summary</dt><dd>Shipped the API</dd>')

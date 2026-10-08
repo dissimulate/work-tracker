@@ -334,9 +334,9 @@ tr:last-child > td { border-bottom: 0; }
 
 /* ---------- sequence ---------- */
 
-/* Each ticket is a row that opens to the whole ticket. The server sets --cols, the columns after step and ticket:
-   each as wide as its longest text, so rows line up. The ticket column takes the rest, and every cell truncates.
-   The head's font size is the rows', so ch is the same width in both. */
+/* Each ticket is a row that opens to the whole ticket. The server sets --cols, the columns after step and ticket
+   (--cols-mid, those a narrower page keeps): each as wide as its longest text, so rows line up. The ticket column
+   takes the rest, and every cell truncates. The head's font size is the rows', so ch is the same width in both. */
 .seq { --step: 5ch; --gap: 14px; font-size: var(--fs-m); }
 
 .seq-head, .seq summary {
@@ -355,10 +355,10 @@ tr:last-child > td { border-bottom: 0; }
 }
 .seq-head button:hover { color: var(--ink); }
 .seq-head button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.seq-head > [data-dir] { overflow: visible; } /* the arrow may run into the gap: columns fit their labels */
-.seq-head > [data-dir] button { color: var(--accent); }
-.seq-head > [data-dir="asc"] button::after { content: " ↑"; }
-.seq-head > [data-dir="desc"] button::after { content: " ↓"; }
+.seq-head > :has([data-dir]) { overflow: visible; } /* the arrow may run into the gap: columns fit their labels */
+.seq-head [data-dir] { color: var(--accent); }
+.seq-head [data-dir="asc"]::after { content: " ↑"; }
+.seq-head [data-dir="desc"]::after { content: " ↓"; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .seq-head > span, .seq summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seq summary > span:has(> .chip) { display: flex; align-items: center; }
@@ -368,6 +368,12 @@ tr:last-child > td { border-bottom: 0; }
 .seq .tk .id { font-weight: 700; }
 .seq details > div { padding-left: calc(var(--pad) + var(--step) + var(--gap)); }
 
+/* Narrower: no group or time, so the ticket keeps its room; the opened ticket has its group, start and merge. */
+@media (max-width: 1000px) {
+  .seq-head, .seq summary { grid-template-columns: var(--step) minmax(0, 1fr) var(--cols-mid); }
+  :is(.seq-head, .seq summary) > :is(:nth-child(3), :nth-child(6)) { display: none; }
+}
+
 /* Phone width: step, ticket and status only; the dependencies are in the opened ticket. */
 @media (max-width: 700px) {
   .seq-head, .seq summary { grid-template-columns: var(--step) minmax(0, 1fr) max-content; }
@@ -376,6 +382,8 @@ tr:last-child > td { border-bottom: 0; }
 }
 
 .deps { font-size: var(--fs-s); }
+.seq .lines { display: flex; flex-direction: column; align-items: flex-start; } /* a Deps cell: waits on above unblocks */
+.seq .lines > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- filters ---------- */
 

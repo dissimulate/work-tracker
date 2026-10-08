@@ -252,28 +252,45 @@ def main_html(tr: Tracker) -> str:
         return panel(d.id, f'<span class=id>{e(d.id)}</span>{chip(d.get("status", "open"))}{gate_html(d)[1]}'
                            f'<b>{e(str(d.get("title")))}</b>', body_html(d))
 
-    # A ticket's two list columns, as (text, html) per item. A closed ticket's waits-on is history: its row leaves it
-    # out; the opened ticket still lists it.
+    # A ticket's two dependency lists, as (text, html) per item. A closed ticket's waits-on is history: its row leaves
+    # it out; the opened ticket still lists it.
     def waits_items(t: Record) -> list[tuple[str, str]]:
         return [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
 
     def unblocks_items(t: Record) -> list[tuple[str, str]]:
         return [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)]
 
-    def fit(items: list[tuple[str, str]]) -> tuple[int, str]:
-        """How many items fit in LIST_CH characters with ` +n` for the rest (at least one), and the text shown."""
+    def fit(items: list[tuple[str, str]], limit: int) -> tuple[int, str]:
+        """How many items fit in `limit` characters with ` +n` for the rest (at least one), and the text shown."""
         texts = [text for text, _ in items]
         for k in range(len(texts), 0, -1):
             shown = ", ".join(texts[:k]) + (f" +{len(texts) - k}" if k < len(texts) else "")
-            if len(shown) <= LIST_CH or k == 1:
+            if len(shown) <= limit or k == 1:
                 return k, shown
         return 0, ""
 
-    def list_cell(items: list[tuple[str, str]]) -> str:
-        k = fit(items)[0]
-        more = f' <span class=meta>+{len(items) - k}</span>' if k < len(items) else ""
-        return (f'<span class=deps title="{e(", ".join(text for text, _ in items))}">'
-                f'{", ".join(h for _, h in items[:k])}{more}</span>')
+    def deps_cell(t: Record) -> tuple[list[str], str]:
+        """(text per line, html) of the Deps column: a line `← ` what the ticket waits on, a line `→ ` what it
+        unblocks."""
+        lists = [(arrow, label, items) for arrow, label, items in
+                 (("←", "waits on", waits_items(t)), ("→", "unblocks", unblocks_items(t))) if items]
+        texts, lines = [], []
+        for arrow, _, items in lists:
+            k, shown = fit(items, LIST_CH - 2)
+            more = f' <span class=meta>+{len(items) - k}</span>' if k < len(items) else ""
+            texts.append(f"{arrow} {shown}")
+            lines.append(f'<span><span class=meta>{arrow}</span> {", ".join(h for _, h in items[:k])}{more}</span>')
+        title = "; ".join(f"{label}: {', '.join(text for text, _ in items)}" for _, label, items in lists)
+        return texts, f'<span class="deps lines" title="{e(title)}">{"".join(lines)}</span>'
+
+    def time_cell(spans: dict[str, int | None]) -> tuple[str, str]:
+        """(text, html) of the Time column: `wait → cycle`, either side blank when the ticket has none."""
+        if all(x is None for x in spans.values()):
+            return "", "<span></span>"
+        shown = ["" if x is None else duration(x) for x in spans.values()]
+        title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(spans, shown))
+        return " → ".join(shown).strip(), (f'<span title="{e(title)}">{shown[0]} <span class=meta>→</span> '
+                                           f'{shown[1]}</span>')
 
     def ticket_row(t: Record, order: int) -> str:
         """A row of the sequence, which opens to the whole ticket. A ready ticket shows `ready` for its `todo`.
@@ -296,8 +313,7 @@ def main_html(tr: Tracker) -> str:
                  f'<span>{e(str(t.get("group", "")))}</span>'
                  f'<span>{gate_chip if tag == "ready" else chip(t.stage)}</span>'
                  f'<span>{e(str(t.get("priority", "")))}</span>'
-                 + "".join(f'<span>{"" if x is None else duration(x)}</span>' for x in spans.values())
-                 + f'{list_cell(waits_items(t))}{list_cell(unblocks_items(t))}')
+                 f'{time_cell(spans)[1]}{deps_cell(t)[1]}')
         status = STAGES.index(t.stage) if t.stage in STAGES else len(STAGES)
         rank = priority_rank(str(t.get("priority", "")))
         sort = (f'data-o="{order}" data-g="{e(str(t.get("group", "")))}" data-r="{status}" '
@@ -372,27 +388,34 @@ def main_html(tr: Tracker) -> str:
     # Dropped tickets go last. Columns are as wide as their longest text, so every row lines up.
     ordered = sorted(tr.tickets, key=lambda t: (t.stage == "dropped", seq.step.get(t.id, 0), sort_key(t.id)))
 
-    def width(texts: list[str], least: int) -> int:
-        return min(26, max([least, *(len(x) + 1 for x in texts)]))
+    def width(texts: list[str], least: int) -> str:
+        return f"{min(26, max([least, *(len(x) + 1 for x in texts)]))}ch"
 
-    cols = (f"{width([str(t.get('group', '')) for t in ordered], 6)}ch 12ch "
-            f"{width([str(t.get('priority', '')) for t in ordered], 9)}ch 10ch 10ch "
-            f"{width([fit(waits_items(t))[1] for t in ordered], 10)}ch "
-            f"{width([fit(unblocks_items(t))[1] for t in ordered], 10)}ch")
+    # Group, status, priority, time, deps; --cols-mid leaves out group and time, which a narrower page hides.
+    cols = [width([str(t.get("group", "")) for t in ordered], 6), "12ch",
+            width([str(t.get("priority", "")) for t in ordered], 9),
+            width([time_cell({name: span(t, name) for name in SPANS})[0] for t in ordered], 14),
+            width([x for t in ordered for x in deps_cell(t)[0]], 24)]
+    style = f"--cols: {' '.join(cols)}; --cols-mid: {' '.join(cols[i] for i in (1, 2, 4))}"
     n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
          "ready": len(tr.ready()),
          "blocked": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET and tr.blockers(t)), **counts}
     filters = "".join(f'<button data-f="{f}">{f} <span class=n>{n[f]}</span></button>'
                       for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
-    # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
-    head = "".join(f'<span><button type=button data-sort="{key}">{label}</button></span>'
-                   for key, label in (("step", "Step"), ("ticket", "Ticket"), ("group", "Group"),
-                                      ("status", "Status"), ("priority", "Priority"), ("wait", "Wait time"),
-                                      ("cycle", "Cycle time"), ("waits", "Waits on"), ("unblocks", "Unblocks")))
+    # Each heading sorts the rows by its column in the page; Step puts back the dependency order. Time and Deps each
+    # show two values, and have a heading for each.
+    def sorter(key: str, label: str) -> str:
+        return f'<button type=button data-sort="{key}">{label}</button>'
+
+    head = "".join(f"<span>{' '.join(sorter(*x) for x in col)}</span>"
+                   for col in ([("step", "Step")], [("ticket", "Ticket")], [("group", "Group")],
+                               [("status", "Status")], [("priority", "Priority")],
+                               [("wait", "Wait"), ("cycle", "→ Cycle")],
+                               [("waits", "← Waits on"), ("unblocks", "→ Unblocks")]))
     sequence_html = sec("seq", "Sequence", f"{n['active']} open of {n['all']}",
                         "".join(f"<p class=lead>{e(x)}</p>" for x in span_lines(tr))
                         + f'<div class=filters>{filters}</div><p class=sr-only aria-live=polite id=sort-said></p>'
-                        f'<div class=seq style="--cols: {cols}"><div class=seq-head>{head}</div>'
+                        f'<div class=seq style="{style}"><div class=seq-head>{head}</div>'
                         + "".join(ticket_row(t, i) for i, t in enumerate(ordered)) + "</div>", True)
 
     open_ds = tr.open_decisions()

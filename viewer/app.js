@@ -49,7 +49,7 @@ function applySort() {
   [...seq.querySelectorAll(':scope > details.t')].sort(compare).forEach(d => seq.append(d));
   seq.querySelectorAll('.seq-head button').forEach(b => {
     const on = b.dataset.sort === sort.key && sort.key !== 'step';
-    if (on) b.parentElement.dataset.dir = sort.desc ? 'desc' : 'asc'; else delete b.parentElement.dataset.dir;
+    if (on) b.dataset.dir = sort.desc ? 'desc' : 'asc'; else delete b.dataset.dir;
     b.setAttribute('aria-pressed', on);
   });
 }
