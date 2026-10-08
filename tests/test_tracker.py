@@ -317,6 +317,11 @@ class Moves(unittest.TestCase):
             tr = model.Tracker(model.HOME / s)
             self.assertEqual(session.changes_since(tr, seen, session.watch(tr, [tr.lookup("S-1")])),
                              ["S-1 move now: you — approved by rev; ready to merge"])
+        # Of the session's own tickets, only a move that becomes its own and a ticket's end are news.
+        own = {"S-1": ["own", "in-progress", ""]}
+        for now, said_ in ((["own", "in-review", ""], []), (["own", "merged", ""], ["S-1 is now merged"]),
+                           (["own", "in-progress", "you — checks failing"], ["S-1 move now: you — checks failing"])):
+            self.assertEqual(session.changes_since(tr, own, {"S-1": now}), said_)
 
 
     def test_stale_sync_refreshes_in_the_background(self):

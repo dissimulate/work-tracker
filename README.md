@@ -85,7 +85,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 | Event | Does |
 |---|---|
 | SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief. With none, on a branch with an open ticket: has the agent offer the link at your first message. |
-| UserPromptSubmit | Reports what other sessions or GitHub changed since the brief. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
+| UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
 | PostToolUse (Bash) | After a commit: logs it, and once per next action asks whether a step ended. After `git push` or `gh pr …`: records the branch on its ticket and syncs PR state. |
 | PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
 | PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |

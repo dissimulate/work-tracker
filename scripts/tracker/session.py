@@ -443,10 +443,13 @@ def on_branch(args) -> tuple[Match, Path]:
 # stage and move; each ticket it waits on, with its Carry forward; each decision that touches it, with its answer.
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, list[str]]:
+    """What a session saw of its tickets, to tell it what changed since: of its own tickets the stage and a move that
+    is its own (a move that goes to a reviewer asks nothing of it); of their dependencies the stage and Carry forward;
+    of their decisions the status and answer."""
     seen = {}
     for t in tickets:
         move = whose_move(tr, t)
-        seen[t.id] = ["own", t.stage, move.text(" — ") if move else ""]
+        seen[t.id] = ["own", t.stage, move.text(" — ") if move and move.mine else ""]
         for d in tr.deps(t):
             if d.kind == "ticket" and d.ident not in seen:
                 cf = hashlib.sha1("\n".join(d.rec.carry_forward).encode()).hexdigest()[:10]
@@ -473,7 +476,8 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
         elif not was:
             out.append(f"now waits on {ident} ({now[1]})")
         else:
-            if was[1] != now[1]:
+            # The session's own ticket moving to review is its own doing, or sync's: only its end is news.
+            if was[1] != now[1] and (now[0] != "own" or now[1] in CLOSED_TICKET):
                 out.append(f"{ident} is now {now[1]}")
             if now[0] == "own" and len(was) > 2 and was[2] != now[2] and now[2]:  # older sessions kept no move
                 out.append(f"{ident} move now: {now[2]}")
