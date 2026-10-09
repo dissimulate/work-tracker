@@ -32,23 +32,14 @@
       <template id="switch-row">
         <li>
           <a><b></b> <span class="meta"></span><small class="meta" hidden></small></a>
-          <button class="icon" type="button" data-act="archive">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3.5 4.5h17v4h-17zM5 8.5v11h14v-11M10 12.5h4"/>
-            </svg>
-          </button>
-          <button class="icon" type="button" data-act="unarchive">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 11a8 8 0 1 1 2.3 5.7M4 4.5V11h6.5"/>
-            </svg>
-          </button>
-          <button class="icon del" type="button" data-act="delete">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13M10 11v5.5M14 11v5.5"/>
-            </svg>
-          </button>
+          <button class="icon more" type="button" aria-haspopup="true" aria-expanded="false">⋯</button>
         </li>
       </template>
+      <div id="row-menu" hidden>
+        <button type="button" data-act="archive">Archive</button>
+        <button type="button" data-act="unarchive">Unarchive</button>
+        <button type="button" data-act="delete">Delete</button>
+      </div>
     </div>
     <div id="live"></div>
     <button id="refresh" type="button" hidden>Refresh</button>

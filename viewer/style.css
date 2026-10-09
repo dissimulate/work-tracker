@@ -220,8 +220,8 @@ li { margin: 2px 0; }
 #theme .sun, :root[data-theme="dark"] #theme .moon { display: none; }
 :root[data-theme="dark"] #theme .sun { display: block; }
 
-/* The tracker menu, top left: a row per tracker, its buttons on the right; the archived ones in a closed section at
-   the bottom, condensed. */
+/* The tracker menu, top left: a row per tracker, its ⋯ on the right; the archived ones in a closed section at the
+   bottom, condensed. */
 #switch { position: relative; margin-right: auto; }
 
 #switch-list {
@@ -242,7 +242,8 @@ li { margin: 2px 0; }
 }
 
 #switch-list ul { margin: 0; padding: 0; list-style: none; }
-#switch-list li { display: flex; align-items: center; gap: 2px; max-width: none; }
+#switch-list li { display: flex; align-items: center; gap: 2px; max-width: none; border-radius: var(--radius-s); }
+#switch-list li:hover { background: var(--subtle); }
 
 #switch-list a {
   flex: 1;
@@ -256,14 +257,12 @@ li { margin: 2px 0; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#switch-list a:hover { background: var(--subtle); text-decoration: none; }
+#switch-list a:hover { text-decoration: none; }
 #switch-list a[aria-current="page"] b { color: var(--accent); }
 #switch-list small { display: block; color: var(--active); }
 
-#switch-list li button { color: var(--muted); background: none; border-color: transparent; }
-#switch-list li button:not(:disabled):hover { color: var(--accent); background: var(--subtle); }
-#switch-list li .del:not(:disabled):hover { color: var(--blocked); }
-#switch-list li button:disabled { opacity: .35; cursor: not-allowed; }
+#switch-list .more { padding: 0; color: var(--muted); font-size: var(--fs); background: none; border-color: transparent; }
+#switch-list .more:hover, #switch-list .more[aria-expanded="true"] { color: var(--ink); background: none; }
 #switch-list .err { margin: 6px 8px; color: var(--blocked); font-size: var(--fs-s); }
 
 #switch-archived {
@@ -285,7 +284,32 @@ li { margin: 2px 0; }
 #switch-archived .n { font-variant-numeric: tabular-nums; }
 #switch-archived-list a { padding-block: 2px; font-size: var(--fs-s); color: var(--muted); }
 #switch-archived-list b { font-weight: 500; }
-#switch-archived-list button { --control-size: 26px; padding: 5px; }
+#switch-archived-list .more { --control-size: 26px; }
+
+/* A row's menu: fixed beside its ⋯, as the list scrolls and would clip it. */
+#row-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 128px;
+  padding: 4px;
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--tag-ink) 18%, transparent);
+}
+#row-menu button {
+  min-height: 0;
+  padding: 5px 10px;
+  font-size: var(--fs-s);
+  text-align: left;
+  background: none;
+  border: none;
+}
+#row-menu button:not(:disabled):hover { background: var(--subtle); }
+#row-menu [data-act="delete"] { color: var(--blocked); }
+#row-menu button:disabled { opacity: .45; cursor: not-allowed; }
 
 #live { min-width: 0; color: var(--muted); background: none; border-color: transparent; }
 

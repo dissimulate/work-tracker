@@ -7,9 +7,9 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Added
 
-- Viewer: a tracker menu (top left) lists every tracker; pick one to open it, or its bin to move it to the system's trash after a confirm. A tracker with an agent session or a watch on it cannot be deleted.
+- Viewer: a tracker menu (top left) lists every tracker; pick one to open it. Its ⋯ menu archives it, or deletes it to the system's trash after a confirm. A tracker with an agent session or a watch on it cannot be deleted.
 - `tracker delete <slug>` moves a tracker to the system's trash from a terminal. It refuses in an agent session.
-- `tracker archive <slug>` puts a tracker away: no list, lookup, hook or sync reads it, and the viewer still opens it. `tracker unarchive <slug>` brings it back, and `tracker list --archived` lists them. The viewer's tracker menu archives too, and lists the archived trackers in a closed section at its bottom.
+- `tracker archive <slug>` puts a tracker away: no list, lookup, hook or sync reads it, and the viewer still opens it. `tracker unarchive <slug>` brings it back, and `tracker list --archived` lists them. The viewer's tracker menu lists the archived trackers in a closed section at its bottom.
 - Viewer: a page whose tracker was deleted says so instead of reloading.
 
 ## 0.30.0 - 2026-10-08

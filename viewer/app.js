@@ -154,20 +154,21 @@ async function post(trackerSlug, what) {
   }
 }
 
-// The tracker menu (top left): a tracker opens in this tab. Its box archives it, its arrow brings an archived one
-// back, its bin deletes it after a confirm. The server refuses an archive or a delete while an agent session or a
-// watch is on the tracker, so those buttons are off then. The archived trackers sit in a closed section at the
-// bottom. The list is read at each open.
+// The tracker menu (top left): a tracker opens in this tab. Its ⋯ opens the row menu: Archive (Unarchive for an
+// archived one) and Delete, after a confirm. The server refuses an archive or a delete while an agent session or a
+// watch is on the tracker, so those items are off then. The archived trackers sit in a closed section at the bottom.
+// The list is read at each open. One row menu serves every row, fixed beside its ⋯: the list scrolls, and would
+// clip a menu inside it.
 const switchOpen = document.getElementById('switch-open');
 const switchList = document.getElementById('switch-list');
 const switchError = switchList.querySelector('.err');
 const archivedToggle = document.getElementById('switch-archived');
 const archivedList = document.getElementById('switch-archived-list');
+const rowMenu = document.getElementById('row-menu');
 const confirmBox = document.getElementById('confirm');
 const confirmError = confirmBox.querySelector('.err');
 let doomed = null; // the tracker the dialog asks about
-
-const ACTIONS = { archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete' };
+let menuFor = null; // the row menu's tracker, its ⋯ and whether it is archived
 
 function trackerRow(t, archived) {
   const li = document.getElementById('switch-row').content.firstElementChild.cloneNode(true);
@@ -179,16 +180,41 @@ function trackerRow(t, archived) {
   const busy = a.querySelector('small');
   busy.textContent = `in use by ${t.in_use}`;
   busy.hidden = !t.in_use;
-  li.querySelectorAll('[data-act]').forEach(b => {
-    const act = b.dataset.act;
-    b.hidden = act === (archived ? 'archive' : 'unarchive');
-    b.disabled = Boolean(t.in_use);
-    const label = t.in_use ? `Cannot ${act} ${t.title}: in use` : `${ACTIONS[act]} ${t.title}`;
-    b.setAttribute('aria-label', label);
-    b.title = label;
-    b.addEventListener('click', () => (act === 'delete' ? askDelete(t) : change(t, act)));
-  });
+  const more = li.querySelector('.more');
+  more.setAttribute('aria-label', `Actions for ${t.title}`);
+  more.title = 'Archive or delete';
+  more.addEventListener('click', () => (menuFor?.more === more ? closeRowMenu() : openRowMenu(t, more, archived)));
   return li;
+}
+
+function openRowMenu(t, more, archived) {
+  closeRowMenu();
+  menuFor = { t, more, archived };
+  rowMenu.querySelectorAll('[data-act]').forEach(b => {
+    b.hidden = b.dataset.act === (archived ? 'archive' : 'unarchive');
+    b.disabled = Boolean(t.in_use);
+    b.title = t.in_use ? `In use by ${t.in_use}` : '';
+  });
+  more.setAttribute('aria-expanded', 'true');
+  rowMenu.hidden = false;
+  const r = more.getBoundingClientRect();
+  rowMenu.style.top = `${r.bottom + 4}px`;
+  rowMenu.style.left = `${Math.max(8, r.right - rowMenu.offsetWidth)}px`;
+  rowMenu.querySelector('button:not([hidden]):not(:disabled)')?.focus();
+}
+
+function closeRowMenu(focus) {
+  if (!menuFor) return;
+  menuFor.more.setAttribute('aria-expanded', 'false');
+  if (focus) menuFor.more.focus();
+  rowMenu.hidden = true;
+  menuFor = null;
+}
+
+function rowAction(act) {
+  const { t } = menuFor;
+  closeRowMenu();
+  if (act === 'delete') askDelete(t); else change(t, act);
 }
 
 async function openSwitch() {
@@ -208,6 +234,7 @@ async function openSwitch() {
 }
 
 function closeSwitch(focus) {
+  closeRowMenu();
   if (switchList.hidden) return;
   switchList.hidden = true;
   switchOpen.setAttribute('aria-expanded', 'false');
@@ -264,13 +291,19 @@ if (slug) {
   document.getElementById('switch').hidden = false;
   switchOpen.addEventListener('click', () => (switchList.hidden ? openSwitch() : closeSwitch(false)));
   archivedToggle.addEventListener('click', toggleArchived);
+  rowMenu.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => rowAction(b.dataset.act)));
+  switchList.addEventListener('scroll', () => closeRowMenu());
   confirmBox.querySelector('[data-cancel]').addEventListener('click', () => confirmBox.close());
   confirmBox.querySelector('[data-delete]').addEventListener('click', e => deleteDoomed(e.currentTarget));
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSwitch(true); });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (menuFor) closeRowMenu(true); else closeSwitch(true);
+  });
   showRefresh();
   refresh.addEventListener('click', askRefresh);
   document.addEventListener('click', e => {
     if (!e.target.closest('#switch')) closeSwitch(false);
+    else if (!e.target.closest('#row-menu, .more')) closeRowMenu();
     if (e.target.closest('#archived [data-act="unarchive"]')) { // the archived page's banner
       post(slug, 'unarchive').then(refused => (refused ? alert(refused) : location.reload()));
     }
