@@ -991,14 +991,14 @@ def cmd_use(args):
 
 
 def cmd_open(args):
-    from .viewer import viewer_ping, viewer_port
+    from .viewer import viewer_ping, viewer_port, VIEWER_PORT
     here = find_tracker(args) if args.id else None
     whole = args.id and not (here and here.lookup(args.id)) and (tracker_at(args.id) or archived_at(args.id))
     tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
     old = viewer_ping()  # a viewer on other code is replaced on its port, so its open pages carry on
     port = viewer_port()
     if not port:
-        spawn("serve", "--port", str(old[0] if old else 0))
+        spawn("serve", "--port", str(old[0] if old else VIEWER_PORT))
         for _ in range(50):
             time.sleep(0.1)
             if port := viewer_port():
@@ -1213,7 +1213,8 @@ def build_parser():
                                    "Refuses while an agent session or a watch is on it, and in an agent session")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
-    sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when idle)")
+    sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when no "
+                                "page or tracked agent session needs it)")
     sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
                                              "archived one too)")
     sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")

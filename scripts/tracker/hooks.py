@@ -26,6 +26,11 @@ PR_TRIGGER = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b|\
 # does next, and says each thing once.
 
 
+def keep_viewer() -> None:
+    from . import viewer  # here: only a tracked session's hook loads the viewer's code
+    viewer.keep_viewer()
+
+
 def hook_input() -> dict:
     try:
         return json.load(sys.stdin)
@@ -83,6 +88,7 @@ def hook_session_start(data: dict) -> None:
         elif command_context():
             emit_context("SessionStart", "")
         return
+    keep_viewer()
     changes = sync(m.tracker, force=False)
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
@@ -236,6 +242,7 @@ def hook_prompt(data: dict) -> None:
     m = match_cwd(cwd, sid)
     if not m:
         return
+    keep_viewer()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]

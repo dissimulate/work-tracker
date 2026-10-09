@@ -12,6 +12,11 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - `tracker archive <slug>` puts a tracker away: no list, lookup, hook or sync reads it, and the viewer still opens it. `tracker unarchive <slug>` brings it back, and `tracker list --archived` lists them. The viewer's tracker menu lists the archived trackers in a closed section at its bottom.
 - Viewer: a page whose tracker was deleted says so instead of reloading.
 
+### Changed
+
+- Viewer: the server keeps one port (7316, `TRACKER_VIEWER_PORT`), so bookmarks and open pages keep working: `http://127.0.0.1:7316/` lists the trackers.
+- Viewer: a tracked agent session starts the server, and the server runs while an agent session is on a tracker; no need to ask the agent to open a page first. A page reloads itself when the server is back.
+
 ## 0.30.0 - 2026-10-08
 
 ### Added

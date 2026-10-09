@@ -98,7 +98,9 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 ### Viewer
 
-- `tracker open [id]` starts a local server (Python `http.server`, 127.0.0.1 only) when none runs, and opens the page. The page polls every 3 s and updates in place. The server stops about 3 min after the last request.
+- `tracker open [id]` starts a local server (Python `http.server`, 127.0.0.1 only) when none runs, and opens the page. The page polls every 3 s and updates in place.
+- The server uses one port, 7316 (`TRACKER_VIEWER_PORT`), so a bookmark or a page left open works again when a server runs: `http://127.0.0.1:7316/` (or `localhost:7316`) lists the trackers. If another program has the port, the server takes a free one.
+- A tracked agent session's hooks (session start, each message) start the server when none runs. The server runs while a page polls it or an agent session is on a tracker, and stops about 3 min after neither does. A page that saw the server stop reloads itself when a server answers again.
 - **Tracker menu** (top left) lists every tracker. A tracker opens in the same tab. Its ⋯ menu has Archive (Unarchive for an archived tracker) and Delete. The archived trackers sit in a closed section at the bottom. An archived tracker is in `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it, so it costs nothing. Its page still opens, read-only, with an Unarchive button. A slug names one tracker: `tracker init` refuses the slug of an archived one. Delete moves the tracker's folder to the system's trash (macOS Trash, Windows Recycle Bin, the freedesktop trash on Linux) after you confirm; restore it from there. Archive and Delete are off while an agent session or a watch is on the tracker; end them first. If the trash refuses the folder, the folder stays and the dialog shows why.
 - **Now** shows the tickets under way (your move first), each branch's handoff, and the agent sessions on this machine that work on the tracker (a ring spins while one works).
 - While a page is open, the server syncs PR state every 2 min.
@@ -127,6 +129,7 @@ Environment variables. All are optional.
 | `TRACKER` | none | a tracker slug: commands use it first, the hooks when `tracker start` chose none |
 | `TRACKER_NUDGE_EVERY` | 5 | messages between state lines |
 | `TRACKER_VIEWER_IDLE` | 180 | seconds before an unused viewer stops |
+| `TRACKER_VIEWER_PORT` | 7316 | the viewer's port; 0: a free port each start, and the hooks start no viewer |
 | `TRACKER_VIEWER_SYNC` | 120 | seconds between the viewer's GitHub syncs |
 | `TRACKER_WATCH_SYNC` | 120 | seconds between the watcher's GitHub syncs |
 | `TRACKER_WATCH_IDLE` | 600 | seconds before an idle agent that waits on you is reported |

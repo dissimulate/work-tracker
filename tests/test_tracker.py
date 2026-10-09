@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -29,6 +30,7 @@ BASE = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, BASE, True)
 os.environ["TRACKER_HOME"] = f"{BASE}/home"  # before the import: HOME is read once
 os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude sessions the viewer reads: not the user's
+os.environ["TRACKER_VIEWER_PORT"] = "0"  # a free port, and no viewer started by a tracked session's hooks
 # An agent session running the tests must not leak in: its tracker, its id, or that it is one.
 for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
             "CODEX_THREAD_ID", "PLUGIN_ROOT"):
@@ -1290,11 +1292,28 @@ class IssueFields(unittest.TestCase):
         code, headers, _ = get(f"/t/{s}")
         self.assertEqual((code, headers["Location"], headers["Content-Length"]), (301, f"/t/{s}/", "0"))
         self.assertEqual(get(f"/t/{s}/", {"Host": f"evil.example:{port}"})[0], 403)
+        self.assertEqual(get(f"/t/{s}/", {"Host": f"localhost:{port}"})[0], 200)
         self.assertEqual(get(f"/t/{s}/", {"Sec-Fetch-Site": "cross-site"})[0], 403)
         self.assertEqual(get("/t/no-such-tracker/")[0], 404)
         code, headers, _ = get(f"/t/{s}/")
         self.assertEqual((code, headers["Cache-Control"]), (200, "no-store"))
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+
+    def test_a_tracked_session_starts_the_viewer_when_none_runs(self):
+        with mock.patch.object(viewer, "spawn") as spawn:
+            viewer.keep_viewer()  # TRACKER_VIEWER_PORT=0: the hooks start none
+            self.assertFalse(spawn.called)
+            with mock.patch.object(viewer, "VIEWER_PORT", 7316):
+                with mock.patch.object(viewer, "VIEWER_FILE", Path(BASE) / "no-viewer.json"):
+                    viewer.keep_viewer()
+                spawn.assert_called_once_with("serve", "--port", "7316")
+                spawn.reset_mock()
+                with socket.create_server(("127.0.0.1", 0)) as running:
+                    file = Path(BASE) / "viewer.json"
+                    file.write_text(json.dumps({"port": running.getsockname()[1], "pid": os.getpid()}))
+                    with mock.patch.object(viewer, "VIEWER_FILE", file):
+                        viewer.keep_viewer()
+                self.assertFalse(spawn.called)
 
 
 class Spans(unittest.TestCase):

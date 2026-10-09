@@ -95,9 +95,11 @@ function openHash() {
   history.replaceState(null, '', location.pathname + location.search);
 }
 
+let stopped = false; // the viewer did not answer: a new one has a new token, so the page reloads when it answers
 async function poll() {
   try {
     const res = await fetch(`/t/${slug}/version`, { cache: 'no-store' });
+    if (stopped) return location.reload();
     if (res.status === 404) { // deleted, from this page or another
       live.textContent = 'tracker deleted — open another from the tracker menu';
       live.className = 'off';
@@ -126,7 +128,8 @@ async function poll() {
       (issues ? ' · ' + issues.textContent : '');
     live.className = 'on';
   } catch {
-    live.textContent = 'viewer stopped — run `tracker open`';
+    stopped = true;
+    live.textContent = 'viewer stopped — a tracked agent session or `tracker open` starts it';
     live.className = 'off';
   }
   live.title = live.textContent; // The toolbar truncates long status text to keep the controls visible.

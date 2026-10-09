@@ -637,6 +637,10 @@ def page_html(title: str, body: Html, slug: str = "", ver: str = "") -> str:
 VIEWER_FILE = HOME / ".viewer.json"
 # Longer than a browser's once-a-minute timer throttling in background tabs, so a hidden tab keeps it alive.
 VIEWER_IDLE_S = int(os.environ.get("TRACKER_VIEWER_IDLE", "180"))
+# One port, so a bookmark or a page left open works again once a viewer runs. 0: a free port each start, and the hooks
+# start no viewer.
+VIEWER_PORT = int(os.environ.get("TRACKER_VIEWER_PORT", "7316"))
+SESSION_CHECK_S = 30  # how often an idle viewer looks for a tracked agent session that keeps it running
 
 
 def code_id() -> str:
@@ -664,6 +668,18 @@ def viewer_ping() -> tuple[int, str, int] | None:
             return port, r.read().decode(), int(info["pid"])
     except (OSError, ValueError, KeyError):
         return None
+
+
+def keep_viewer() -> None:
+    """From a tracked session's hooks: start the viewer when none runs, so the user's pages and bookmarks work while
+    they work with an agent. A connect only, no HTTP: the hook stays fast."""
+    import socket
+    if not VIEWER_PORT:
+        return
+    try:
+        socket.create_connection(("127.0.0.1", int(json.loads(VIEWER_FILE.read_text())["port"])), timeout=0.5).close()
+    except (OSError, ValueError, KeyError, TypeError):
+        spawn("serve", "--port", str(VIEWER_PORT))
 
 
 def viewer_port() -> int | None:
@@ -843,19 +859,30 @@ def serve(port: int = 0) -> None:
         except OSError:
             time.sleep(0.25)
     else:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if (old := viewer_ping()) and old[0] == port:  # two hooks started a viewer at once: the other one runs
+            return
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)  # another program has the port
     server.last_seen = time.monotonic()
     server.viewed = {}  # slug -> when a page last asked for it
     server.restart = False
     atomic_write(VIEWER_FILE, json.dumps({"port": server.server_address[1], "pid": os.getpid()}))
 
+    def needed() -> bool:
+        """A page asked lately, or an agent session is on a tracker: its user can open a page at any time."""
+        return time.monotonic() - server.last_seen < VIEWER_IDLE_S or bool(live_by_tracker())
+
     def watchdog():
-        """Stop when idle; restart onto the package's code when it changes and imports."""
-        while time.monotonic() - server.last_seen < VIEWER_IDLE_S:
+        """Stop when not needed; restart onto the package's code when it changes and imports."""
+        checked = time.monotonic()
+        while True:
             time.sleep(2)
             if code_ready():
                 server.restart = True
                 break
+            if time.monotonic() - checked >= SESSION_CHECK_S:
+                if not needed():
+                    break
+                checked = time.monotonic()
         server.shutdown()
 
     def syncer():
