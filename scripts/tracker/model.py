@@ -636,6 +636,10 @@ class Tracker:
         """The repo a ticket's branch and PR live in: its own `repo`, or the tracker's only one."""
         return str(t.get("repo") or (self.repos[0] if len(self.repos) == 1 else ""))
 
+    @property
+    def archived(self) -> bool:
+        return self.root.parent == ARCHIVE
+
     def headline(self) -> str:
         """`title · status · owner`, the one line that names the work everywhere."""
         return " · ".join(str(x) for x in [self.title, self.meta.get("status"), self.meta.get("owner")] if x)
@@ -857,16 +861,29 @@ def id_list(values: list[str] | None) -> list[str]:
     return csv(",".join(values or []))
 
 
-def all_trackers() -> list[Tracker]:
-    if not HOME.exists():
+def all_trackers(home: Path = HOME) -> list[Tracker]:
+    if not home.exists():
         return []
-    return [Tracker(p) for p in sorted(HOME.iterdir()) if p.is_dir() and (p / "README.md").exists()]
+    return [Tracker(p) for p in sorted(home.iterdir()) if p.is_dir() and (p / "README.md").exists()]
 
 
-def tracker_at(slug: str) -> Tracker | None:
+def tracker_at(slug: str, home: Path = HOME) -> Tracker | None:
     """The tracker named `slug`, if it exists. A slug is one folder name in HOME, never a path."""
     slug = str(slug or "")
-    return Tracker(HOME / slug) if SAFE_NAME.fullmatch(slug) and (HOME / slug / "README.md").exists() else None
+    return Tracker(home / slug) if SAFE_NAME.fullmatch(slug) and (home / slug / "README.md").exists() else None
+
+
+# An archived tracker is a folder in ARCHIVE. Every list, lookup, hook and sync reads HOME alone, so it costs nothing
+# there; the viewer still shows it, and `tracker unarchive` brings it back. A slug names one tracker, archived or not.
+ARCHIVE = HOME / ".archive"
+
+
+def archived_trackers() -> list[Tracker]:
+    return all_trackers(ARCHIVE)
+
+
+def archived_at(slug: str) -> Tracker | None:
+    return tracker_at(slug, ARCHIVE)
 
 
 RESOLUTION_LINE = re.compile(r"^(?:- )?\d{4}-\d{2}-\d{2}\b")

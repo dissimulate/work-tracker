@@ -1583,8 +1583,9 @@ class Watch(unittest.TestCase):
 
 
 class Delete(unittest.TestCase):
-    """`tracker delete` and the viewer's tracker menu: the folder goes to the system's trash, only by the user, and
-    never while a session or a watch is on it. The tests use the freedesktop trash in BASE, not the user's."""
+    """`tracker archive` and `delete`, and the viewer's tracker menu: an archived tracker leaves every list and lookup
+    but the viewer's; a deleted one goes to the system's trash, only by the user; neither while a session or a watch
+    is on it. The tests use the freedesktop trash in BASE, not the user's."""
 
     def setUp(self):
         self.s = slug()
@@ -1633,6 +1634,33 @@ class Delete(unittest.TestCase):
         self.assertTrue((self.trash / "files" / f"{self.s}.2" / "README.md").exists())
         self.assertTrue((self.trash / "info" / f"{self.s}.2.trashinfo").exists())
 
+    def test_an_archived_tracker_leaves_every_list(self):
+        sid = self.live()
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):  # its own session lets go of it
+            self.assertIn(f"archived {self.s}", run("archive", self.s))
+        self.assertEqual(session.load_session(sid), {})
+        self.assertFalse(self.root.exists())
+        self.assertTrue((model.ARCHIVE / self.s / "README.md").exists())
+        self.assertNotIn(self.s, [t.slug for t in model.all_trackers()])
+        self.assertIn("1 archived (`tracker list --archived`)", run("list"))
+        self.assertIn(f"  {self.s}", run("list", "--archived"))
+        hint = f"{self.s} is archived: `tracker unarchive {self.s}` brings it back"
+        self.assertIn(hint, run("--tracker", self.s, "index", code=2))
+        self.assertIn(hint, run("archive", self.s, code=2))
+        self.assertIn(hint, run("init", self.s, "--title", "Again", "--owner", "me", code=2))
+
+        self.assertIn("brought", run("unarchive", self.s))
+        self.assertIn("Doomed", run("--tracker", self.s, "index"))
+        self.assertIn("no archived tracker", run("unarchive", self.s, code=2))
+        other = self.live()
+        self.assertIn("in use by agent session busy-one", run("archive", self.s, code=4))
+        (session.CLAUDE_SESSIONS / f"{other}.json").unlink()
+        session.drop_session(other)
+
+        run("archive", self.s)  # an archived tracker deletes too
+        self.assertIn("to the trash", run("delete", self.s, "--yes"))
+        self.assertFalse((model.ARCHIVE / self.s).exists())
+
     def test_the_viewer_lists_and_deletes(self):
         threading.Thread(target=viewer.serve, daemon=True).start()
         for _ in range(100):
@@ -1644,12 +1672,12 @@ class Delete(unittest.TestCase):
         page = urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode()
         token = re.search(r'data-token="([^"]+)"', page).group(1)
 
-        def listed() -> dict:
+        def listed(group: str = "active") -> dict:
             got = json.loads(urllib.request.urlopen(f"{base}/trackers").read())
-            return next((t for t in got if t["slug"] == self.s), {})
+            return next((t for t in got[group] if t["slug"] == self.s), {})
 
-        def delete(headers: dict) -> tuple[int, str]:
-            req = urllib.request.Request(f"{base}/t/{self.s}/delete", data=b"", method="POST", headers=headers)
+        def delete(headers: dict, what: str = "delete") -> tuple[int, str]:
+            req = urllib.request.Request(f"{base}/t/{self.s}/{what}", data=b"", method="POST", headers=headers)
             try:
                 with urllib.request.urlopen(req) as r:
                     return r.status, r.read().decode()
@@ -1663,10 +1691,24 @@ class Delete(unittest.TestCase):
         self.assertEqual(listed()["in_use"], "agent session busy-one")
         code, said = delete({"X-Tracker-Token": token})
         self.assertEqual((code, said.split(":")[0]), (409, f"{self.s} is in use by agent session busy-one"))
+        self.assertEqual(delete({"X-Tracker-Token": token}, "archive")[0], 409)
         (session.CLAUDE_SESSIONS / f"{sid}.json").unlink()
+
+        # Archived: in its own list, its page read-only, then back; deleted from the archive.
+        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (204, ""))
+        self.assertEqual((listed(), listed("archived")),
+                         ({}, {"slug": self.s, "title": "Doomed", "root": str(model.ARCHIVE / self.s)}))
+        page = urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode()
+        self.assertIn("<p id=archived>Archived:", page)
+        self.assertEqual(delete({"X-Tracker-Token": token}, "refresh")[0], 404)
+        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (409, f"{self.s} is archived already"))
+        self.assertEqual(delete({"X-Tracker-Token": token}, "unarchive"), (204, ""))
+        self.assertTrue(listed())
+        self.assertNotIn("id=archived", urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode())
+        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (204, ""))
         self.assertEqual(delete({"X-Tracker-Token": token}), (204, ""))
-        self.assertFalse(self.root.exists())
-        self.assertEqual(listed(), {})
+        self.assertFalse((model.ARCHIVE / self.s).exists())
+        self.assertEqual((listed(), listed("archived")), ({}, {}))
         self.assertEqual(delete({"X-Tracker-Token": token})[0], 404)
 
 

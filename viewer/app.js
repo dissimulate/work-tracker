@@ -114,6 +114,7 @@ async function poll() {
       document.querySelector('main').innerHTML =
         await (await fetch(`/t/${slug}/main`, { cache: 'no-store' })).text();
       was.forEach((open, id) => { const d = detailsFor(id); if (d) d.open = open; });
+      showRefresh();
       applySort();
       applyFilter();
     }
@@ -132,27 +133,43 @@ async function poll() {
 }
 
 // Refresh: pull PR state from GitHub now, and ask the next session prompt for the issue fields (only the model can
-// read an issue tracker). The token proves the request comes from this page.
+// read an issue tracker).
 const refresh = document.getElementById('refresh');
 async function askRefresh() {
   refresh.disabled = true;
+  await post(slug, 'refresh');
+  await poll();
+  refresh.disabled = false;
+}
+
+// A tracker change the page asks the server for: `refresh`, `archive`, `unarchive` or `delete`. The token proves the
+// request comes from this page. Gives the server's refusal, or '' when done.
+async function post(trackerSlug, what) {
   try {
-    await fetch(`/t/${slug}/refresh`, { method: 'POST', headers: { 'X-Tracker-Token': document.body.dataset.token } });
-    await poll();
-  } finally {
-    refresh.disabled = false;
+    const res = await fetch(`/t/${encodeURIComponent(trackerSlug)}/${what}`,
+      { method: 'POST', headers: { 'X-Tracker-Token': document.body.dataset.token } });
+    return res.ok ? '' : (await res.text()) || `${what} failed (${res.status})`;
+  } catch {
+    return 'The viewer stopped: run `tracker open`, then try again.';
   }
 }
 
-// The tracker menu (top left): a tracker opens in this tab; its bin deletes it after a confirm. The server refuses a
-// delete while an agent session or a watch is on the tracker, so the bin is off then. The list is read at each open.
+// The tracker menu (top left): a tracker opens in this tab. Its box archives it, its arrow brings an archived one
+// back, its bin deletes it after a confirm. The server refuses an archive or a delete while an agent session or a
+// watch is on the tracker, so those buttons are off then. The archived trackers sit in a closed section at the
+// bottom. The list is read at each open.
 const switchOpen = document.getElementById('switch-open');
 const switchList = document.getElementById('switch-list');
+const switchError = switchList.querySelector('.err');
+const archivedToggle = document.getElementById('switch-archived');
+const archivedList = document.getElementById('switch-archived-list');
 const confirmBox = document.getElementById('confirm');
 const confirmError = confirmBox.querySelector('.err');
 let doomed = null; // the tracker the dialog asks about
 
-function trackerRow(t) {
+const ACTIONS = { archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete' };
+
+function trackerRow(t, archived) {
   const li = document.getElementById('switch-row').content.firstElementChild.cloneNode(true);
   const a = li.querySelector('a');
   a.href = `/t/${encodeURIComponent(t.slug)}/`;
@@ -162,22 +179,30 @@ function trackerRow(t) {
   const busy = a.querySelector('small');
   busy.textContent = `in use by ${t.in_use}`;
   busy.hidden = !t.in_use;
-  const del = li.querySelector('.del');
-  const label = t.in_use ? `Cannot delete ${t.title}: in use` : `Delete ${t.title}`;
-  del.setAttribute('aria-label', label);
-  del.title = label;
-  del.disabled = Boolean(t.in_use);
-  del.addEventListener('click', () => askDelete(t));
+  li.querySelectorAll('[data-act]').forEach(b => {
+    const act = b.dataset.act;
+    b.hidden = act === (archived ? 'archive' : 'unarchive');
+    b.disabled = Boolean(t.in_use);
+    const label = t.in_use ? `Cannot ${act} ${t.title}: in use` : `${ACTIONS[act]} ${t.title}`;
+    b.setAttribute('aria-label', label);
+    b.title = label;
+    b.addEventListener('click', () => (act === 'delete' ? askDelete(t) : change(t, act)));
+  });
   return li;
 }
 
 async function openSwitch() {
+  let trackers;
   try {
-    const trackers = await (await fetch('/trackers', { cache: 'no-store' })).json();
-    switchList.replaceChildren(...trackers.map(trackerRow));
+    trackers = await (await fetch('/trackers', { cache: 'no-store' })).json();
   } catch {
     return; // the live line says the viewer stopped
   }
+  switchList.querySelector('[data-list="active"]').replaceChildren(...trackers.active.map(t => trackerRow(t, false)));
+  archivedList.replaceChildren(...trackers.archived.map(t => trackerRow(t, true)));
+  archivedToggle.hidden = !trackers.archived.length;
+  archivedToggle.querySelector('.n').textContent = trackers.archived.length;
+  switchError.hidden = true;
   switchList.hidden = false;
   switchOpen.setAttribute('aria-expanded', 'true');
 }
@@ -187,6 +212,25 @@ function closeSwitch(focus) {
   switchList.hidden = true;
   switchOpen.setAttribute('aria-expanded', 'false');
   if (focus) switchOpen.focus();
+}
+
+function toggleArchived() {
+  const open = archivedList.hidden;
+  archivedList.hidden = !open;
+  archivedToggle.setAttribute('aria-expanded', open);
+}
+
+// Archive or bring back: this page shows the change at once; another tracker's row moves in the menu.
+async function change(t, act) {
+  const refused = await post(t.slug, act);
+  if (refused) {
+    switchError.textContent = refused;
+    switchError.hidden = false;
+  } else if (t.slug === slug) {
+    location.reload();
+  } else {
+    openSwitch();
+  }
 }
 
 function askDelete(t) {
@@ -200,31 +244,36 @@ function askDelete(t) {
 
 async function deleteDoomed(button) {
   button.disabled = true;
-  let res = null;
-  try {
-    res = await fetch(`/t/${encodeURIComponent(doomed.slug)}/delete`,
-      { method: 'POST', headers: { 'X-Tracker-Token': document.body.dataset.token } });
-  } catch { /* the viewer stopped: said below */ }
+  const refused = await post(doomed.slug, 'delete');
   button.disabled = false;
-  if (res && res.ok) {
+  if (!refused) {
     confirmBox.close();
     if (doomed.slug === slug) location.assign('/');
     return;
   }
-  confirmError.textContent = res ? await res.text() : 'The viewer stopped: run `tracker open`, then try again.';
+  confirmError.textContent = refused;
   confirmError.hidden = false;
+}
+
+// An archived tracker gets no Refresh: it is never synced, and no session reads its issues.
+function showRefresh() {
+  refresh.hidden = Boolean(document.getElementById('archived'));
 }
 
 if (slug) {
   document.getElementById('switch').hidden = false;
   switchOpen.addEventListener('click', () => (switchList.hidden ? openSwitch() : closeSwitch(false)));
+  archivedToggle.addEventListener('click', toggleArchived);
   confirmBox.querySelector('[data-cancel]').addEventListener('click', () => confirmBox.close());
   confirmBox.querySelector('[data-delete]').addEventListener('click', e => deleteDoomed(e.currentTarget));
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSwitch(true); });
-  refresh.hidden = false;
+  showRefresh();
   refresh.addEventListener('click', askRefresh);
   document.addEventListener('click', e => {
     if (!e.target.closest('#switch')) closeSwitch(false);
+    if (e.target.closest('#archived [data-act="unarchive"]')) { // the archived page's banner
+      post(slug, 'unarchive').then(refused => (refused ? alert(refused) : location.reload()));
+    }
     const b = e.target.closest('.filters button');
     if (b) { filter = b.dataset.f; applyFilter(); }
     const h = e.target.closest('.seq-head button');

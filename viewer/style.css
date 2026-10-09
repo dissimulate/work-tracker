@@ -220,7 +220,8 @@ li { margin: 2px 0; }
 #theme .sun, :root[data-theme="dark"] #theme .moon { display: none; }
 :root[data-theme="dark"] #theme .sun { display: block; }
 
-/* The tracker menu, top left: a row per tracker, its bin on the right. */
+/* The tracker menu, top left: a row per tracker, its buttons on the right; the archived ones in a closed section at
+   the bottom, condensed. */
 #switch { position: relative; margin-right: auto; }
 
 #switch-list {
@@ -233,16 +234,15 @@ li { margin: 2px 0; }
   max-width: min(440px, calc(100vw - 2 * var(--pad)));
   max-height: 60vh;
   overflow-y: auto;
-  margin: 0;
   padding: 4px;
-  list-style: none;
   background: var(--surface);
   border: var(--border);
   border-radius: var(--radius);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--tag-ink) 18%, transparent);
 }
 
-#switch-list li { display: flex; align-items: center; gap: 4px; max-width: none; }
+#switch-list ul { margin: 0; padding: 0; list-style: none; }
+#switch-list li { display: flex; align-items: center; gap: 2px; max-width: none; }
 
 #switch-list a {
   flex: 1;
@@ -260,9 +260,32 @@ li { margin: 2px 0; }
 #switch-list a[aria-current="page"] b { color: var(--accent); }
 #switch-list small { display: block; color: var(--active); }
 
-#switch-list .del { color: var(--muted); background: none; border-color: transparent; }
-#switch-list .del:not(:disabled):hover { color: var(--blocked); background: var(--subtle); }
-#switch-list .del:disabled { opacity: .35; cursor: not-allowed; }
+#switch-list li button { color: var(--muted); background: none; border-color: transparent; }
+#switch-list li button:not(:disabled):hover { color: var(--accent); background: var(--subtle); }
+#switch-list li .del:not(:disabled):hover { color: var(--blocked); }
+#switch-list li button:disabled { opacity: .35; cursor: not-allowed; }
+#switch-list .err { margin: 6px 8px; color: var(--blocked); font-size: var(--fs-s); }
+
+#switch-archived {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-top: var(--border);
+  border-radius: 0;
+  text-align: left;
+}
+#switch-archived::before { content: "▸"; font-size: .9em; transition: transform var(--ease); }
+#switch-archived[aria-expanded="true"]::before { transform: rotate(90deg); }
+#switch-archived .n { font-variant-numeric: tabular-nums; }
+#switch-archived-list a { padding-block: 2px; font-size: var(--fs-s); color: var(--muted); }
+#switch-archived-list b { font-weight: 500; }
+#switch-archived-list button { --control-size: 26px; padding: 5px; }
 
 #live { min-width: 0; color: var(--muted); background: none; border-color: transparent; }
 
@@ -278,6 +301,25 @@ li { margin: 2px 0; }
 }
 
 #live:empty { display: none; }
+
+/* ---------- an archived tracker's banner ---------- */
+
+#archived {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  max-width: none;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: var(--fs-s);
+  background: var(--surface);
+  border: var(--border);
+  border-radius: var(--radius);
+}
+#archived button { padding: 3px 10px; font-size: var(--fs-xs); background: var(--surface); border: var(--border); }
+#archived button:hover { background: var(--subtle); }
 
 /* ---------- the delete dialog ---------- */
 

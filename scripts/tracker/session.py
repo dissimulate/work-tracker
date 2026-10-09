@@ -11,8 +11,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, WINDOWS, all_trackers, append_log, atomic_write,
-    branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record, Tracker)
+from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, WINDOWS, all_trackers, append_log, archived_at,
+    atomic_write, branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
+    Tracker)
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
 
 
@@ -217,7 +218,7 @@ def find_tracker(args) -> Tracker | None:
     only tracker that lists it) points to."""
     slug = getattr(args, "tracker", None) or os.environ.get("TRACKER")
     if slug:
-        return tracker_at(slug) or die(f"no tracker '{slug}' in {HOME}")
+        return tracker_at(slug) or die(no_tracker(slug))
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         if parent.parent == HOME and (parent / "README.md").exists():
@@ -227,6 +228,12 @@ def find_tracker(args) -> Tracker | None:
         return own
     repo = trackers_for_repo(work_dir())
     return repo[0] if len(repo) == 1 else None
+
+
+def no_tracker(slug: str) -> str:
+    """The error for a slug that names no tracker; of an archived one, how to bring it back."""
+    return (f"{slug} is archived: `tracker unarchive {slug}` brings it back" if archived_at(slug)
+            else f"no tracker '{slug}' in {HOME}")
 
 
 NO_TRACKERS = f"no trackers in {HOME}: `tracker init <slug> --title \"...\" --owner <name>` creates one"
@@ -248,7 +255,7 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
     every tracker by ticket or Issue id: this repo's first, then all. More than one hit is an error that lists them."""
     slug, sep, rest = ident.partition(":")
     if sep:
-        tr = tracker_at(slug) or die(f"no tracker '{slug}' in {HOME}")
+        tr = tracker_at(slug) or die(no_tracker(slug))
         return tr, tr.find(rest)
     tr = find_tracker(args)
     rec = tr and (tr.lookup(ident) or tr.by_pr_or_branch(ident))
@@ -590,15 +597,24 @@ def alive(pid: int) -> bool:
 
 
 def live_sessions(slug: str) -> list[Live]:
-    """Tracked sessions with a running process or recent hook activity, by name."""
+    """Tracked sessions on this tracker with a running process or recent hook activity, by name."""
+    return live_by_tracker({slug}).get(slug, [])
+
+
+def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
+    """`live_sessions` of these trackers (None: of every tracker), by slug: one pass over the session files, however
+    many trackers ask."""
     worktree.cache_clear()  # the viewer runs for hours: read each worktree's branch again
-    out = {}
+    out: dict[str, dict[str, Live]] = {}
     native = set()
+
+    def wanted(entry: dict) -> bool:
+        return bool(entry.get("tracker")) and (slugs is None or entry["tracker"] in slugs)
 
     def add(sid: str, entry: dict, name: str, status: str, since: float, cwd: str = "") -> None:
         cwd = entry.get("cwd") or cwd
-        out[sid] = Live(sid, name, status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "",
-                        entry.get("focus", []), since)
+        out.setdefault(entry["tracker"], {})[sid] = Live(
+            sid, name, status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "", entry.get("focus", []), since)
 
     for f in CLAUDE_SESSIONS.glob("*.json"):
         try:
@@ -608,7 +624,7 @@ def live_sessions(slug: str) -> list[Live]:
             continue
         native.add(sid)
         entry = load_session(sid)
-        if entry.get("tracker") != slug or not alive(pid):
+        if not wanted(entry) or not alive(pid):
             continue
         add(sid, entry, str(c.get("name") or sid[:8]), str(c.get("status") or ""), since, str(c.get("cwd") or ""))
     now = time.time()
@@ -621,6 +637,6 @@ def live_sessions(slug: str) -> list[Live]:
             status, since, at = activity["status"], float(activity["since"]), float(activity["at"])
         except (KeyError, ValueError, TypeError):
             continue
-        if entry.get("tracker") == slug and status in ("busy", "idle") and now - at < ACTIVITY_MAX_AGE_S:
+        if wanted(entry) and status in ("busy", "idle") and now - at < ACTIVITY_MAX_AGE_S:
             add(f.stem, entry, f.stem[:8], status, since)
-    return sorted(out.values(), key=lambda s: (s.name, s.sid))
+    return {slug: sorted(live.values(), key=lambda s: (s.name, s.sid)) for slug, live in out.items()}

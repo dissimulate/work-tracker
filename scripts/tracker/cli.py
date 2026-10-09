@@ -15,18 +15,20 @@ from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECI
     EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, PRIORITIES, ROOT,
     SAFE_NAME,
     SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
+    archived_at, archived_trackers,
     atomic_file, atomic_write, blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url,
     load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
     set_branch, short, sort_key, spawn, today, unblocked, utc_now, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
-    load_session, locate, mark_up_to_date, match_cwd, on_branch, record_commits, remember, resolve, save_session,
-    session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
+    load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
+    save_session, session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
     index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
-from .watcher import REFUSED, InUse, Watcher, agent_session, delete_tracker, granted, session_name, watching
+from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
+    unarchive_tracker, watching)
 
 # ---------------------------------------------------------------- templates
 
@@ -51,6 +53,12 @@ def cmd_list(args):
         active = sum(1 for x in t.tickets if x.stage not in CLOSED_TICKET)
         print(f"{t.slug:<36} {t.headline()} · {len(t.tickets)} tickets, {active} active · "
               f"{len(t.open_decisions())} open decisions")
+    archived = archived_trackers()
+    if args.archived:
+        print("\n".join(["archived:", *(f"  {t.slug:<34} {t.headline()}" for t in archived)] if archived
+                        else ["no archived trackers"]))
+    elif archived:
+        print(f"{len(archived)} archived (`tracker list --archived`)")
 
 
 def cmd_init(args):
@@ -59,6 +67,8 @@ def cmd_init(args):
     root = HOME / args.slug
     if (root / "README.md").exists():
         die(f"{root} already exists")
+    if archived_at(args.slug):
+        die(f"{no_tracker(args.slug)}, or pick another slug")
     (root / "tickets").mkdir(parents=True, exist_ok=True)
     (root / "decisions").mkdir(exist_ok=True)
     repos = csv(args.repo)
@@ -905,13 +915,35 @@ def cmd_watch(args):
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal").run(args.once)
 
 
+def cmd_archive(args):
+    """Anyone's, as it comes back: the session that asks lets go of the tracker; another session on it stops it."""
+    tr = tracker_at(args.slug) or die(no_tracker(args.slug))
+    try:
+        print(archive_tracker(tr, session_id()))
+    except Refused as exc:
+        die(str(exc), REFUSED)
+    except OSError as exc:
+        die(f"not archived: {exc}")
+
+
+def cmd_unarchive(args):
+    tr = archived_at(args.slug) or die(f"no archived tracker '{args.slug}' (`tracker list --archived` lists them)")
+    try:
+        print(unarchive_tracker(tr))
+    except Refused as exc:
+        die(str(exc), REFUSED)
+    except OSError as exc:
+        die(f"not brought back: {exc}")
+
+
 def cmd_delete(args):
     """The user's: in a terminal, or from the viewer's tracker menu. The model never deletes a tracker: the command
     refuses an agent session."""
     if agent_session()[0]:
         die("only the user deletes a tracker: in a terminal (`tracker delete <slug>`) or from the viewer's tracker "
             "menu. Do not delete one yourself.", REFUSED)
-    tr = tracker_at(args.slug) or die(f"no tracker '{args.slug}' (`tracker list` lists them)")
+    tr = tracker_at(args.slug) or archived_at(args.slug) or \
+        die(f"no tracker '{args.slug}' (`tracker list --archived` lists them)")
     if not args.yes:
         if sys.stdin is None or not sys.stdin.isatty():
             die("pass --yes to delete without the prompt")
@@ -920,7 +952,7 @@ def cmd_delete(args):
             die("not deleted", 1)
     try:
         print(delete_tracker(tr))
-    except InUse as exc:
+    except Refused as exc:
         die(str(exc), REFUSED)
     except OSError as exc:
         die(f"not deleted: {exc}")
@@ -961,7 +993,7 @@ def cmd_use(args):
 def cmd_open(args):
     from .viewer import viewer_ping, viewer_port
     here = find_tracker(args) if args.id else None
-    whole = args.id and not (here and here.lookup(args.id)) and tracker_at(args.id)
+    whole = args.id and not (here and here.lookup(args.id)) and (tracker_at(args.id) or archived_at(args.id))
     tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
     old = viewer_ping()  # a viewer on other code is replaced on its port, so its open pages carry on
     port = viewer_port()
@@ -1004,7 +1036,8 @@ def build_parser():
         sp.set_defaults(fn=fn)
         return sp
 
-    add("list", cmd_list, "list all trackers")
+    sp = add("list", cmd_list, "list all trackers, and how many are archived")
+    sp.add_argument("--archived", action="store_true", help="list the archived trackers too")
     sp = add("init", cmd_init, "create a tracker")
     sp.add_argument("slug")
     sp.add_argument("--title", required=True)
@@ -1171,12 +1204,18 @@ def build_parser():
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
-    sp = add("delete", cmd_delete, "for the user: move a tracker's folder to the system's trash. Refuses while an "
-                                   "agent session or a watch is on it, and in an agent session")
+    sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the viewer. "
+                                     "Refuses while another agent session or a watch is on it")
+    sp.add_argument("slug", help="the tracker's exact slug")
+    sp = add("unarchive", cmd_unarchive, "bring an archived tracker back")
+    sp.add_argument("slug", help="the archived tracker's exact slug")
+    sp = add("delete", cmd_delete, "for the user: move a tracker's folder, archived or not, to the system's trash. "
+                                   "Refuses while an agent session or a watch is on it, and in an agent session")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
     sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when idle)")
-    sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its name")
+    sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
+                                             "archived one too)")
     sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")
     sp = sub.add_parser("serve")
     sp.add_argument("--port", type=int, default=0)
@@ -1313,7 +1352,7 @@ def main(argv=None):
     reclaim(args, argv, parser)
     no_id(args)
     stdin_text(args)
-    if (args.cmd in WRITE_COMMANDS or args.cmd == "start") and watching():
+    if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive")) and watching():
         die("this session watches trackers for the user (/work-tracker:watch): it writes nothing to them, and works "
             "on no tracker", REFUSED)
     try:

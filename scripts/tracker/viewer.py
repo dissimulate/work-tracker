@@ -19,13 +19,13 @@ from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, SPANS, STAGES, WINDOWS, all_trackers, atomic_write, branch_entry, files_hash, locked, priority, sequence,
-    sort_key, span, spawn, tracker_at, whose_move, Busy, Dep, Move, Record, Tracker)
-from .session import ago, live_sessions, match_cwd, Live
+    ROOT, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry, files_hash,
+    locked, priority, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy, Dep, Move, Record, Tracker)
+from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .views import duration, pr_label, span_lines, stage_counts, start_text
 from .github import sync
-from .watcher import delete_tracker, in_use, watcher_of, InUse
+from .watcher import archive_tracker, delete_tracker, in_use, unarchive_tracker, watcher_of, Refused
 
 # ---------------------------------------------------------------- render
 
@@ -212,11 +212,11 @@ def agent_icon(sessions: list[Live]) -> Html:
 
 
 def version(tr: Tracker) -> str:
-    """`<data>.<code>.<synced>`: the first part changes with any tracker file, the sessions running on it or its
-    watcher (the page swaps its content), the second with any viewer/ file or module of this package (the page
-    reloads), the third is the last GitHub sync (epoch s)."""
+    """`<data>.<code>.<synced>`: the first part changes with any tracker file, the sessions running on it, its
+    watcher or its archiving (the page swaps its content), the second with any viewer/ file or module of this package
+    (the page reloads), the third is the last GitHub sync (epoch s)."""
     live = json.dumps([[x.sid, x.status, x.since, x.branch, x.focus] for x in live_sessions(tr.slug)]
-                      + [watcher_of(tr)])
+                      + [watcher_of(tr), tr.archived])
     code = files_hash([*sorted(VIEWER_DIR.iterdir()), *sorted(PACKAGE.glob("*.py"))])
     return f"{files_hash(tr.data_files(), live)}.{code}.{int(tr.raw_state().get('last_sync', 0))}"
 
@@ -574,7 +574,7 @@ def main_html(tr: Tracker) -> Html:
     goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))
     state_line = issue_state(tr)
-    return Html("""{issue}
+    return Html("""{issue}{archived}
 <h1>{title}</h1><p class=sub>{facts}<br>{slug} · <code>{root}</code></p>
 {links}
 {goal}
@@ -584,6 +584,8 @@ def main_html(tr: Tracker) -> Html:
 {decisions}
 {reference}""").format(
         issue=Html("<span hidden id=issue-state>{}</span>").format(state_line) if state_line else NONE,
+        archived=Html('<p id=archived>Archived: out of every list and hook, never synced with GitHub. '
+                      '<button type=button data-act=unarchive>Unarchive</button></p>') if tr.archived else NONE,
         title=tr.title, facts=facts, slug=tr.slug, root=str(tr.root),
         links=panel("_links", named("Links", f"{len(tr.context)}: {labels}"), props_html([link_rows(tr.context)]))
         if tr.context else NONE,
@@ -728,23 +730,32 @@ def serve(port: int = 0) -> None:
             parts = self.parts()
             if parts == ["ping"]:
                 return self.reply(200, CODE_ID, "text/plain")
-            if parts == ["trackers"]:  # the tracker menu: each tracker, and what stops its delete
-                return self.reply(200, json.dumps([{"slug": t.slug, "title": t.title, "root": str(t.root),
-                                                    "in_use": in_use(t)} for t in all_trackers()]),
-                                  "application/json")
+            if parts == ["trackers"]:  # the tracker menu: each tracker, and what keeps it from the archive or trash
+                live = live_by_tracker()
+                return self.reply(200, json.dumps({
+                    "active": [{"slug": t.slug, "title": t.title, "root": str(t.root), "in_use": in_use(t, live=live)}
+                               for t in all_trackers()],
+                    "archived": [{"slug": t.slug, "title": t.title, "root": str(t.root)}
+                                 for t in archived_trackers()]}),
+                    "application/json")
             if len(parts) == 2 and parts[0] == "assets":
                 asset = VIEWER_DIR / parts[1]
                 if asset.suffix in ASSET_TYPES and asset.parent == VIEWER_DIR and asset.is_file():
                     return self.reply(200, asset.read_text(), ASSET_TYPES[asset.suffix])
                 return self.reply(404, "not found", "text/plain")
             if not parts:
-                items = NONE.join(Html('<li><a href="/t/{0}/">{1}</a> <span class=meta>{0}</span></li>').format(
-                    t.slug, t.title) for t in all_trackers())
-                return self.reply(200, page_html("Trackers", Html("<h1>Trackers</h1><ul>{}</ul>").format(items)))
-            tr = tracker_at(parts[1]) if parts[0] == "t" and len(parts) > 1 else None
+                def items(trackers: list[Tracker]) -> Html:
+                    return NONE.join(Html('<li><a href="/t/{0}/">{1}</a> <span class=meta>{0}</span></li>').format(
+                        t.slug, t.title) for t in trackers)
+                archived = archived_trackers()
+                return self.reply(200, page_html("Trackers", Html("<h1>Trackers</h1><ul>{}</ul>{}").format(
+                    items(all_trackers()),
+                    Html("<h2>Archived</h2><ul>{}</ul>").format(items(archived)) if archived else NONE)))
+            tr = self.tracker(parts)
             if not tr:
                 return self.reply(404, "no such tracker", "text/plain")
-            server.viewed[tr.slug] = time.monotonic()
+            if not tr.archived:  # the syncer's: an archived tracker is never synced
+                server.viewed[tr.slug] = time.monotonic()
             rest = parts[2:]
             if rest == ["version"]:
                 return self.reply(200, version(tr), "text/plain")
@@ -758,21 +769,28 @@ def serve(port: int = 0) -> None:
                 return self.evidence(tr, rest[1:])
             return self.reply(404, "not found", "text/plain")
 
+        def tracker(self, parts: list[str]) -> Tracker | None:
+            """The tracker `/t/<slug>/` names, archived or not: a slug names one tracker."""
+            return tracker_at(parts[1]) or archived_at(parts[1]) if parts[0] == "t" and len(parts) > 1 else None
+
         def do_POST(self):
-            """A Refresh or a Delete: the page's token, from this server's own page, or nothing changes."""
+            """A Refresh, an Archive, an Unarchive or a Delete: the page's token, from this server's own page, or
+            nothing changes."""
             if not self.allowed() or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN):
                 return self.reply(403, "forbidden", "text/plain")
             parts = self.parts()
-            tr = tracker_at(parts[1]) if len(parts) == 3 and parts[0] == "t" else None
-            if not tr or parts[2] not in ("refresh", "delete"):
+            tr = self.tracker(parts) if len(parts) == 3 else None
+            act = {"archive": archive_tracker, "unarchive": unarchive_tracker, "delete": delete_tracker}.get(
+                parts[2] if tr else "")
+            if not tr or not act and (parts[2] != "refresh" or tr.archived):
                 return self.reply(404, "not found", "text/plain")
-            if parts[2] == "delete":
+            if act:
                 try:
-                    delete_tracker(tr)
-                except (InUse, Busy) as exc:
+                    act(tr)
+                except (Refused, Busy) as exc:
                     return self.reply(409, str(exc), "text/plain")
-                except OSError as exc:  # the trash refused the folder, which stays
-                    return self.reply(500, f"not deleted: {exc}", "text/plain")
+                except OSError as exc:  # the folder stays where it was
+                    return self.reply(500, f"not done: {exc}", "text/plain")
                 server.viewed.pop(tr.slug, None)
                 return self.send(204)
             request_refresh(tr)
