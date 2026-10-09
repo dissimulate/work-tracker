@@ -331,6 +331,8 @@ def fit(kind: str, text: str | None) -> None:
 # same place. The templates/ folder shows each file's shape.
 
 README_SECTIONS = ["Context", "Goal", "Scope"]  # required, first, in this order; any sections may follow
+# An optional README section: this work's standing instructions for the agent, which every brief prints in full.
+README_INSTRUCTIONS = "Instructions"
 README_KEYS = ["title", "repo", "status", "owner", "created"]  # required frontmatter; repo may be empty
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
 TRACKER_STATUSES = ["planning", "active", "paused", "done"]

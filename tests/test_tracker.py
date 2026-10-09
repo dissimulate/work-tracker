@@ -1843,6 +1843,30 @@ class Actions(unittest.TestCase):
         self.tr().action("A-02").save({"due": "soon"})
         self.assertIn("A-02: due 'soon' is not a date (YYYY-MM-DD)", cli.check(self.tr())[0])
 
+    def test_an_action_gets_a_new_title(self):
+        run(*self.t, "act", "Reply to Sam on SC-1", "--refs", "T-1")
+        run(*self.t, "act", "Reply to Kim", "--title", "Reply to Kim on SC-2", code=2)
+        self.assertIn("A-01 updated", run(*self.t, "act", "A-01", "--title", "Reply to Sam on SC-1 (login copy)"))
+        self.assertEqual(self.tr().action("A-01").get("title"), "Reply to Sam on SC-1 (login copy)")
+        self.assertIn("A-01 renamed: Reply to Sam on SC-1 → Reply to Sam on SC-1 (login copy)",
+                      (self.root / "log.md").read_text())
+
+    def test_the_brief_prints_the_readmes_instructions(self):
+        work = repo("feat/T-1")
+        run(*self.t, "set", "T-1", "branch=feat/T-1")
+        self.assertNotIn("This tracker's instructions", run(*self.t, "here", cwd=work))
+        with piped("When a feedback ticket's PR opens, add one reply action per story."):
+            run(*self.t, "put", "tracker", "instructions", "-")
+        brief = run(*self.t, "here", cwd=work)
+        self.assertIn("This tracker's instructions (README ## Instructions; follow them):\nWhen a feedback ticket's PR "
+                      "opens, add one reply action per story.", brief)
+        long = "\n".join(f"- rule {i}: " + "x" * 90 for i in range(40))
+        self.tr().readme().rewrite(self.root.joinpath("README.md").read_text().replace(
+            "When a feedback ticket's PR opens, add one reply action per story.", long))
+        text = views.instructions(self.tr())
+        self.assertLess(len(text), views.BRIEF_INSTRUCTIONS_CHARS + 200)
+        self.assertTrue(text.endswith("… the rest: `tracker show tracker --section instructions`"))
+
     def test_the_watch_marks_a_new_action(self):
         events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.ACTION_ADDED} Ask Sam",
                                      "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])

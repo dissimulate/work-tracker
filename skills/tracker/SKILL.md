@@ -16,7 +16,7 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 
 | File | Holds |
 |---|---|
-| `README.md` | the work: Context (the documents it answers to), Goal, Scope; ≤ ~2K tokens, rewritten, never appended to |
+| `README.md` | the work: Context (the documents it answers to), Goal, Scope, and optionally Instructions (this work's standing rules for you, printed in every brief); ≤ ~2K tokens, rewritten, never appended to |
 | `tickets/<ID>.md` | frontmatter = state (`status`, `branch`, `next`, `summary`, `depends_on`, PR keys, issue keys); body = Plan, Carry forward, Links |
 | `decisions/D-<n>.md` | a direction decision: Question, Options, and once closed, Resolution |
 | `actions/A-<n>.md` | a task for the user that you cannot or should not do: its text, the ids it concerns, notes |
@@ -66,7 +66,8 @@ Record each fact at the moment it forms, in its home:
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
-| a task only the user should do: talk to or follow up with a person, get an access or a sign-off, a step on a system you cannot reach | ask the user whether to add it; on yes, `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day. When the user says it is done or no longer needed: `tracker act A-<n> --done` (or `--drop`), with `--note "<outcome>"` when it has one |
+| the user gives a standing rule for this work (how to handle a kind of ticket, an action to add when something happens) | `tracker put tracker instructions -` with the whole section in a heredoc, or one line `tracker add tracker instructions "..."`; follow the section the brief prints |
+| a task only the user should do: talk to or follow up with a person, get an access or a sign-off, a step on a system you cannot reach | ask the user whether to add it; on yes, `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day. When the user says it is done or no longer needed: `tracker act A-<n> --done` (or `--drop`), with `--note "<outcome>"` when it has one. A new text: `tracker act A-<n> --title "..."` |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
 | a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (such as an MCP server) and `tracker issue <id> --priority <0-4> --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |

@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 from statistics import median
 
-from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, SPANS, STAGES, STALE_ACTION_DAYS,
-    STEP_MESSAGE, TEXT_MAX, cut, due_date, link_lines, resolution, sequence, short, span, utc_seconds, whose_move,
-    Record, Start, Tracker)
+from .markdown import section, strip_comments
+from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, README_INSTRUCTIONS, SPANS, STAGES,
+    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, due_date, link_lines, resolution, sequence, short, span,
+    utc_seconds, whose_move, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check, days_since
@@ -341,6 +342,7 @@ BRIEF_TICKETS_MAX = 3  # tickets under way shown in full; the rest get one line 
 BRIEF_CARRY_CHARS = 6000  # the dependencies' Carry forward, about 1.5K tokens
 BRIEF_LINE_CHARS = 200  # a Context, link, log or settled-decision line
 BRIEF_LOG = 2  # log lines per ticket
+BRIEF_INSTRUCTIONS_CHARS = 2000  # README ## Instructions, about 500 tokens; `show` has the rest
 SPAN_RECENT_S = 7 * 86400  # a span line's recent window
 
 
@@ -390,6 +392,18 @@ def issue_request(tr: Tracker) -> str:
             "when it has neither. With no such tool, leave them and never guess a value.")
 
 
+def instructions(tr: Tracker) -> str:
+    """The README's ## Instructions for the brief: this work's standing rules for the agent, cut to
+    BRIEF_INSTRUCTIONS_CHARS."""
+    text = strip_comments(section(tr.readme_body, README_INSTRUCTIONS)).strip()
+    if not text:
+        return ""
+    if len(text) > BRIEF_INSTRUCTIONS_CHARS:
+        text = (text[:BRIEF_INSTRUCTIONS_CHARS].rsplit("\n", 1)[0] + "\n… the rest: `tracker show tracker --section "
+                f"{README_INSTRUCTIONS.lower()}`")
+    return f"This tracker's instructions (README ## {README_INSTRUCTIONS}; follow them):\n{text}"
+
+
 def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,
           full: bool = False, with_protocol: bool = True) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
@@ -417,6 +431,9 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
     focus = m.focus
     if len(m.active) > 1 and not m.chosen:
         parts.append(PICK_ONE)
+    rules = instructions(tr)
+    if rules:
+        parts.append(rules)
     if focus:
         if tr.context:
             parts.append("\n".join(["Context (open the one that governs a choice before making it; `tracker index` "

@@ -699,8 +699,14 @@ def cmd_act(args):
             die(f"--due {args.due}: pass a date, YYYY-MM-DD (or `none` to remove it)")
     existing = tr.action(args.target) if ACTION_ID.fullmatch(args.target) else None
     if existing:
-        if not (args.done or args.drop or args.note or refs or due is not None):
-            die("nothing to change: pass --done, --drop, --note, --refs or --due")
+        if not (args.done or args.drop or args.note or refs or due is not None or args.title):
+            die("nothing to change: pass --done, --drop, --note, --refs, --due or --title")
+        if args.title:
+            fit("action", args.title)
+            old = existing.get("title")
+            existing.save({"title": " ".join(args.title.split()), "updated": today()})
+            append_log(tr, f"{existing.id} renamed: {old} → {existing.get('title')}",
+                       [existing.id, *existing.list("refs")])
         if refs:
             existing.save({"refs": sorted(set(existing.list("refs")) | set(refs), key=sort_key), "updated": today()})
         if due is not None:
@@ -718,8 +724,8 @@ def cmd_act(args):
         return
     if ACTION_ID.fullmatch(args.target):
         die(f"no action {args.target}; to add one, pass what the user must do instead")
-    if args.done or args.drop:
-        die("--done and --drop close an open action: pass its A-id")
+    if args.done or args.drop or args.title:
+        die("--done, --drop and --title change an action: pass its A-id")
     fit("action", args.target)
     clash = [a for a in tr.open_actions() if similar(str(a.get("title")), args.target) >= 0.5]
     if clash and not args.force:
@@ -1233,6 +1239,7 @@ def build_parser():
                                                    "fact")
     sp.add_argument("--due", metavar="YYYY-MM-DD", help="the day the user should do it by, only one they gave; "
                                                        "`none` removes it")
+    sp.add_argument("--title", help="a new text for the action (by A-id)")
     sp.add_argument("--done", action="store_true", help="the user did it; closes the action")
     sp.add_argument("--drop", action="store_true", help="no longer needed; closes the action")
     sp.add_argument("--force", action="store_true", help="add even though a similar action is open")

@@ -27,4 +27,5 @@ labels: []
 
 <!-- What it deliberately does not, and where that lives instead. -->
 
-<!-- Further sections may follow. Keep this file under ~2,000 tokens: state lives in tickets, history in log.md. -->
+<!-- Further sections may follow. An optional `## Instructions` holds this work's standing rules for the agent (how to handle a kind of ticket, an action to add); every session's brief prints it.
+     Keep this file under ~2,000 tokens: state lives in tickets, history in log.md. -->

@@ -8,10 +8,10 @@ import re
 from .markdown import format_value, headings, link_ident, parse_links, section
 from .model import (ACTION_BAR, ACTION_STATUSES, BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_SECTIONS,
     DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX,
-    MOVE_RULE, OPEN_DECISIONS_WARN, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_KEYS, README_SECTIONS,
-    README_TOKEN_BUDGET, RETIRED_KEYS, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED,
-    START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section,
-    blocker_link, due_date, names, norm_id, priority, relabel, sequence, Record, Tracker)
+    MOVE_RULE, OPEN_DECISIONS_WARN, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_INSTRUCTIONS, README_KEYS,
+    README_SECTIONS, README_TOKEN_BUDGET, RETIRED_KEYS, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS,
+    STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES,
+    WAIT_RULE, append_to_section, blocker_link, due_date, names, norm_id, priority, relabel, sequence, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -212,7 +212,9 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "Isolation: " + ISOLATION_RULE,
         "Files (a key marked (sync), (auto), (wait), (decide), (act) or (new) is written by that, never by `set`):",
         f"  README.md: sections {', '.join('## ' + h for h in README_SECTIONS)} first, in that order; ## Scope holds "
-        f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. Under ~{README_TOKEN_BUDGET} "
+        f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. An optional "
+        f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it. Under "
+        f"~{README_TOKEN_BUDGET} "
         f"tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         f"  tickets/<ID>.md: sections {', '.join('## ' + h for h in TICKET_SECTIONS)}, exactly. Carry forward ≤ "

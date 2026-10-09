@@ -61,7 +61,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 | File | Holds |
 |---|---|
-| `README.md` | the work: Context, Goal, Scope |
+| `README.md` | the work: Context, Goal, Scope; optionally Instructions, this work's standing rules for the agent, which every brief prints |
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority (0-4), its issue's creation time; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options, Resolution |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
