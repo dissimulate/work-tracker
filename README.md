@@ -3,6 +3,7 @@
 A Claude Code and Codex plugin that keeps the plan and progress of a piece of work (a feature, a project, a migration) in plain Markdown on your machine. The agent reads it at the start of each session and updates it as it works, so the next session continues where the last one stopped.
 
 - Tickets with dependencies, direction decisions and a dated log.
+- Actions: tasks for you that the agent cannot or should not do, such as a follow-up with a coworker.
 - Hooks log your commits and pull PR state from GitHub.
 - A live page in the browser shows the work under way and whose move each ticket waits on.
 
@@ -28,6 +29,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker ready` | what can start now, and from which branch |
 | `tracker context <id>` | one ticket or decision in full, with what it builds on |
 | `tracker decisions --all` | the decisions, open and settled |
+| `tracker actions` | your open actions (`--all`: the closed ones too) |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
 | `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
 | `tracker open [id]` | the live page |
@@ -62,10 +64,12 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `README.md` | the work: Context, Goal, Scope |
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority (0-4), its issue's creation time; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options, Resolution |
+| `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
 | `log.md` | dated one-line history |
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
+- **Actions.** A task that the agent cannot or should not do (talk to a person, get an access or a sign-off) is an action for you. The agent asks before it adds one (`tracker act "<text>" --refs <ids>`, `--due <date>` when you give a day), and closes it when you say it is done or no longer needed (`tracker act A-<n> --done` or `--drop`). The brief lists the open ones, soonest due first, so the agent adds none twice and asks about one past its due day, or with none, open longer than a week.
 - The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other.
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
@@ -102,6 +106,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 - The server uses one port, 7316 (`TRACKER_VIEWER_PORT`), so a bookmark or a page left open works again when a server runs: `http://127.0.0.1:7316/` (or `localhost:7316`) lists the trackers. If another program has the port, the server takes a free one.
 - A tracked agent session's hooks (session start, each message) start the server when none runs. The server runs while a page polls it or an agent session is on a tracker, and stops about 3 min after neither does. A page that saw the server stop reloads itself when a server answers again.
 - **Tracker menu** (top left) lists every tracker. A tracker opens in the same tab. Its ⋯ menu has Archive (Unarchive for an archived tracker) and Delete. The archived trackers sit in a closed section at the bottom. An archived tracker is in `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it, so it costs nothing. Its page still opens, read-only, with an Unarchive button. A slug names one tracker: `tracker init` refuses the slug of an archived one. Delete moves the tracker's folder to the system's trash (macOS Trash, Windows Recycle Bin, the freedesktop trash on Linux) after you confirm; restore it from there. Archive and Delete are off while an agent session or a watch is on the tracker; end them first. If the trash refuses the folder, the folder stays and the dialog shows why.
+- **Your actions**, above Now, lists your open actions, soonest due first, one line each: its title, "Due: <day>" when it has a due day (red once past), and Done and Drop buttons. A row opens to what it concerns, its dates and its notes. A closed action moves to Reference, at the bottom of the page, beside the closed decisions. With none open, the section is not shown.
 - **Now** shows the tickets under way (your move first), each branch's handoff, and the agent sessions on this machine that work on the tracker (a ring spins while one works).
 - While a page is open, the server syncs PR state every 2 min.
 - **Wait time** runs from when a ticket's issue was created (its `issue_created`) to when the ticket started (its `started_at`, which the first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`), so it needs no issue tracker. Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days; the Time column gives each ticket's, as `wait → cycle`. A ticket without both exact times, with the end before the start (an issue created after the work started), or dropped, has none: a ticket started before 0.29 has no start time, and a merge synced before 0.29 is known only by its date.

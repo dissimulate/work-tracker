@@ -1,6 +1,6 @@
 ---
 name: tracker
-description: Work tracker - the local plan and progress record for a piece of work (tickets, decisions, log). Use when the user says to start or work on a tracker or epic by name, when a `[work-tracker]` block is in context, before starting, after finishing or before pausing work on a tracked ticket, when a decision is made or opened, or when the user asks to create, view, migrate or update a tracker.
+description: Work tracker - the local plan and progress record for a piece of work (tickets, decisions, log). Use when the user says to start or work on a tracker or epic by name, when a `[work-tracker]` block is in context, before starting, after finishing or before pausing work on a tracked ticket, when a decision is made or opened, when the user has a task only they should do, or when the user asks to create, view, migrate or update a tracker.
 argument-hint: "[tracker command, e.g. index --active]"
 ---
 
@@ -19,6 +19,7 @@ Use the command prefix from the session's `[work-tracker]` hook for every call w
 | `README.md` | the work: Context (the documents it answers to), Goal, Scope; ≤ ~2K tokens, rewritten, never appended to |
 | `tickets/<ID>.md` | frontmatter = state (`status`, `branch`, `next`, `summary`, `depends_on`, PR keys, issue keys); body = Plan, Carry forward, Links |
 | `decisions/D-<n>.md` | a direction decision: Question, Options, and once closed, Resolution |
+| `actions/A-<n>.md` | a task for the user that you cannot or should not do: its text, the ids it concerns, notes |
 | `log.md` | dated one-line history, append-only |
 | `evidence/` | files the records cite: runs, measurements, scripts |
 | `.state.json` | machine state, never edited: per repo and branch the mark up to which the hooks logged its commits, the handoff and PR lookups; per worktree the `use` choice. Stale entries go by themselves |
@@ -47,7 +48,7 @@ Link lines (README Context, ticket Links) read `- Label: [title](url) — why it
 1. **Which work.** `tracker start <name words>` ties the tracker the user names to this session (its hooks and commands then use it) and prints the brief; `tracker start` alone takes the tracker with an open ticket on this branch. When it lists options (exit 3), ask the user which one. Each new session, after `/clear` too, starts on no tracker; on a branch with an open ticket, a `[work-tracker]` line at its start asks you to offer the link. Link only on the user's yes; on "Not now", run `tracker start --decline` (no offer on this branch for a day). `--tracker <slug>` works for one command.
 2. **Which tickets.** The branch names them: every ticket whose `branch` it is; else a `tracker use` choice for this worktree (a shared branch such as `main`); else an id in the branch name; at session start, else the branch's PR. `tracker here` prints the brief again: the handoff first, then the tickets under way in full, the rest in one line. When the match is wrong, `tracker use <id>` puts the ticket on this branch. When the branch holds several tickets and this session's work is one of them, `tracker start <slug> --on <id>` puts this session on it alone (the other sessions keep theirs). Make or switch branches only when the user asks; start a new branch from the branch `context` names (`start:`), else the default branch, name it for the work (led by the ticket's Issue id when it has one), and record it with `tracker set <id> status=in-progress`.
 3. **Another ticket or decision.** `tracker context <id>` before you touch it. Ids ignore case and leading zeros; a PR (`#123`), a branch or `<tracker>:<id>` also work. Its dependencies' Carry forward is the contract you build on (`--deep` for the whole chain); its settled decisions hold. `tracker show <ids> --section <name>` prints records' own text, whole or by section (`show D-01 D-02 --section resolution`): read records through it or `context`, not with `cat` or `sed`.
-4. **The whole picture**: `tracker index` (`--active`; under its headline, the wait and cycle time lines), `tracker decisions` (the open ones; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker), `tracker history` (the log's last lines; `--ref <ids>`, `--since <date>`). Read a file only when one of these points you to it.
+4. **The whole picture**: `tracker index` (`--active`; under its headline, the wait and cycle time lines), `tracker decisions` (the open ones; `--all`), `tracker actions` (the user's open tasks; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker), `tracker history` (the log's last lines; `--ref <ids>`, `--since <date>`). Read a file only when one of these points you to it.
 5. **Changes by others.** A `Changed since your brief` line on a user message reports another session's or GitHub's change to your tickets' dependencies or decisions: act on it.
 
 ## Write
@@ -65,6 +66,7 @@ Record each fact at the moment it forms, in its home:
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
+| a task only the user should do: talk to or follow up with a person, get an access or a sign-off, a step on a system you cannot reach | ask the user whether to add it; on yes, `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day. When the user says it is done or no longer needed: `tracker act A-<n> --done` (or `--drop`), with `--note "<outcome>"` when it has one |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
 | a `[work-tracker]` line names issue fields due | read each issue with its issue tracker's tool (such as an MCP server) and `tracker issue <id> --priority <0-4> --created <ISO 8601 time>`, or `tracker issue <id>` when it has neither. With no such tool, leave them: never guess a value |
@@ -79,13 +81,14 @@ Record each fact at the moment it forms, in its home:
   - raised: `tracker decide "<title>" --refs <ids> --question "<what and why it matters>" [--owner <who>]`; it stops tickets: `--blocks <ids>`
   - new option or fact: `tracker decide D-<n> --note "..."`
   - settled: `tracker decide D-<n> --resolve "<answer>" --by <who>`; settled on the spot: `tracker decide "<title>" --resolve "..." --by <who>`
+- **Actions** are few and only the user's: never your own next step (`next`), a wait the PR shows (a review, checks) or a choice (a decision). Before you add one, check the open ones in the brief or `tracker actions`; add to one with `tracker act A-<n> --note "..."`. A note is one fact: the context when you add the action, the reply when it comes, each its own `--note` (it repeats). `tracker show A-<n>` prints an action with its notes. One open longer than a week: ask the user whether it is done.
 - **Hook lines** tagged `[work-tracker]` are the tracker's requests: act on each one in the same turn.
 
 Completion: each ticket under way has a `next` true as of now (a `[work-tracker]` line says when commits pass it), every fact above is in its home, and each `check` error a write printed is fixed.
 
 ## View
 
-`tracker open [id]` opens the live viewer for the user. Its Now section shows the tickets under way, each branch's handoff and how long ago its commits were last logged. Its Refresh (top right) pulls PR state at once and asks the next prompt for the due issue fields.
+`tracker open [id]` opens the live viewer for the user. Its Your actions section, above Now, lists the user's open actions, each with Done and Drop. Its Now section shows the tickets under way, each branch's handoff and how long ago its commits were last logged. Its Refresh (top right) pulls PR state at once and asks the next prompt for the due issue fields.
 
 ## New tracker or migration
 

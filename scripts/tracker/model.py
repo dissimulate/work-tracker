@@ -42,6 +42,7 @@ OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
 CLOSED_TICKET = {"merged", "done", "dropped"}  # stages
 OPEN_STAGES = set(STAGES) - CLOSED_TICKET
 DECISION_STATUSES = ["open", "closed"]
+ACTION_STATUSES = ["open", "done", "dropped"]
 LIST_KEYS = {"depends_on", "refs", "labels"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
 
@@ -79,6 +80,15 @@ KEYS = {
         "opened": ("auto", "date it was opened"),
         "updated": ("auto", "date of the last change through the CLI"),
     },
+    "action": {
+        "id": ("act", "A-<n>; also the file name"),
+        "title": ("act", "what the user must do, and with whom"),
+        "status": ("act", "open until `act --done` or `act --drop` closes it"),
+        "refs": ("act", "the tickets and decisions it concerns"),
+        "due": ("act", "the day the user should do it by (YYYY-MM-DD); optional, only a date the user gave"),
+        "opened": ("auto", "date it was added"),
+        "updated": ("auto", "date of the last change through the CLI; once closed, when it closed"),
+    },
     "tracker": {
         "title": ("set", "name of the work"),
         "repo": ("set", "GitHub owner/name, or a list when the work spans repos; enables `sync`"),
@@ -90,10 +100,11 @@ KEYS = {
     },
 }
 SCHEMA = 2  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
-RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "tracker": set()}  # `migrate` removes them
+# `migrate` removes them
+RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
-              "sync": "`tracker sync` writes it from the PR", "auto": "the tracker writes it",
-              "issue": "`tracker issue` writes it from the ticket's issue tracker"}
+              "act": "use `tracker act`", "sync": "`tracker sync` writes it from the PR",
+              "auto": "the tracker writes it", "issue": "`tracker issue` writes it from the ticket's issue tracker"}
 # Machine state in .state.json, never in frontmatter: what `tracker rules` says about it. A branch's entries are keyed
 # by state_key, so a tracker can span repos.
 STATE_KEEP_DAYS = 14
@@ -191,6 +202,7 @@ def put_entry(entries: dict, repo: str, branch: str, value) -> None:
 README_TOKEN_BUDGET = 2000
 MERGED_CARRY_FORWARD_MAX = 5
 STALE_DECISION_DAYS = 14
+STALE_ACTION_DAYS = 7
 STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
@@ -301,6 +313,8 @@ TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
     "summary": (400, "summary", "one line; the detail goes in the PR"),
     "log": (400, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
     "carry": (600, "Carry forward bullet", "one fact per bullet: split it into more"),
+    "action": (200, "action", "one line: what to do and with whom; the detail goes in `--note`"),
+    "note": (400, "action note", "one fact per note: pass `--note` again for the next (the context, then the reply)"),
 }
 
 
@@ -330,6 +344,14 @@ DECISION_BAR = (
     "(a choice made on the spot is one command: `tracker decide \"<title>\" --resolve \"...\" --by <who>`). "
     "A choice inside one ticket's build (implementation detail, review fix, naming, styling) is not a decision: "
     "it goes in that ticket's Plan, `next` or PR.")
+ACTION_BAR = (
+    "An action is a task for the user that you cannot or should not do: talk to or follow up with a person, get an "
+    "access or a sign-off, a step on a system you have no access to. It is never your own next step (`next`), a "
+    "wait the PR shows (a review, checks), or a choice (a decision). Ask the user before you add one, unless they "
+    "asked for it: `tracker act \"<what to do, with whom>\" --refs <ids>`. When the user says it is done, or no "
+    "longer needed, close it: `tracker act A-<n> --done` (or `--drop`), with `--note \"<outcome>\"` when it has one. "
+    "A note is one fact (the context when you add it, the reply when it comes): `--note` repeats. When the user "
+    "gives a day it is due by, pass `--due YYYY-MM-DD`; never set one they did not give.")
 WAIT_RULE = (
     "Order and blockers live only in the waiting ticket's `depends_on`: when a ticket must wait on another ticket, "
     "a decision or something outside the tracker, or stops waiting, run `tracker wait <id> on|off <ids>` "
@@ -409,7 +431,7 @@ def cut(text: str, width: int) -> str:
 @dataclass
 class Record:
     path: Path
-    kind: str  # "ticket" | "decision"
+    kind: str  # "ticket" | "decision" | "action"
     meta: dict
     body: str
     problems: list[str] = field(default_factory=list)  # frontmatter lines that did not parse; `check` reports them
@@ -606,6 +628,20 @@ class Tracker:
     def decisions(self) -> list[Record]:
         return sorted((load_record(p, "decision") for p in (self.root / "decisions").glob("*.md")),
                       key=lambda r: sort_key(r.id))
+
+    @cached_property
+    def actions(self) -> list[Record]:
+        """The user's actions (ACTION_BAR): apart from `records`, so no id lookup finds one."""
+        return sorted((load_record(p, "action") for p in (self.root / "actions").glob("*.md")),
+                      key=lambda r: sort_key(r.id))
+
+    def open_actions(self) -> list[Record]:
+        """The open ones, the soonest due first, then those with no due date."""
+        return sorted((a for a in self.actions if a.get("status", "open") == "open"),
+                      key=lambda a: (due_date(a) or dt.date.max, sort_key(a.id)))
+
+    def action(self, ident: str) -> Record | None:
+        return next((a for a in self.actions if norm_id(a.id) == norm_id(ident)), None)
 
     @property
     def title(self) -> str:
@@ -832,7 +868,8 @@ class Tracker:
     def data_files(self) -> list[Path]:
         """Every file that holds the tracker's facts: a change to one is a change the viewer and the watcher show."""
         return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
-                *sorted((self.root / "tickets").glob("*.md")), *sorted((self.root / "decisions").glob("*.md"))]
+                *sorted((self.root / "tickets").glob("*.md")), *sorted((self.root / "decisions").glob("*.md")),
+                *sorted((self.root / "actions").glob("*.md"))]
 
 
 def files_hash(files: list[Path], extra: str = "") -> str:
@@ -906,6 +943,7 @@ def resolution(d: Record) -> str:
 # computed.
 
 DECISION_ID = re.compile(r"D-\d+", re.I)
+ACTION_ID = re.compile(r"A-\d+", re.I)
 STARTED = {"in-progress", "in-review", "merged", "done"}  # stages
 IN_FLIGHT = {"in-progress", "in-review"}  # stages: started, not yet closed
 
@@ -1099,6 +1137,38 @@ def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     with open(tr.root / "log.md", "a") as f:
         f.write(line + "\n")
     return line
+
+
+def due_date(a: Record) -> dt.date | None:
+    """An action's due day; None when it has none, or one `check` refuses."""
+    try:
+        return dt.date.fromisoformat(str(a.get("due") or ""))
+    except ValueError:
+        return None
+
+
+ACTION_ADDED = "Action for the user:"  # how the log line of a new action starts: `tracker watch` marks it
+
+
+def close_action(tr: Tracker, a: Record, status: str, notes: list[str] | None = None) -> str:
+    """Close a user's action as done or dropped, with its outcome notes when it has some; log it. Returns what it
+    did."""
+    if a.get("status", "open") != "open":
+        die(f"{a.id} is {a.get('status')} already")
+    a.save({"status": status, "updated": today()})
+    append_notes(a, notes or [])
+    append_log(tr, f"{a.id} {status}: {a.get('title')}" + (f" → {short('; '.join(notes))}" if notes else ""),
+               [a.id, *a.list("refs")])
+    return f"{a.id} {status}"
+
+
+def append_notes(a: Record, notes: list[str]) -> None:
+    """A bullet per note at the end of an action's body, one list. Undated: the log line each write adds dates it."""
+    if not notes:
+        return
+    text = a.path.read_text().rstrip("\n")
+    gap = "\n" if BULLET.match(strip_comments(text).rstrip().splitlines()[-1]) else "\n\n"
+    a.rewrite(text + gap + "".join(f"- {' '.join(n.split())}\n" for n in notes))
 
 
 def set_branch(tr: Tracker, t: Record, branch: str, note: str = "") -> None:

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import time
 from pathlib import Path
 from statistics import median
 
-from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, SPANS, STAGES, STEP_MESSAGE, TEXT_MAX,
-    cut, link_lines, resolution, sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
+from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, SPANS, STAGES, STALE_ACTION_DAYS,
+    STEP_MESSAGE, TEXT_MAX, cut, due_date, link_lines, resolution, sequence, short, span, utc_seconds, whose_move,
+    Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
-from .contract import check
+from .contract import check, days_since
 
 # ---------------------------------------------------------------- views
 
@@ -30,6 +32,8 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
     out = [f"{tr.headline()} · {len(tr.tickets)} tickets · {tally}"]
     if tr.context:
         out += ["Context:", *link_lines(tr.context, tr.root, titles=titles, width=width), ""]
+    acts = action_lines(tr, width)
+    out += acts + [""] * bool(acts)
     rows = [t for t in tr.tickets
             if (not stages or t.stage in stages) and (group is None or str(t.get("group")) == group)]
     w_id = max([len(t.id) for t in rows] + [2])
@@ -47,6 +51,24 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
         for d in decisions:
             touched = ", ".join(tr.touched_by(d))
             out.append(f"{d.id:<{w_id}}  {d.get('title')}" + (f"  ({touched})" if touched else ""))
+    return out
+
+
+def action_lines(tr: Tracker, width: int = 0) -> list[str]:
+    """The user's open actions, the soonest due first, each with what it concerns and its due day. One past its due
+    day, or with none and open longer than STALE_ACTION_DAYS, says to ask the user."""
+    acts = tr.open_actions()
+    if not acts:
+        return []
+    out = ["Open actions for the user (not yours to do; when the user says one is done or no longer needed: "
+           "`act A-<n> --done` or `--drop`):"]
+    for a in acts:
+        age, due = days_since(a.get("opened")), due_date(a)
+        ask = ": ask the user whether it is done"
+        stale = (f" (due {due}" + (f", overdue{ask}" if due < dt.date.today() else "") + ")" if due
+                 else f" (open {age} days{ask})" if age > STALE_ACTION_DAYS else "")
+        refs = ", ".join(a.list("refs"))
+        out.append("  " + cut(f"{a.id}{stale}: {a.get('title')}" + (f" ({refs})" if refs else ""), width))
     return out
 
 
@@ -291,7 +313,8 @@ def protocol(slug: str) -> str:
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
         "- as they happen: a direction choice `decide`; an order or blocker `wait`; a result file "
-        "`attach <file> --ref <ids>`",
+        "`attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a sign-off): ask "
+        "them, then `act \"<what, with whom>\" --refs <ids>`",
         "- a subagent writes no tracker (a hook tells it): put what it needs in its prompt (`context <id> --brief`), "
         "and record what it reports",
         "- `[work-tracker]` hook lines are the tracker's requests: act on each in the same turn. A write prints the "
@@ -412,6 +435,9 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
         shared = carry_lines(tr, shown, limit=BRIEF_CARRY_CHARS) + decision_lines(tr, shown, BRIEF_LINE_CHARS)
         if shared:
             parts.append("\n".join(shared).strip("\n"))
+        acts = action_lines(tr, BRIEF_LINE_CHARS)  # the index below has them when no ticket is under way
+        if acts:
+            parts.append("\n".join(acts))
     else:
         if m.tickets:
             ready = [t.id for t, _ in tr.startable()]

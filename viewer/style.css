@@ -502,6 +502,27 @@ details.sec > summary h2 { display: flex; align-items: center; gap: 10px; }
   .agent.busy::before { animation: none; }
 }
 
+/* ---------- actions: the user's tasks, above Now; closed ones in Reference ----------
+   Each is a panel as a decision is. Its title keeps to one line, opened too (hover: the whole title); Done and Drop
+   sit at the end of its head. */
+
+details.act > summary { flex-wrap: nowrap; align-items: center; }
+details.act > summary > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.act > summary > .meta { flex-shrink: 0; }
+details.act .overdue { color: var(--blocked); font-weight: 600; }
+details.act .due-today { color: var(--active); font-weight: 600; }
+details.act .btns { display: flex; gap: 6px; flex-shrink: 0; }
+details.act .btns button { padding: 3px 10px; font-size: var(--fs-xs); background: var(--surface); border: var(--border); }
+details.act .btns button:hover { background: var(--subtle); }
+/* Done looks as the done tag (.chip.s-done) does. */
+details.act .btns button[data-close="done"] {
+  color: var(--tag-ink);
+  background: var(--tag-done);
+  border-color: transparent;
+  font-weight: 600;
+}
+details.act .btns button[data-close="done"]:hover { background: color-mix(in srgb, var(--tag-done) 85%, var(--tag-ink)); }
+
 /* ---------- tables ---------- */
 
 .tbl { overflow-x: auto; margin: 12px 0; }

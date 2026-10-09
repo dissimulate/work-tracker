@@ -1731,5 +1731,123 @@ class Delete(unittest.TestCase):
         self.assertEqual(delete({"X-Tracker-Token": token})[0], 404)
 
 
+
+class Actions(unittest.TestCase):
+    """A user's action: a task the agent cannot or should not do. The agent adds it with `tracker act`; the user's
+    word closes it, from the CLI or the viewer's Done and Drop. Open ones show above Now and in the brief; closed
+    ones go to Reference."""
+
+    def setUp(self):
+        self.s = slug()
+        self.t = ("--tracker", self.s)
+        run("init", self.s, "--title", "Work", "--owner", "me")
+        run(*self.t, "new", "T-1", "--title", "Schema")
+        self.root = model.HOME / self.s
+
+    def tr(self) -> model.Tracker:
+        return model.Tracker(self.root)
+
+    def test_an_action_is_added_noted_and_closed(self):
+        out = run(*self.t, "act", "--refs", "T-1", "Ask Sam whether the billing API keeps v1", "--note", "T-1 needs it")
+        self.assertIn("A-01 added", out)
+        a = self.tr().action("a-1")
+        self.assertEqual((a.get("status"), a.list("refs")), ("open", ["T-1"]))
+        self.assertIn("- T-1 needs it\n", a.body)
+        run(*self.t, "act", "A-1", "--note", "Reply: v1 stays", "--note", "Reply: until March")
+        self.assertIn("- T-1 needs it\n- Reply: v1 stays\n- Reply: until March", run(*self.t, "show", "A-01"))
+        self.assertIn(f"- {model.today()} [A-01 T-1] Updated A-01: Reply: v1 stays; Reply: until March",
+                      (self.root / "log.md").read_text())
+        self.assertIn("over 400", run(*self.t, "act", "A-01", "--note", "x " * 210, code=2))
+        out = run(*self.t, "act", "Ask Sam if the billing API keeps v1", code=3)
+        self.assertIn("similar open action: A-01", out)
+        run(*self.t, "act", "Get read access to the prod DB", "--refs", "T-9", code=2)
+        run(*self.t, "act", "Get read access to the prod DB")
+        listed = run(*self.t, "actions").splitlines()
+        self.assertEqual([x.split()[0] for x in listed], ["A-01", "A-02", "`tracker"])
+        self.assertEqual(listed[-1], "`tracker show A-<n>` prints one with its notes")
+
+        out = run(*self.t, "act", "A-01", "--done", "--note", "Sam: v1 stays")
+        self.assertIn("A-01 done", out)
+        self.assertIn("[A-01 T-1] A-01 done: Ask Sam whether the billing API keeps v1 → Sam: v1 stays",
+                      (self.root / "log.md").read_text())
+        self.assertIn("A-01 is done already", run(*self.t, "act", "A-01", "--drop", code=2))
+        run(*self.t, "act", "A-02", "--drop")
+        listed = run(*self.t, "actions")
+        self.assertIn("no open actions", listed)
+        self.assertIn("2 closed", listed)
+        self.assertIn("A-02  dropped", run(*self.t, "actions", "--all"))
+        self.assertEqual(cli.check(self.tr()), ([], ["README.md: ## Context lists nothing"]))
+        self.assertIn("Actions: An action is a task for the user", run("rules"))
+
+    def test_the_brief_lists_open_actions_and_asks_about_old_ones(self):
+        run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--refs", "T-1")
+        run(*self.t, "act", "Get read access to the prod DB")
+        run(*self.t, "act", "A-02", "--done")
+        self.tr().action("A-01").save({"opened": "2026-01-01"})
+        index = run(*self.t, "index")
+        self.assertIn("Open actions for the user", index)
+        self.assertRegex(index, r"A-01 \(open \d+ days: ask the user whether it is done\): Ask Sam .* \(T-1\)")
+        self.assertNotIn("A-02", index)
+        self.assertIn('`act "<what, with whom>" --refs <ids>`', views.protocol(self.s))
+
+    def test_the_viewer_shows_them_and_closes_one(self):
+        run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--refs", "T-1")
+        run(*self.t, "act", "Get read access to the prod DB")
+        page = viewer.main_html(self.tr())
+        self.assertLess(page.index('data-id="_sec-actions"'), page.index('data-id="_sec-seq"'))
+        self.assertIn('data-close="done" data-ref="A-01"', page)
+        self.assertNotIn("_closed-actions", page)
+
+        threading.Thread(target=viewer.serve, daemon=True).start()
+        for _ in range(100):
+            if viewer.VIEWER_FILE.exists():
+                break
+            time.sleep(0.05)
+        base = f"http://127.0.0.1:{json.loads(viewer.VIEWER_FILE.read_text())['port']}/t/{self.s}"
+        token = re.search(r'data-token="([^"]+)"', urllib.request.urlopen(f"{base}/").read().decode()).group(1)
+
+        def close(ident: str, what: str, headers: dict) -> int:
+            req = urllib.request.Request(f"{base}/actions/{ident}/{what}", data=b"", method="POST", headers=headers)
+            try:
+                return urllib.request.urlopen(req).status
+            except urllib.error.HTTPError as err:
+                return err.code
+
+        self.assertEqual(close("A-01", "done", {}), 403)
+        self.assertEqual(close("A-01", "done", {"X-Tracker-Token": token}), 204)
+        self.assertEqual(close("A-01", "drop", {"X-Tracker-Token": token}), 409)
+        self.assertEqual(close("A-09", "done", {"X-Tracker-Token": token}), 409)
+        self.assertEqual(close("A-02", "finish", {"X-Tracker-Token": token}), 404)
+        self.assertEqual(close("A-02", "drop", {"X-Tracker-Token": token}), 204)
+        self.assertEqual([a.get("status") for a in self.tr().actions], ["done", "dropped"])
+        page = viewer.main_html(self.tr())
+        self.assertNotIn("_sec-actions", page)
+        self.assertIn("<b>Closed actions</b><span class=meta>2, newest first</span>", page)
+
+    def test_a_due_day_orders_them_and_shows_in_the_row(self):
+        run(*self.t, "act", "Send the deck to Kim")
+        run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--due", "2026-13-01", code=2)
+        run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--due", "2099-01-15")
+        run(*self.t, "act", "Book the review with the design team", "--due", "2020-01-02")
+        self.assertEqual([a.id for a in self.tr().open_actions()], ["A-03", "A-02", "A-01"])
+        self.assertIn("A-02  open     Ask Sam whether the billing API keeps v1 · due 2099-01-15",
+                      run(*self.t, "actions"))
+        self.assertIn("A-03 (due 2020-01-02, overdue: ask the user whether it is done): Book the review",
+                      run(*self.t, "index"))
+        page = viewer.main_html(self.tr())
+        self.assertIn('<span class="meta" title="2099-01-15">Due: 15 Jan 2099</span>', page)
+        self.assertIn('<span class="meta overdue" title="2020-01-02">Due: 2 Jan 2020</span>', page)
+        self.assertEqual(page.count("Due: "), 2)  # A-01 has none, and shows no age instead
+        run(*self.t, "act", "A-03", "--due", "none")
+        self.assertEqual(self.tr().action("A-03").get("due"), "")
+        self.tr().action("A-02").save({"due": "soon"})
+        self.assertIn("A-02: due 'soon' is not a date (YYYY-MM-DD)", cli.check(self.tr())[0])
+
+    def test_the_watch_marks_a_new_action(self):
+        events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.ACTION_ADDED} Ask Sam",
+                                     "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])
+        self.assertEqual([urgent for _, urgent, _ in events], [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()

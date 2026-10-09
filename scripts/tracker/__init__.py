@@ -5,6 +5,7 @@ A tracker is a folder under $TRACKER_HOME (default ~/.claude/trackers/<slug>/):
     README.md          the work itself: frontmatter + Context, Goal, Scope
     tickets/<ID>.md    one per ticket: frontmatter (state) + Plan / Carry forward / Links
     decisions/D-<n>.md one per direction decision: status open|closed
+    actions/A-<n>.md   one per task for the user that the agent cannot or should not do: status open|done|dropped
     log.md             append-only, dated; never read by default
     evidence/          files the work's tickets and decisions cite (`tracker attach`)
     .state.json        machine state, never edited by hand (STATE_RULES)

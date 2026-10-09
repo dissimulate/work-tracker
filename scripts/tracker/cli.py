@@ -11,19 +11,18 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE,
-    EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, PRIORITIES, ROOT,
-    SAFE_NAME,
-    SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, all_trackers, append_log, append_to_section,
-    archived_at, archived_trackers,
-    atomic_file, atomic_write, blocker_link, create, csv, dated, die, drop_from_section, fit, id_list, link_url,
-    load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
-    set_branch, short, sort_key, spawn, today, unblocked, utc_now, Busy, Record, Tracker)
+from .model import (ACTION_ADDED, ACTION_ID, BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS,
+    DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE,
+    OPEN_STAGES, OWNER_HINT, PRIORITIES, ROOT, SAFE_NAME, SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES,
+    TRACKER_STATUSES, all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers,
+    atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, die, drop_from_section, fit, id_list,
+    link_url, load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo,
+    sequence, set_branch, short, sort_key, spawn, today, unblocked, utc_now, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
     save_session, session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
-from .contract import check, migrate, rules_lines
+from .contract import check, days_since, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
     index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
@@ -136,7 +135,7 @@ def cmd_find(args):
     pat = re.compile(re.escape(args.text), re.I)
     hits = 0
     for tr in trackers:
-        files = [r.path for r in tr.records] + [tr.root / "README.md", tr.root / "log.md"]
+        files = [r.path for r in tr.records + tr.actions] + [tr.root / "README.md", tr.root / "log.md"]
         for p in files:
             if not p.exists():
                 continue
@@ -418,6 +417,14 @@ LINK_SECTIONS = {"Links", "Context"}
 OWNED_SECTIONS = {"Resolution": "`tracker decide D-<n> --resolve`"}
 
 
+def action_for(args, ident: str) -> Record | None:
+    """The user's action an A-id names, when no ticket or decision of the tracker has that id."""
+    if not ACTION_ID.fullmatch(ident):
+        return None
+    tr = resolve(args)
+    return None if tr.lookup(ident) else tr.action(ident)
+
+
 def record_for(args, ident: str) -> tuple[Tracker, Record]:
     """A ticket or decision, or the README for `tracker` / `readme`."""
     if ident.lower() in ("readme", "tracker"):
@@ -512,7 +519,7 @@ def cmd_show(args):
         if ident.lower() == "log":  # the log holds no sections: its last lines, as `history` gives them
             out += ["== log (`tracker history` filters it)", *history_lines(resolve(args), [], "", HISTORY_LAST), ""]
             continue
-        rec = record_for(args, ident)[1]
+        rec = action_for(args, ident) or record_for(args, ident)[1]
         state = rec.stage if rec.kind == "ticket" else rec.get("status")
         out.append("== " + " · ".join(str(x) for x in (rec.id, rec.get("title"), state) if x))
         if not words:
@@ -674,6 +681,82 @@ def cmd_decide(args):
         append_log(tr, f"Opened {ident} {args.target}" + (f"; blocks {', '.join(newly)}" if newly else ""),
                    [ident, *refs, *newly])
         print(f"{ident} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {path}")
+
+
+def cmd_act(args):
+    tr = resolve(args)
+    refs = [tr.find(r).id for r in id_list(args.refs)]
+    if args.done and args.drop:
+        die("--done or --drop, not both")
+    notes = args.note or []
+    for n in notes:
+        fit("note", n)
+    due = None if args.due is None else "" if args.due.lower() in ("", "none") else args.due
+    if due:
+        try:
+            due = dt.date.fromisoformat(due).isoformat()
+        except ValueError:
+            die(f"--due {args.due}: pass a date, YYYY-MM-DD (or `none` to remove it)")
+    existing = tr.action(args.target) if ACTION_ID.fullmatch(args.target) else None
+    if existing:
+        if not (args.done or args.drop or args.note or refs or due is not None):
+            die("nothing to change: pass --done, --drop, --note, --refs or --due")
+        if refs:
+            existing.save({"refs": sorted(set(existing.list("refs")) | set(refs), key=sort_key), "updated": today()})
+        if due is not None:
+            existing.save({"due": due, "updated": today()})
+            append_log(tr, f"{existing.id} due {due}" if due else f"{existing.id} has no due date now",
+                       [existing.id, *existing.list("refs")])
+        if args.done or args.drop:
+            print(close_action(tr, existing, "done" if args.done else "dropped", notes))
+            return
+        if notes:
+            append_notes(existing, notes)
+            existing.save({"updated": today()})
+            append_log(tr, f"Updated {existing.id}: {short('; '.join(notes))}", [existing.id, *existing.list("refs")])
+        print(f"{existing.id} updated")
+        return
+    if ACTION_ID.fullmatch(args.target):
+        die(f"no action {args.target}; to add one, pass what the user must do instead")
+    if args.done or args.drop:
+        die("--done and --drop close an open action: pass its A-id")
+    fit("action", args.target)
+    clash = [a for a in tr.open_actions() if similar(str(a.get("title")), args.target) >= 0.5]
+    if clash and not args.force:
+        for a in clash:
+            print(f"similar open action: {a.id} {a.get('title')}")
+        die("add to that one with `tracker act A-<n> --note ...`, or pass --force if this is a different action", 3)
+    nums = [int(m[1]) for a in tr.actions if (m := re.fullmatch(r"A-(\d+)", a.id))]
+    ident = f"A-{max(nums, default=0) + 1:02d}"
+    meta = {"id": ident, "title": args.target, "status": "open", "refs": refs, "due": due or "", "opened": today(),
+            "updated": today()}
+    path = tr.root / "actions" / f"{ident}.md"
+    path.parent.mkdir(exist_ok=True)
+    create(path, from_template("action", meta, tr.labels))
+    rec = load_record(path, "action")
+    append_notes(rec, notes)
+    tr.actions.append(rec)
+    append_log(tr, f"{ACTION_ADDED} {args.target}" + (f" (due {due})" if due else ""), [ident, *refs])
+    print(f"{ident} added: {path}")
+
+
+def cmd_actions(args):
+    tr = resolve(args)
+    rows = tr.actions if args.all else tr.open_actions()
+    for a in rows:
+        state = a.get("status", "open")
+        refs = ", ".join(a.list("refs"))
+        age = days_since(a.get("opened"))
+        when = (f"due {a.get('due')}" if a.get("due") else f"open {age} d" if age else "added today") \
+            if state == "open" else str(a.get("updated"))
+        print(f"{a.id}  {state:<7}  {a.get('title')}" + (f"  ({refs})" if refs else "") + f" · {when}")
+    if not rows:
+        print("no actions" if args.all else "no open actions")
+    closed = len(tr.actions) - len(tr.open_actions())
+    if not args.all and closed:
+        print(f"{closed} closed (`tracker actions --all` lists them too)")
+    if tr.actions:
+        print("`tracker show A-<n>` prints one with its notes")
 
 
 def cmd_rules(args):
@@ -1066,6 +1149,9 @@ def build_parser():
                                          "ones; --all adds those, with their answers")
     sp.add_argument("--status", choices=DECISION_STATUSES)
     sp.add_argument("--all", action="store_true", help="every decision, settled ones with their answers")
+    sp = add("actions", cmd_actions, "the user's open actions: tasks the agent cannot or should not do; --all adds "
+                                     "the closed ones")
+    sp.add_argument("--all", action="store_true", help="every action, closed ones too")
     sp = add("find", cmd_find, "search tickets, decisions, README and log")
     sp.add_argument("text")
     sp.add_argument("--all", action="store_true", help="search every tracker")
@@ -1098,8 +1184,8 @@ def build_parser():
     sp.add_argument("text")
     sp = add("show", cmd_show, "records' own text by id, whole or only some sections, without the template's "
                                "comments: show T-8 --section carry / show D-01 D-02 --section resolution")
-    sp.add_argument("ids", nargs="+", metavar="ID", help="ticket or decision ids (a comma list works too), "
-                                                          "`tracker` for the README, or `log` for its last lines")
+    sp.add_argument("ids", nargs="+", metavar="ID", help="ticket, decision or action ids (a comma list works "
+                                                          "too), `tracker` for the README, or `log` for its last lines")
     sp.add_argument("--section", help="comma list of sections, by a prefix of the name: plan, carry, links, question, "
                                       "options, resolution, context, goal, scope")
     sp = add("history", cmd_history, "read the log: its last lines, oldest first, or those about some tickets or "
@@ -1138,6 +1224,18 @@ def build_parser():
                                             "depends_on)")
     sp.add_argument("--owner", help="who must decide")
     sp.add_argument("--force", action="store_true", help="open even though a similar decision is open")
+    sp = add("act", cmd_act, "add a task for the user that the agent cannot or should not do (by its text), or note "
+                             "on / close one (by A-id): act \"Ask Sam whether v1 stays\" --refs T-3 / act A-01 --done")
+    sp.add_argument("target", nargs="?", help="what the user must do, and with whom; or an existing A-id")
+    sp.add_argument("--refs", **IDS, help="ticket or decision ids it concerns")
+    sp.add_argument("--note", action="append", help="one fact: the context (what to ask or say, and why), or the "
+                                                   "reply or outcome; a line in the action. Repeat it for each "
+                                                   "fact")
+    sp.add_argument("--due", metavar="YYYY-MM-DD", help="the day the user should do it by, only one they gave; "
+                                                       "`none` removes it")
+    sp.add_argument("--done", action="store_true", help="the user did it; closes the action")
+    sp.add_argument("--drop", action="store_true", help="no longer needed; closes the action")
+    sp.add_argument("--force", action="store_true", help="add even though a similar action is open")
     sp = add("wait", cmd_wait, "record what a ticket waits on, or remove it: wait T-14 on T-7 D-10 / "
                                "wait T-6 on X-1 --link \"<url> — why\" / wait T-14 off D-10")
     sp.add_argument("id", help="the ticket that waits")
@@ -1224,8 +1322,8 @@ def build_parser():
     return p, sub
 
 
-WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "wait", "migrate", "synced", "pause", "step", "use", "add",
-                  "put", "drop", "attach", "issue"}  # `sync` locks itself
+WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate", "synced", "pause", "step", "use",
+                  "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 
 def log_size(tr: Tracker) -> int:
@@ -1274,7 +1372,7 @@ def own_changes(run) -> None:
 
 # The positional that an id list can swallow: `log --ref A B "msg"` gives the list "msg" too, as argparse's usage line
 # puts options first. The list's last word goes back to the positional.
-AFTER_IDS = {"log": "message", "attach": "file", "decide": "target", "new": "id"}
+AFTER_IDS = {"log": "message", "attach": "file", "decide": "target", "act": "target", "new": "id"}
 IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 
 

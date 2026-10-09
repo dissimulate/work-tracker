@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import hmac
 import html
@@ -19,8 +20,9 @@ from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry, files_hash,
-    locked, priority, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy, Dep, Move, Record, Tracker)
+    ROOT, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
+    close_action, due_date, files_hash, locked, priority, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy,
+    Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .views import duration, pr_label, span_lines, stage_counts, start_text
@@ -545,11 +547,76 @@ def now_html(tr: Tracker) -> Html:
                Html("<div class=nowlist>{}</div>").format(NONE.join(now)), True) if now else NONE
 
 
+# ---------------------------------------------------------------- actions
+
+CLOSE_ACTION = {"done": "done", "drop": "dropped"}  # a page's request: the status it sets
+
+
+def due_text(d: dt.date) -> str:
+    """`today`, `tomorrow`, a weekday within the week ahead, else `14 Oct` (with the year when not this one)."""
+    days = (d - dt.date.today()).days
+    if days in (0, 1):
+        return ("today", "tomorrow")[days]
+    if 1 < days < 7:
+        return f"{d:%a}"
+    return f"{d.day} {d:%b}" + (f" {d.year}" if d.year != dt.date.today().year else "")
+
+
+def action_html(a: Record, buttons: bool) -> Html:
+    """An action as a decision shows: one line that opens to what it concerns, its dates and its notes. The line: its
+    id, its title (whole on hover), and when open its due day, if it has one (in the blocked colour once past, the
+    active one on the day), with `buttons` Done and Drop; when closed, its status and when it closed."""
+    notes = strip_comments(a.body).strip()
+    status = str(a.get("status", "open"))
+    due = due_date(a)
+    if status != "open":
+        when = Html("<span class=meta>{}</span>").format(a.get("updated"))
+    elif due:
+        late = " overdue" if due < dt.date.today() else " due-today" if due == dt.date.today() else ""
+        when = Html('<span class="meta{}" title="{}">Due: {}</span>').format(late, due.isoformat(), due_text(due))
+    else:
+        when = NONE
+    btns = Html("<span class=btns>{}</span>").format(NONE.join(
+        Html('<button type=button data-close="{}" data-ref="{}">{}</button>').format(what, a.id, what.capitalize())
+        for what in CLOSE_ACTION)) if buttons and status == "open" else NONE
+    title = str(a.get("title"))
+    head = Html('<span class=id>{}</span>{}<b title="{}">{}</b>{}{}').format(
+        a.id, chip(status) if status != "open" else NONE, title, title, when, btns)
+    facts = [(k, v) for k, v in (("concerns", comma(ref(x) for x in a.list("refs"))), ("due", a.get("due")),
+                                 ("added", a.get("opened")), ("closed", a.get("updated") if status != "open" else ""))
+             if v]
+    return panel(a.id, head, Html("<div>{}{}</div>").format(props_html([facts]), md_to_html(notes) if notes else NONE),
+                 attrs={"class": "act"})
+
+
+def actions_html(tr: Tracker) -> Html:
+    """The user's open actions, above Now so they are seen first; none open, no section."""
+    acts = tr.open_actions()
+    return sec("actions", "Your actions", len(acts), NONE.join(action_html(a, not tr.archived) for a in acts),
+               True) if acts else NONE
+
+
+def close_from_page(tr: Tracker, ident: str, what: str) -> str:
+    """A page's Done or Drop: close the action, unless it is closed already. Returns why not, or ""."""
+    with locked():
+        tr = Tracker(tr.root)
+        a = tr.action(ident)
+        if not a:
+            return f"no action {ident}"
+        if a.get("status", "open") != "open":
+            return f"{a.id} is {a.get('status')} already"
+        close_action(tr, a, CLOSE_ACTION[what])
+    return ""
+
+
 # ---------------------------------------------------------------- the page
 
 def reference_html(tr: Tracker) -> Html:
-    """What is settled or past, one collapsed row each: closed decisions, the rest of the README, the log."""
+    """What is settled or past, one collapsed row each: closed decisions and actions, the rest of the README, the
+    log."""
     settled = [d for d in tr.decisions if d.get("status") == "closed"]
+    closed = sorted((a for a in tr.actions if a.get("status", "open") != "open"),
+                    key=lambda a: (str(a.get("updated")), sort_key(a.id)), reverse=True)
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
@@ -559,6 +626,8 @@ def reference_html(tr: Tracker) -> Html:
     return sec("reference", "Reference", 0, NONE.join([
         panel("_closed", named("Closed decisions", str(len(settled))), NONE.join(decision_html(tr, d) for d in settled))
         if settled else NONE,
+        panel("_closed-actions", named("Closed actions", f"{len(closed)}, newest first"),
+              NONE.join(action_html(a, False) for a in closed)) if closed else NONE,
         panel("_readme", named("More about this work", ", ".join(headings(extra))), md_to_html(extra))
         if headings(extra) else NONE,
         panel("_log", named("Log", f"{len(log_lines)} entries, newest first"), log,
@@ -578,6 +647,7 @@ def main_html(tr: Tracker) -> Html:
 <h1>{title}</h1><p class=sub>{facts}<br>{slug} · <code>{root}</code></p>
 {links}
 {goal}
+{actions}
 {now}
 {sequence}
 {check}
@@ -590,7 +660,7 @@ def main_html(tr: Tracker) -> Html:
         links=panel("_links", named("Links", f"{len(tr.context)}: {labels}"), props_html([link_rows(tr.context)]))
         if tr.context else NONE,
         goal=panel("_goal", named(", ".join(headings(goal))), md_to_html(goal)) if goal else NONE,
-        now=now_html(tr), sequence=sequence_html(tr),
+        actions=actions_html(tr), now=now_html(tr), sequence=sequence_html(tr),
         check=sec("check", "Check", len(errors) + len(warnings), Html("<ul>{}</ul>").format(problems))
         if problems else NONE,
         decisions=sec("decisions", "Open decisions", len(open_ds),
@@ -790,11 +860,21 @@ def serve(port: int = 0) -> None:
             return tracker_at(parts[1]) or archived_at(parts[1]) if parts[0] == "t" and len(parts) > 1 else None
 
         def do_POST(self):
-            """A Refresh, an Archive, an Unarchive or a Delete: the page's token, from this server's own page, or
-            nothing changes."""
+            """A Refresh, an Archive, an Unarchive, a Delete, or an action's Done or Drop
+            (`/t/<slug>/actions/<A-n>/done|drop`): the page's token, from this server's own page, or nothing
+            changes."""
             if not self.allowed() or not hmac.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN):
                 return self.reply(403, "forbidden", "text/plain")
             parts = self.parts()
+            if len(parts) == 5 and parts[2] == "actions" and parts[4] in CLOSE_ACTION:
+                tr = self.tracker(parts)
+                if not tr or tr.archived:
+                    return self.reply(404, "not found", "text/plain")
+                try:
+                    refused = close_from_page(tr, parts[3], parts[4])
+                except Busy as exc:
+                    refused = str(exc)
+                return self.reply(409, refused, "text/plain") if refused else self.send(204)
             tr = self.tracker(parts) if len(parts) == 3 else None
             act = {"archive": archive_tracker, "unarchive": unarchive_tracker, "delete": delete_tracker}.get(
                 parts[2] if tr else "")

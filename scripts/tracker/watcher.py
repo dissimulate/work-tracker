@@ -14,8 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-from .model import (ARCHIVE, HOME, IN_FLIGHT, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash, locked,
-    short, to_trash, whose_move, Tracker)
+from .model import (ACTION_ADDED, ARCHIVE, HOME, IN_FLIGHT, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash,
+    locked, short, to_trash, whose_move, Tracker)
 from .session import (CLAUDE_SESSIONS, SESSIONS_DIR, alive, drop_session, live_sessions, load_session, match_cwd,
     session_id, Live)
 from .contract import check
@@ -146,7 +146,8 @@ COMMITS = re.compile(r"Commits on \S+: (.*)")
 
 
 def log_events(lines: list[str]) -> list[Event]:
-    """One event per new log line, keyed by the first id it names; the commits the hooks logged, as a count."""
+    """One event per new log line, keyed by the first id it names (a new action for the user needs them); the commits
+    the hooks logged, as a count."""
     out, commits = [], {}
     for line in lines:
         m = LOG_LINE.match(line)
@@ -159,7 +160,7 @@ def log_events(lines: list[str]) -> list[Event]:
             more = re.fullmatch(r"and (\d+) more", items[-1])
             commits[key] = commits.get(key, 0) + (len(items) - 1 + int(more[1]) if more else len(items))
         else:
-            out.append((key, False, short(msg, 120)))
+            out.append((key, msg.startswith(ACTION_ADDED), short(msg, 120)))
     return out + [(key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
 
 
@@ -198,12 +199,13 @@ def lines_of(events: list[Event], now: float) -> list[str]:
 
 def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     """The first run's lines: the tickets under way with their moves and agents, the agents on none, the open
-    decisions and what can start."""
+    decisions, the user's open actions and what can start."""
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.stage in IN_FLIGHT]
     on = {x.sid: agent_tickets(tr, x) for x in live}
     opened = [d.id for d in tr.open_decisions()]
+    acts = [a.id for a in tr.open_actions()]
 
     def agent(x: Live) -> str:
         return f"agent {x.name} {'busy' if x.status == 'busy' else 'idle'}" + \
@@ -215,6 +217,9 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     out = [line(False, f"watching {tr.slug}: {len(flight)} under way, "
                        f"{sum(needs_you(facts[t.id]) for t in flight)} your move, {len(live)} agent(s), "
                        f"{len(opened)} open decision(s)" + (f" ({', '.join(opened)})" if opened else ""))]
+    if acts:
+        out.append(line(True, f"{len(acts)} open action(s) for you: {', '.join(acts)} (in the viewer, or `tracker "
+                              f"actions`)"))
     for t in flight:
         agents = [x for x in live if t.id in on[x.sid]]
         move = [f"move: {facts[t.id]['move']}"] if facts[t.id].get("move") else []

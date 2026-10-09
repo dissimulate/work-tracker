@@ -145,8 +145,17 @@ async function askRefresh() {
   refresh.disabled = false;
 }
 
-// A tracker change the page asks the server for: `refresh`, `archive`, `unarchive` or `delete`. The token proves the
-// request comes from this page. Gives the server's refusal, or '' when done.
+// An action's Done or Drop: the action closes, and the next poll moves it to Reference.
+async function closeAction(button) {
+  button.parentElement.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  const refused = await post(slug, `actions/${encodeURIComponent(button.dataset.ref)}/${button.dataset.close}`);
+  if (refused) alert(refused);
+  await poll();
+}
+
+// A tracker change the page asks the server for: `refresh`, `archive`, `unarchive`, `delete`, or an action's
+// `actions/<id>/done|drop`. The token proves the request comes from this page. Gives the server's refusal, or ''
+// when done.
 async function post(trackerSlug, what) {
   try {
     const res = await fetch(`/t/${encodeURIComponent(trackerSlug)}/${what}`,
@@ -310,6 +319,8 @@ if (slug) {
     if (e.target.closest('#archived [data-act="unarchive"]')) { // the archived page's banner
       post(slug, 'unarchive').then(refused => (refused ? alert(refused) : location.reload()));
     }
+    const close = e.target.closest('button[data-close]');
+    if (close) { e.preventDefault(); closeAction(close); } // in the action's head: the click does not open it
     const b = e.target.closest('.filters button');
     if (b) { filter = b.dataset.f; applyFilter(); }
     const h = e.target.closest('.seq-head button');

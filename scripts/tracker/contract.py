@@ -6,12 +6,12 @@ import datetime as dt
 import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_SECTIONS, DECISION_STATUSES,
-    DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE,
-    OPEN_DECISIONS_WARN, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
-    RETIRED_KEYS, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES,
-    TEXT_MAX, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, names,
-    norm_id, priority, relabel, sequence, Record, Tracker)
+from .model import (ACTION_BAR, ACTION_STATUSES, BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_SECTIONS,
+    DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX,
+    MOVE_RULE, OPEN_DECISIONS_WARN, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_KEYS, README_SECTIONS,
+    README_TOKEN_BUDGET, RETIRED_KEYS, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED,
+    START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS, TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section,
+    blocker_link, due_date, names, norm_id, priority, relabel, sequence, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -76,6 +76,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
                                 f"(`tracker decide {d.id} --unref {ref}`); depends_on already says so")
         if status == "open" and idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
+    check_actions(tr, errors, warnings)
     errors += [f"dependency cycle: {' → '.join(c)}" for c in sequence(tr).cycles]
     open_t = [t.id for t in tr.tickets if t.stage not in CLOSED_TICKET]
     work = tr.meta.get("status")
@@ -93,6 +94,26 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     if tokens > README_TOKEN_BUDGET:
         warnings.append(f"README.md ~{tokens} tokens > {README_TOKEN_BUDGET} limit — move detail to tickets or log")
     return errors, warnings
+
+
+def check_actions(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
+    """The user's actions: their own ids (A-<n>), keys and status, and refs that name a ticket or decision."""
+    ids = {}
+    for a in tr.actions:
+        if norm_id(a.id) in ids:
+            errors.append(f"{a.id}: duplicate id ({a.path.name}, {ids[norm_id(a.id)]})")
+        ids[norm_id(a.id)] = a.path.name
+        if a.path.stem != a.id:
+            errors.append(f"{a.id}: file name {a.path.name} does not match id")
+        if not a.get("title"):
+            errors.append(f"{a.id}: missing title")
+        check_keys(a.id, "action", a.meta, warnings)
+        errors += [f"{a.path.relative_to(tr.root)}: {x}" for x in a.problems]
+        if a.get("status", "") not in ACTION_STATUSES:
+            errors.append(f"{a.id}: status '{a.get('status', '')}' not one of {'|'.join(ACTION_STATUSES)}")
+        errors += [f"{a.id}: refs {r}: no such ticket or decision" for r in a.list("refs") if not tr.lookup(r)]
+        if a.get("due") and not due_date(a):
+            errors.append(f"{a.id}: due '{a.get('due')}' is not a date (YYYY-MM-DD)")
 
 
 def check_keys(where: str, kind: str, meta: dict, warnings: list[str]) -> None:
@@ -189,7 +210,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
     labels = tr.labels if tr else DEFAULT_LABELS
     return [
         "Isolation: " + ISOLATION_RULE,
-        "Files (a key marked (sync), (auto), (wait), (decide) or (new) is written by that, never by `set`):",
+        "Files (a key marked (sync), (auto), (wait), (decide), (act) or (new) is written by that, never by `set`):",
         f"  README.md: sections {', '.join('## ' + h for h in README_SECTIONS)} first, in that order; ## Scope holds "
         f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. Under ~{README_TOKEN_BUDGET} "
         f"tokens; rewritten, never appended to. Frontmatter:",
@@ -200,6 +221,9 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "  decisions/D-<n>.md: sections ## Question, ## Options, and ## Resolution once closed (one dated line per "
         "answer, `YYYY-MM-DD (who): answer`; the latest holds). Frontmatter:",
         *keys("decision"),
+        "  actions/A-<n>.md: a task for the user; its body holds note lines, one fact each "
+        "(`tracker act A-<n> --note`). Frontmatter:",
+        *keys("action"),
         "  log.md: one dated line per change, append-only (`tracker log`); the hooks add the branch's new commits "
         "(`Commits on <branch>: ...`), `pause` the handoff's first words.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
@@ -217,6 +241,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
         + f". Stages {', '.join(sorted(CLOSED_TICKET))} are closed; closing clears `next` and wants a `summary`.",
         f"Decision status: {'|'.join(DECISION_STATUSES)}, changed only by `tracker decide`.",
+        f"Action status: {'|'.join(ACTION_STATUSES)}, changed only by `tracker act`.",
         f"Work status: {'|'.join(TRACKER_STATUSES)} (`tracker set tracker status=...`).",
         "Priority: " + PRIORITY_RULE + ".",
         "Link lines (README ## Context, ticket ## Links): `- Label: [title](url) — why it matters`, nested bullets "
@@ -224,6 +249,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "(the tracker's own labels; the defaults stay).",
         *[f"  {k}: {v}" for k, v in LABEL_RULES.items()],
         "Decisions: " + DECISION_BAR,
+        "Actions: " + ACTION_BAR,
         "Order and blockers: " + WAIT_RULE,
         "Where a ticket starts: " + START_RULE,
         "Whose move: " + MOVE_RULE,
@@ -319,7 +345,7 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
         out.append(f"README.md: schema={SCHEMA} (the tracker format this version writes)")
         if apply:
             tr.readme().save({"schema": SCHEMA})
-    for r in [tr.readme(), *tr.records]:
+    for r in [tr.readme(), *tr.records, *tr.actions]:
         unknown = [k for k in r.meta if k not in KEYS[r.kind] and k not in RETIRED_KEYS[r.kind]]
         if unknown:
             out.append(f"{r.path.name}: unknown keys {', '.join(unknown)} — not changed; remove or rename by hand")
