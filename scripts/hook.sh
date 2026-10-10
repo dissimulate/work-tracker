@@ -3,7 +3,8 @@
 # with shell built-ins, so Python (about 40 ms) starts only when it can add something. The filters only rule events
 # out; Python decides what matches:
 # - a session with no tracker (no `tracker start`, no TRACKER): one file test, then exit. At its start, Python only
-#   on a git branch (git's files are read, git does not run), to look for an open ticket and offer the link;
+#   on a git branch (git's files are read, git does not run), to look for an open ticket and link it or offer the
+#   link, or while a session that /clear ended hands its tracker over (.cleared.json);
 # - edit: Python only for a tracker file edited by hand (the project's files: git shows that work, see `lag`);
 # - post-bash: Python only when the command names git and commit or push, or gh and pr;
 # - prompt: in any session, Python for the user's /work-tracker:watch, which gives the session the watch or ends it.
@@ -61,7 +62,7 @@ fi
 if [ -z "$watch" ] && [ -z "$TRACKER" ] && ! { [ -n "$sid" ] && [ -f "$session.json" ]; }; then
   [ "$event" = session-start ] || exit 0
   # A host without an env file needs the command prefix even outside a git branch.
-  { [ -n "$PLUGIN_ROOT" ] && [ -z "$CLAUDE_ENV_FILE" ]; } || on_branch || exit 0
+  { [ -n "$PLUGIN_ROOT" ] && [ -z "$CLAUDE_ENV_FILE" ]; } || [ -f "$home/.cleared.json" ] || on_branch || exit 0
 fi
 
 case $event in

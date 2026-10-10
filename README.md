@@ -13,7 +13,9 @@ Talk to the agent. It runs the `tracker` CLI for you.
 
 1. **Create a tracker.** Ask the agent, for example: "Make a tracker for the payments rework in acme/api, with tickets for the schema, the API and the admin page." Give it the documents the work answers to (spec, issue, design): they go in the tracker's Context. Name the GitHub repo, so PR state syncs.
 2. **Start a session on it.** Say "work on the payments tracker", or type `/work-tracker:tracker start payments` in Claude Code or `$work-tracker:tracker start payments` in Codex. The agent gets a brief: where the work is, what is under way, what it waits on.
-   - A new session on a branch with an open ticket asks at your first message whether to link it. Answer yes, or "Not now" (no offer on that branch for a day).
+   - A new session on a feature branch that a ticket of one tracker names links to that tracker by itself, and says so. To undo, tell the agent it is not that work: it unlinks, and the branch gets no link or offer for a day.
+   - Anywhere else on a branch with an open ticket (a default branch such as `main`, a branch whose name only holds a ticket id, a branch of tickets in more than one tracker), the session asks at your first message whether to link it. Answer yes, or "Not now" (no offer on that branch for a day).
+   - After `/clear`, the new session stays on the tracker (and the `--on` ticket) of the session it replaces.
 3. **Work as usual.** The agent records steps, decisions and pauses as they happen. The hooks log each commit and keep PR state current. You write nothing yourself.
 4. **See it.** Ask the agent to open the tracker, or run `tracker open`. The page updates live.
 5. **Oversee many sessions (optional).** In a separate session, type `/work-tracker:watch payments` in Claude Code or `$work-tracker:watch payments` in Codex. It notifies you when something needs you: a review came back, checks fail, an agent waits on you. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
@@ -81,7 +83,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review` and `merged`.
 - `depends_on` sets the order and the blockers. What is ready or blocked, and the branch a ticket can start from (stacked on work under way), are computed.
 - The branch names the session's tickets: each ticket whose `branch` it is, a `tracker use <id>` choice, a ticket id or Issue id in the branch name, or the branch's PR.
-- Each new session (after `/clear` too) starts on no tracker. Many sessions can share one tracker; `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.
+- A new session starts on no tracker, unless its branch is sure (a feature branch that a ticket of one tracker names) or it follows a `/clear` on a tracker. Many sessions can share one tracker; `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.
 - The tracker never changes git.
 - **Isolation**: the tracker is private to the work. Outside it (code, commits, branch names, PRs, issues) the agent writes each fact in its own words and cites only real ids (an Issue id, a PR number, a URL), never the tracker's ids or name.
 
@@ -91,14 +93,14 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 | Event | Does |
 |---|---|
-| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief. With none, on a branch with an open ticket: has the agent offer the link at your first message. |
+| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief. With none: after `/clear`, takes the tracker of the session it replaces; on a feature branch that a ticket of one tracker names, links that tracker; on another branch with an open ticket, has the agent offer the link at your first message. |
 | UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
 | PostToolUse (Bash) | After a commit: logs it, and once per next action asks whether a step ended. After `git push` or `gh pr …`: records the branch on its ticket and syncs PR state. |
 | PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
 | PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
 | Stop | Logs the commits no other hook saw. |
-| SessionEnd | Logs remaining commits and ends the session's activity in the viewer. |
+| SessionEnd | Logs remaining commits and ends the session's activity in the viewer. On `/clear`, leaves the session's tracker for the next session in the same directory. |
 
 ### Viewer
 

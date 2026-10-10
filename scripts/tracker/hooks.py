@@ -12,12 +12,12 @@ from pathlib import Path
 
 from .model import ISOLATION_RULE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, locked, set_branch, short, spawn, Tracker
 from .git import default_branches
-from .session import (behind, branch_matches, changes_since, declined, get_mark, in_repos, inside_home, lag,
-    load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity, watch, work_dir,
-    Lag, Match)
+from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
+    inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
+    take_over, watch, work_dir, Lag, Match)
 from .views import brief, issue_request
 from .github import budget, match_pr, sync
-from .watcher import set_grant
+from .watcher import granted, set_grant
 
 PR_TRIGGER = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b|\bgit\s+push\b")
 
@@ -63,7 +63,8 @@ def command_context() -> str:
 def offer(found: list[Match]) -> tuple[str, str]:
     """For a session with no tracker on a branch with open tickets: the model's request to ask the user whether to
     link it, and the line the user sees at once (a hook cannot start a model turn in an interactive session, so the
-    model asks at the first message). Only the user's answer links; the hook writes nothing."""
+    model asks at the first message). Only the user's answer links; the hook writes nothing. A sure match
+    (`sure_link`) links without the question."""
     names = "; ".join(f"{m.tracker.slug} ({m.tracker.title}): {m.summary()}" for m in found[:3])
     options = [f'"Link {m.tracker.slug}" (run `tracker start {m.tracker.slug}`, which prints the brief)'
                for m in found[:3]]
@@ -75,25 +76,58 @@ def offer(found: list[Match]) -> tuple[str, str]:
                  "message whether to link this session.")
 
 
+def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
+    """The match a session with no tracker links at its start without asking the user: one tracker only, and a
+    ticket's `branch` names this branch, which is not a default branch (where many works share a branch, the user
+    chooses). Never a session with the watch: it stays on no tracker."""
+    if len(found) != 1 or found[0].how != "branch" or not sid or granted(sid):
+        return None
+    return found[0] if found[0].branch not in default_branches(cwd) else None
+
+
+AUTO_LINKED = ("Linked at session start: this branch is the branch of {ids}. If the user says this session is not "
+               "that work, run `tracker start --decline` (it unlinks, and no link or offer on this branch for a day).")
+
+
 def hook_session_start(data: dict) -> None:
     cwd, sid = where(data)
+    source = data.get("source")
+    kept = take_over(sid, cwd) if source == "clear" and sid else ""  # /clear keeps the session's tracker
     m = match_cwd(cwd, sid)
+    note, notice = "", f"[work-tracker] This session stays on {kept} after /clear." if kept else ""
     if not m:
         # CLAUDE_CODE_SESSION_ATTENDED: 1 when a person uses the session, 0 when no one can answer (`claude -p`).
         unattended = os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "0"
-        asked = data.get("source") == "compact" or unattended or declined(cwd)  # asked once; or no one can answer
+        asked = source == "compact" or unattended or declined(cwd)  # asked once; or no one can answer
         found = [] if asked else branch_matches(cwd)
-        if found:
-            emit_context("SessionStart", *offer(found))
-        elif command_context():
-            emit_context("SessionStart", "")
-        return
+        sure = sure_link(found, cwd, sid)
+        if not sure:
+            if found:
+                emit_context("SessionStart", *offer(found))
+            elif command_context():
+                emit_context("SessionStart", "")
+            return
+        drop_session(sid)
+        save_session(sid, tracker=sure.tracker.slug, auto=True)  # `auto`: the user's watch may undo it
+        m = match_cwd(cwd, sid)
+        note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
+        notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
+                  f"{sure.summary()}. To unlink, tell the agent this is not that work.")
     keep_viewer()
     changes = sync(m.tracker, force=False)
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
     remember(sid, m, cwd)
-    emit_context("SessionStart", brief(m, cwd, changes, found, compact=data.get("source") == "compact"))
+    note = "\n\n".join(x for x in (note, found) if x)
+    emit_context("SessionStart", brief(m, cwd, changes, note, compact=source == "compact"), notice)
+
+
+def hook_session_end(data: dict) -> None:
+    """Log the last commits; a session that `/clear` ends leaves its tracker to the next one (`hand_over`)."""
+    hook_stop(data)
+    if data.get("reason") == "clear":
+        cwd, sid = where(data)
+        hand_over(sid, cwd)
 
 
 def adopt_branch(m: Match, cwd: str | Path) -> None:
@@ -222,8 +256,14 @@ def watch_request(data: dict) -> bool:
     if not m or not sid:
         return False
     stop = m[1].split() == ["stop"]
-    own = load_session(sid).get("tracker")
-    if own and not stop:
+    entry = load_session(sid)
+    own = entry.get("tracker")
+    if own and entry.get("auto") and not stop:  # linked by the session start, not by the user: the watch wins
+        drop_session(sid)
+        set_grant(sid, True)
+        emit_context("UserPromptSubmit", f"[work-tracker] This session is off {own} now: it watches. The brief at its "
+                     "start no longer applies.")
+    elif own and not stop:
         emit_context("UserPromptSubmit", f"[work-tracker] This session works on tracker {own}, so it cannot watch: "
                      "tell the user to type /work-tracker:watch in a new session.")
     else:
@@ -313,7 +353,7 @@ def hook_subagent_start(data: dict) -> None:
                      f"answer: the session records it. {ISOLATION_RULE}")
 
 
-HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": hook_stop,
+HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": hook_session_end,
          "post-bash": hook_post_bash, "edit": hook_edit,
          "prompt": hook_prompt, "answered": hook_answered, "subagent-start": hook_subagent_start}
 

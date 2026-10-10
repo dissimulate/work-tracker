@@ -838,16 +838,39 @@ class Hooks(unittest.TestCase):
         run("--tracker", s, "new", "H-1", "--title", "Hook work")
         run("--tracker", s, "set", "H-1", "status=in-progress", cwd=work)
 
-        # No tracker in the session: on a branch with an open ticket the model offers the link; nothing else runs.
+        # No tracker in the session, on a default branch with an open ticket: the model offers the link; nothing else
+        # runs.
+        main = repo("main")
+        run("--tracker", s, "new", "H-0", "--title", "Main work", "--branch", "main")
         env_file = Path(BASE) / f"{sid}.env"  # what the session's Bash commands get: its id, and the CLI on PATH
         path = f"{Path(sys.executable).parent}:/usr/bin:/bin"
-        offer = hook("session-start", sid, work, env={"CLAUDE_ENV_FILE": str(env_file), "PATH": path}, source="startup")
+        offer = hook("session-start", sid, main, env={"CLAUDE_ENV_FILE": str(env_file), "PATH": path}, source="startup")
         self.assertIn("host's question tool", said(offer))
         self.assertEqual(env_file.read_text(), f'export TRACKER_SESSION={sid}\nexport PATH="$PATH:{ROOT}/bin"\n')
-        self.assertIsNone(hook("prompt", sid, work, prompt="hi"))
-        self.assertIsNone(hook("stop", sid, work))
-        run("start", "--decline", cwd=work)  # "Not now": no offer on this branch in the next sessions
-        self.assertIsNone(hook("session-start", f"{sid}b", work, source="startup"))
+        self.assertIsNone(hook("prompt", sid, main, prompt="hi"))
+        self.assertIsNone(hook("stop", sid, main))
+        run("start", "--decline", cwd=main)  # "Not now": no offer on this branch in the next sessions
+        self.assertIsNone(hook("session-start", f"{sid}b", main, source="startup"))
+        named = repo("feat/H-9-named")  # an id in the branch name only: not sure, so asked
+        run("--tracker", s, "new", "H-9", "--title", "Named work")
+        self.assertIn("host's question tool", said(hook("session-start", f"{sid}n", named, source="startup")))
+
+        # A feature branch that a ticket's `branch` names: the session links at its start, no question.
+        auto = said(hook("session-start", f"{sid}a", work, source="startup"))
+        self.assertIn(f"Linked this session to {s}", auto)
+        self.assertIn("Linked at session start", auto)
+        self.assertIn("Tracker protocol", auto)
+        self.assertEqual(session.load_session(f"{sid}a")["tracker"], s)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": f"{sid}a"}):
+            self.assertIn(f"this session is off {s} now", run("start", "--decline", cwd=work))
+        self.assertNotIn("tracker", session.load_session(f"{sid}a"))
+        self.assertIsNone(hook("session-start", f"{sid}c", work, source="startup"))  # declined: no link, no offer
+        (model.HOME / ".declined.json").unlink()
+        hook("session-start", f"{sid}w", work, source="startup")  # linked by itself; the user's watch wins
+        self.assertIn(f"off {s} now: it watches", said(hook("prompt", f"{sid}w", work, prompt="/work-tracker:watch")))
+        self.assertTrue(watcher.granted(f"{sid}w"))
+        self.assertNotIn("tracker", session.load_session(f"{sid}w"))
+        watcher.set_grant(f"{sid}w", False)
 
         env = {**os.environ, "TRACKER_SESSION": sid}
         linked = subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True,
@@ -888,6 +911,28 @@ class Hooks(unittest.TestCase):
         log = (model.HOME / s / "log.md").read_text()
         self.assertEqual([x.split(": ", 1)[1].split(" ", 1)[1] for x in log.splitlines() if "Commits on" in x],
                          ["hook work", "more work", "last work"])  # each once
+
+    def test_clear_keeps_the_tracker(self):
+        s, sid, main = slug(), f"clr{time.monotonic_ns()}", repo("main")
+        run("init", s, "--title", "Cleared", "--owner", "me")
+        run("--tracker", s, "new", "K-1", "--title", "Kept work", "--branch", "main")
+        run("--tracker", s, "new", "K-2", "--title", "Other work", "--branch", "main")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", s, "--on", "K-2", cwd=main)
+        hook("session-end", sid, main, reason="other")  # not a /clear: nothing handed over
+        self.assertFalse(session.CLEARED_FILE.exists())
+        hook("session-end", sid, main, reason="clear")
+        elsewhere = said(hook("session-start", f"{sid}x", repo("main"), source="clear"))  # another directory: offered
+        self.assertNotIn("stays on", elsewhere)
+        self.assertEqual(session.load_session(f"{sid}x"), {})
+        kept = said(hook("session-start", f"{sid}b", main, source="clear"))
+        self.assertIn(f"This session stays on {s} after /clear", kept)
+        self.assertIn("K-2", kept)
+        self.assertEqual(session.load_session(f"{sid}b")["focus"], ["K-2"])  # its `--on` choice too
+        self.assertFalse(session.CLEARED_FILE.exists())  # taken once
+        hook("session-end", f"{sid}b", main, reason="clear")
+        self.assertIn("host's question tool", said(hook("session-start", f"{sid}c", main, source="startup")))
+        session.CLEARED_FILE.unlink()
 
     def test_codex_session(self):
         s, sid, work = slug(), f"codex{time.monotonic_ns()}", repo("feat/C-1")

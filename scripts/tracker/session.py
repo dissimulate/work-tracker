@@ -56,7 +56,8 @@ class Match:
 
 # ---------------------------------------------------------------- sessions
 # `tracker start <name>` ties a tracker to one agent session; the branch still names the ticket. A session with no
-# tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`).
+# tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`), or
+# at its start a link it is sure of (`hooks.sure_link`, `take_over`).
 # scripts/hook.sh puts the session id in TRACKER_SESSION for the session's Bash commands; hooks get it in their input.
 # Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
 
@@ -138,6 +139,52 @@ def decline(cwd: str | Path) -> None:
         atomic_write(DECLINED_FILE, json.dumps(keep, indent=1))
 
 
+# `/clear` ends a session and starts a new one in the same directory. The session's end (reason "clear") leaves its
+# tracker and `--on` choice here, per directory, and the new session's start (source "clear") takes them.
+# scripts/hook.sh tests for this file, so it exists only while a handover waits.
+CLEARED_FILE = HOME / ".cleared.json"
+CLEAR_HANDOVER_S = 60
+
+
+def cleared_entries(now: float) -> dict:
+    try:
+        old = json.loads(CLEARED_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in old.items() if isinstance(v, dict) and now - v.get("at", 0) < CLEAR_HANDOVER_S}
+
+
+def save_cleared(entries: dict) -> None:
+    if entries:
+        atomic_write(CLEARED_FILE, json.dumps(entries, indent=1))
+    else:
+        CLEARED_FILE.unlink(missing_ok=True)
+
+
+def hand_over(sid: str, cwd: str | Path) -> None:
+    """A session that `/clear` ends: keep its tracker for the next session in this directory."""
+    entry = load_session(sid)
+    if not entry.get("tracker"):
+        return
+    with locked():
+        now = time.time()
+        save_cleared(cleared_entries(now) | {str(Path(cwd).resolve()): {
+            "tracker": entry["tracker"], "focus": entry.get("focus"), "at": now}})
+
+
+def take_over(sid: str, cwd: str | Path) -> str:
+    """A session that `/clear` started: link the tracker the cleared session in this directory was on. Its slug, or
+    "" when none waits."""
+    with locked():
+        entries = cleared_entries(time.time())
+        got = entries.pop(str(Path(cwd).resolve()), None)
+        save_cleared(entries)
+    if not got or not tracker_at(got.get("tracker", "")):
+        return ""
+    save_session(sid, tracker=got["tracker"], focus=got.get("focus"))
+    return got["tracker"]
+
+
 def session_tracker(sid: str) -> Tracker | None:
     """The tracker `tracker start` chose for this session."""
     return tracker_at(load_session(sid).get("tracker", ""))
@@ -203,7 +250,7 @@ def in_repos(tr: Tracker, cwd: str | Path) -> bool:
 
 def branch_matches(cwd: str | Path) -> list[Match]:
     """Every tracker with an open ticket on this branch (as `match_cwd` finds it), in a repo its work lives in: what
-    `tracker start` with no name links, and what a session with no tracker is offered at its start."""
+    `tracker start` with no name links, and what a session with no tracker is offered, or linked to, at its start."""
     found = (match_cwd(cwd, tracker=tr) for tr in all_trackers() if in_repos(tr, cwd))
     return [m for m in found if m and m.focus]
 

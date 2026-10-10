@@ -20,6 +20,9 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Changed
 
+- A new session on a feature branch that a ticket of one tracker names links to that tracker by itself, without the question. On a default branch such as `main`, or when the match is less sure, the session still asks. To undo, tell the agent the session is not that work.
+- After `/clear`, the new session stays on the tracker of the session it replaces, with its `--on` ticket. No need to link again.
+- `tracker start --decline` also unlinks a session that linked by itself.
 - Viewer: the server keeps one port (7316, `TRACKER_VIEWER_PORT`), so bookmarks and open pages keep working: `http://127.0.0.1:7316/` lists the trackers.
 - Viewer: a tracked agent session starts the server, and the server runs while an agent session is on a tracker; no need to ask the agent to open a page first. A page reloads itself when the server is back.
 

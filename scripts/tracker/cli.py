@@ -955,8 +955,11 @@ def cmd_start(args):
     if args.decline:
         branch = branch_of(cwd) or die("not on a git branch")
         decline(cwd)
-        print(f"branch '{branch}': no offer to link a tracker for {DECLINE_S // 3600} h; `tracker start <name>` "
-              "links one now")
+        own = session_tracker(sid)
+        if own:  # a link the session start made by itself
+            drop_session(sid)
+        print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
+              f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
         return
     focus = id_list(args.on)
     if not args.name and not focus and session_tracker(sid):
@@ -1295,8 +1298,8 @@ def build_parser():
                                         "the hooks, and `step` and `set` without an id use them alone. After the "
                                         "name; `tracker start <slug>` alone clears it")
     sp.add_argument("--clear", action="store_true", help="tie this session to no tracker")
-    sp.add_argument("--decline", action="store_true", help="\"Not now\": no offer to link a tracker on this branch "
-                                                           "for a day")
+    sp.add_argument("--decline", action="store_true", help="\"Not now\": unlink this session, and no link or offer "
+                                                           "of a tracker on this branch for a day")
     sp = add("use", cmd_use, "put ticket(s) on the current branch: sets each one's branch (the branch keeps its "
                              "other tickets); on a shared branch such as main, records the choice for this worktree "
                              "only")
