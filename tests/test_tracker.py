@@ -1341,6 +1341,7 @@ class IssueFields(unittest.TestCase):
         self.assertIn("T-1: priority=1, issue_created_at=2026-09-30T23:30:00Z", out)
         t1 = model.Tracker(model.HOME / s).lookup("T-1")
         self.assertEqual((t1.get("priority"), t1.get("issue_created_at")), ("1", "2026-09-30T23:30:00Z"))
+        self.assertEqual(model.read_value("issue_created_at", "2026-10-01T09:30:00Z"), "2026-10-01T09:30:00Z")  # Z: UTC
         self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
         self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
 

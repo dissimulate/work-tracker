@@ -290,7 +290,7 @@ class TimeForm(Form):
     def read(self, key: str, text: str) -> str:
         """An ISO 8601 time with its zone, as UTC to the second; refused without a zone, which would be a guess."""
         try:
-            at = dt.datetime.fromisoformat(text)
+            at = dt.datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", text))  # Python < 3.11 refuses a Z
         except ValueError:
             raise ValueError(f"'{text}' is not an ISO 8601 time (2026-10-01T09:30:00Z)") from None
         if at.tzinfo is None:

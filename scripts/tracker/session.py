@@ -12,9 +12,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (HOME, NO_STAGE, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at, atomic_write,
-    branch_entry, commits_text, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
-    Tracker)
+from .model import (HOME, NO_STAGE, SAFE_NAME, STAGES, STATUSES, WINDOWS, all_trackers, append_log, archived_at,
+    atomic_write, branch_entry, commits_text, die, locked, put_entry, resolution, short, state_key, tracker_at,
+    whose_move, Record, Tracker)
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
 
 
@@ -396,7 +396,7 @@ def branch_handoff(tr: Tracker, repo: str, branch: str) -> dict | None:
 
 def handoff_line(h: dict, label: str = "handoff") -> str:
     where = f"at {h.get('head', '')[:9]}" + (" with uncommitted changes" if h.get("dirty") else "")
-    return f"{label} ({ago(h.get('at', 0))}, {where}; the next `step` clears it): {h.get('text', '')}"
+    return f"{label} ({ago(h.get('at', 0))}, {where}; the next `step` or `synced` clears it): {h.get('text', '')}"
 
 
 def ago(ts: float) -> str:
@@ -510,7 +510,7 @@ def watch(tr: Tracker, tickets: list[Record]) -> dict[str, list[str]]:
 
 
 def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
-    out = []
+    out, closed = [], STATUSES["decision"].closed
     for ident, now in new.items():
         was = old.get(ident)
         if was == now:
@@ -519,8 +519,8 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
         if now[0] == "decision":
             if not was:
                 out.append(f"{ident} {now[1]} now touches this work: {rec.get('title')}")
-            elif now[1] == "closed":
-                out.append(f"{ident} {'re-' if was[1] == 'closed' else ''}settled: {now[2]}")
+            elif now[1] in closed:
+                out.append(f"{ident} {'re-' if was[1] in closed else ''}settled: {now[2]}")
             else:
                 out.append(f"{ident} is {now[1]} again")
         elif not was:

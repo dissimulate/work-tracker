@@ -50,6 +50,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 - Viewer: a tracker that spans repos lists them under its title as `a/x, b/y`, not as a Python list.
 - A repo in a nested group (GitLab's `group/sub/name`) matches the tracker that names it; only its last two parts did.
+- `tracker issue --created` takes a UTC time that ends in `Z` on Python 3.9 and 3.10 too, such as the macOS system Python.
 - The command help, `tracker rules` and the brief describe the CLI correctly: a title, a name or a link cannot be `-`, `tracker --help` says what the tool is, and `index`, `rules`, `sync`, `put` and `find` list all they do.
 
 ## 0.30.0 - 2026-10-08
