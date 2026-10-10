@@ -22,7 +22,7 @@ GH_LIST_LIMIT = 300  # newest PRs per repo in one call
 GH_LOOKUPS_MAX = 5  # single-PR calls per sync, for tickets whose PR is older than that list
 GH_TIMEOUT_S = 8  # one call
 _deadline: float | None = None  # no gh call runs past this (time.monotonic()); None: no limit
-# A command that changes a PR on GitHub: the hooks sync after it (and after a `git push`).
+# A `gh` command that changes a PR: the hooks sync after it (hooks.PR_TRIGGER).
 PR_COMMAND = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b")
 
 
@@ -118,9 +118,8 @@ MERGE = {"DIRTY": "conflict", "BEHIND": "behind", "BLOCKED": "blocked"}
 
 
 def review_facts(pr: dict) -> dict:
-    """One PR's PR_FACTS: the review decision, who is asked and who asked for changes or approved (bots left out),
-    when the head was committed and when changes were last asked for, the checks and merge state, and the unresolved
-    threads. Empty facts are left out."""
+    """One PR's PR_FACTS. A bot's review counts for none (`changes`, `approved`, `reviewed`); empty facts are left
+    out."""
     def nodes(key: str) -> list[dict]:
         return [x for x in ((pr.get(key) or {}).get("nodes") or []) if x]
 
@@ -152,7 +151,7 @@ def review_facts(pr: dict) -> dict:
 
 
 def pr_of(pr: dict) -> dict:
-    """A PR as `gh pr list` gives it, in the tracker's words (model.apply_prs)."""
+    """A PR as gh gives it (PR_FIELDS), in the tracker's words (model.apply_prs)."""
     state = "merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED" else \
         "draft" if pr["isDraft"] else "open"
     return {"number": pr["number"], "state": state, "base": pr["baseRefName"],
@@ -160,8 +159,9 @@ def pr_of(pr: dict) -> dict:
 
 
 def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) -> list[str]:
-    """Pull PR facts from GitHub into ticket frontmatter (the sync-owned keys only). Returns change lines.
-    GitHub is asked first, without the lock; the tracker is then reloaded and written under it."""
+    """Pull PR state from GitHub: each ticket's PR into its frontmatter (`pr`, `pr_state`, `base`, `merged_at`), the
+    open PRs' PR_FACTS into .state.json `prs` (`model.apply_prs`). Returns change lines. GitHub is asked first,
+    without the lock; the tracker is then reloaded and written under it."""
     if not tr.repos:
         return []
     if not force and time.time() - tr.state().get("last_sync", 0) < min_interval:
@@ -169,7 +169,7 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
     # The open PRs the tickets know already: their review facts are asked for with the lists.
     known = {(tr.repo_of(t), int(t.get("pr"))) for t in tr.tickets
              if t.get("pr_state") in OPEN_PR and str(t.get("pr")).isdigit() and tr.repo_of(t)}
-    with ThreadPoolExecutor(len(tr.repos) + 1) as pool:  # at once: a sync costs the time of its slowest call
+    with ThreadPoolExecutor(len(tr.repos) + 1) as pool:  # at once: the lists and the known PRs' facts
         asked = pool.submit(gh_facts, known)
         prs_by_repo = dict(zip(tr.repos, pool.map(gh_prs, tr.repos)))
         facts = asked.result()

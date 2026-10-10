@@ -22,7 +22,7 @@ with model.locked():
     for ident, started in (("DEMO-4", "2026-09-01T00:00:00Z"), ("DEMO-5", "2026-09-02T00:00:00Z"),
                            ("DEMO-6", "2026-09-03T00:00:00Z")):
         tr.lookup(ident).save({"started_at": started})
-    github.apply_sync(model.tracker_at("demo"), {"DEMO-4": pr(14, "2026-09-01T06:00:00Z"),
-                                                 "DEMO-5": pr(15, "2026-09-04T00:00:00Z"),
-                                                 "DEMO-6": pr(16, "2026-09-03T12:00:00Z")})
+    found = {"DEMO-4": pr(14, "2026-09-01T06:00:00Z"), "DEMO-5": pr(15, "2026-09-04T00:00:00Z"),
+             "DEMO-6": pr(16, "2026-09-03T12:00:00Z")}
+    model.apply_prs(model.tracker_at("demo"), {i: (repo, github.pr_of(p)) for i, (repo, p) in found.items()}, None)
 PY

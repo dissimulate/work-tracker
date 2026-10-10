@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Releases the plugin from main: the CHANGELOG.md section, the manifest version, a commit, a tag, the push and a
-GitHub release. It stops at the first check that fails, before it writes anything.
+GitHub release. Its checks (branch, clean tree, origin, tags, changelog, then tests and lint) run before it writes
+anything; it stops at the first that fails.
 
     scripts/release.py patch|minor|major|X.Y.Z [--dry-run] [--yes]
 

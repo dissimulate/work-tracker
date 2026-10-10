@@ -13,11 +13,11 @@ updated_at:
 
 ## Plan
 
-<!-- The ticket as agreed: goal, scope, acceptance criteria. Change it only when the plan changes, and log why. -->
+<!-- The ticket as agreed: goal, scope, acceptance criteria. Change it only when the plan changes, with `--why`. -->
 
 ## Carry forward
 
-<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max 5 bullets once merged. -->
+<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max 5 bullets once merged or done. -->
 
 ## Links
 

@@ -11,8 +11,8 @@
 #   --scaffold        each case's scaffold.sh makes a git repo and a `demo` tracker in the run's workspace
 #   --allow-tools     the agent needs Bash to run the CLI
 #   --ablation none   with no plugin there is no tracker, so a baseline run measures nothing
-#   -j 8              8 sessions at a time: the suite takes about as long as its slowest run. They share your rate
-#                     limit
+#   -j 8              8 sessions at a time, sharing your rate limit: a suite of 8 runs or fewer takes about as long
+#                     as its slowest run
 #   --model           a run reads none of your settings, so without it the model is the built-in default
 #
 # Effort: `plugin eval` has no option for it, and a case's env takes only EVAL_* variables. Sonnet's default effort is

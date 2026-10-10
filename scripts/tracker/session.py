@@ -68,7 +68,8 @@ class Match:
 # `tracker start <name>` ties a tracker to one agent session; the branch still names the ticket. A session with no
 # tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`), or
 # at its start a link it is sure of (`hooks.sure_link`, `take_over`).
-# scripts/hook.sh puts the session id in TRACKER_SESSION for the session's Bash commands; hooks get it in their input.
+# Claude's scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a command
+# prefix (hooks.command_context), else session_id() reads the host's own variable. Hooks get it in their input.
 # Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
@@ -151,7 +152,8 @@ def decline(cwd: str | Path) -> None:
 
 # `/clear` ends a session and starts a new one in the same directory. The session's end (reason "clear") leaves its
 # tracker and `--on` choice here, per directory, and the new session's start (source "clear") takes them.
-# scripts/hook.sh tests for this file, so it exists only while a handover waits.
+# scripts/hook.sh tests for this file, so it is removed once no handover waits in it (an expired one stays until the
+# next /clear).
 CLEARED_FILE = HOME / ".cleared.json"
 CLEAR_HANDOVER_S = 60
 
@@ -330,11 +332,8 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
     die(f"no ticket '{ident}' in any tracker" + (f" (nor a record in {tr.slug})" if tr else ""))
 
 
-# Per repo and branch, in .state.json: the mark (the HEAD and the time the branch's commits were last logged: by the
-# hooks, `step`, `synced` or `pause`), and the handoff that `pause` leaves. Only commits made after the mark by this git
-# user count as new work, so a pull, a rebase or a reset does not. The hooks log commits by themselves
-# (`record_commits`); the mark also counts the commits they logged since the branch's tickets' `next` last changed, so
-# a `next` that the work has passed shows.
+# Per repo and branch in .state.json: the mark (`synced`) and the handoff (`handoff`). STATE_RULES says what each holds,
+# new_commits which commits count.
 
 def get_mark(tr: Tracker, cwd: str | Path, branch: str) -> dict | None:
     mark = branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)

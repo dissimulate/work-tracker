@@ -8,10 +8,10 @@ import re
 from .markdown import format_value, headings, link_ident, parse_links, section
 from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
     ISSUE, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN, OWN_VALUE_RULE,
-    PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, RETIRED_KEYS,
-    SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES,
-    STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names, level, names, norm_id,
-    relabel, resolution, sequence, unknown_dep, valid_value, value_form, Record, Tracker)
+    OWNER_HINT, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
+    RETIRED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
+    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names, level, names,
+    norm_id, relabel, resolution, sequence, unknown_dep, valid_value, value_form, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -177,7 +177,8 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
 
 
 def idle_days(r: Record) -> int:
-    """Days since a ticket or decision last changed: its `updated_at`, or a later direct edit of the file."""
+    """Days since a ticket or decision last changed: its `updated_at` (else `created_at`), or a later direct edit of
+    the file."""
     edited = dt.date.fromtimestamp(r.path.stat().st_mtime).isoformat() if r.path.exists() else ""
     return min(days_since(r.get("updated_at") or r.get("created_at")), days_since(edited) if edited else 10 ** 6)
 
@@ -196,9 +197,10 @@ def rules_lines(tr: Tracker | None) -> list[str]:
                 "Frontmatter:", *keys(kind)]
 
     labels = tr.labels if tr else DEFAULT_LABELS
+    owners = [f"({k})" for k in OWNER_HINT]
     return [
         "Isolation: " + ISOLATION_RULE,
-        "Files (a key marked (sync), (auto), (wait), (decide), (act) or (new) is written by that, never by `set`):",
+        f"Files (a key marked {', '.join(owners[:-1])} or {owners[-1]} is written by that, never by `set`):",
         f"  README.md: sections {', '.join('## ' + h for h in README_SECTIONS)} first, in that order; ## Scope holds "
         f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. An optional "
         f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it. Under "
@@ -216,8 +218,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "change one line of a section of a ticket, a decision or the README (`tracker`), by a prefix of its name, and "
         "`tracker put <id> <section> -` the whole section, from stdin; edit the file only for what they do not cover. "
         "`--why \"...\"` logs why a section changes; a started ticket's Plan changes only with it. "
-        "Any text argument can be `-`: the text then comes from stdin (a heredoc, <<'EOF'). Never edit frontmatter by "
-        "hand. `tracker show <ids> --section <name>` prints sections as they are.",
+        "Any text argument but a title, a name or a link can be `-`: the text then comes from stdin (a heredoc, "
+        "<<'EOF'). Never edit frontmatter by hand. `tracker show <ids> --section <name>` prints sections as they are.",
         "Text limits in characters, refused when written: "
         + ", ".join(f"{what} {most}" for most, what, _ in TEXT_MAX.values()) + ".",
         f"Ticket status (you set it): {'|'.join(STATUSES['ticket'].values)}. Set in-progress when its work starts: "

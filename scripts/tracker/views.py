@@ -298,14 +298,16 @@ def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log:
 
 
 def protocol(slug: str) -> str:
-    """The protocol every brief carries: each event and the command that records it. The skill holds the rest."""
+    """The protocol each session-start brief carries: each event and the command that records it. The skill holds
+    the rest."""
     most = {k: v[0] for k, v in TEXT_MAX.items()}
     return "\n".join([
         f"Tracker protocol (CLI `tracker`; fallback `{BIN.as_posix()} --tracker {slug} <command>`):",
         f"- {ISOLATION_RULE}",
         "- read a record with `context <id>`, or its own text with `show <ids> --section <name>`, not its file",
         "- change a section: one line `add <id> <section> \"...\"` or `drop`; the whole `put <id> <section> -` with a "
-        "heredoc (<<'EOF'). Any text can be `-`, from stdin: quotes and backticks pass as they are",
+        "heredoc (<<'EOF'). Any text but a title, a name or a link can be `-`, from stdin: quotes and backticks pass "
+        "as they are",
         "- start a ticket: `context <id>` (a `start:` line names the branch to start from), then "
         "`set <id> status=in-progress`",
         "- the hooks log each commit on the branch of a ticket under way. A step ends or `next` changes: "
@@ -322,8 +324,8 @@ def protocol(slug: str) -> str:
         "- a subagent writes no tracker (a hook tells it): put what it needs in its prompt (`context <id> --brief`), "
         "and record what it reports",
         "- `[work-tracker]` hook lines are the tracker's requests: act on each in the same turn. A write prints the "
-        "`check` problems it adds; `step`, `decide`, `wait`, `new` and `attach` log themselves, so no `log` for the "
-        "same fact. The work-tracker `tracker` skill is the full protocol.",
+        "`check` problems it adds and logs what the history needs, so no `log` for the same fact. The work-tracker "
+        "`tracker` skill is the full protocol.",
     ])
 
 
@@ -426,8 +428,8 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
           full: bool = False, with_protocol: bool = True) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
-    that touch them, or, with none, what can start. `compact` (after a compaction) names the Context documents
-    without their links. `full` adds the tickets' bodies."""
+    that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
+    and title only. `full` adds the tickets' bodies."""
     tr = m.tracker
     if m.tickets:
         how = CHOSEN if m.chosen else HOW[m.how]

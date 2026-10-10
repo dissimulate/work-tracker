@@ -233,7 +233,7 @@ def panel(key: str, head: Html, body: Html, line: Html | str = NONE, attrs: dict
 
 
 def sec(key: str, title: str, count: int | str, body: Html, start_open: bool = False) -> Html:
-    """A section: its heading opens and closes it. The count shows while it is closed."""
+    """A section: its heading, with the count, opens and closes it."""
     return panel(f"_sec-{key}", Html("<h2>{}</h2>").format(f"{title} · {count}" if count else title), body,
                  attrs={"class": "sec", "open": start_open})
 
@@ -458,7 +458,7 @@ def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:
 def graph_order(tr: Tracker, edges: dict[str, list[str]], step: dict[str, int]) -> list[Record]:
     """The tickets in depth-first dependency order, as `git log --topo-order`: each after every ticket it waits on,
     and the tickets that this one lets start right after it, so a chain stays together; the lowest id first among
-    those ready. Dropped tickets, and any in a cycle, go last in step order."""
+    those ready. Tickets in or after a cycle, then dropped tickets, go last, in step order."""
     live = {t.id for t in tr.tickets if not t.dropped}
     waits = {i: [j for j in edges[i] if j in live] for i in live}
     left = {i: len(js) for i, js in waits.items()}  # per ticket: the tickets it waits on not yet placed
@@ -751,7 +751,7 @@ def code_id() -> str:
 
 
 CODE_ID = code_id()
-TOKEN = secrets.token_urlsafe(16)  # in each page; a Refresh must send it, which another site's page cannot read
+TOKEN = secrets.token_urlsafe(16)  # in each page; every POST must send it, which another site's page cannot read
 REFRESH_SYNC_S = 15  # a Refresh syncs GitHub unless a sync ran this recently
 VIEWER_SYNC_S = int(os.environ.get("TRACKER_VIEWER_SYNC", "120"))  # GitHub sync while a page is open
 # Only same-origin scripts run: no inline script or handler, if tracker text gets past Html's escaping.
@@ -832,7 +832,7 @@ def serve(port: int = 0) -> None:
     class Handler(BaseHTTPRequestHandler):
         def allowed(self) -> bool:
             """A request to this server by its own name, not from another site's page (DNS rebinding, a cross-site
-            request)."""
+            request). Every request, refused too, counts as use (`last_seen`)."""
             server.last_seen = time.monotonic()
             port = server.server_address[1]
             return (self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")

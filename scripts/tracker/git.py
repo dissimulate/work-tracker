@@ -31,7 +31,7 @@ def contains(cwd: str | Path, branch: str) -> bool | None:
     return None
 
 
-@cache  # a worktree's branch and remote do not change during one command
+@cache  # a worktree's branch does not change during one command; the viewer, which runs for hours, clears it
 def worktree(cwd: str | Path) -> tuple[Path | None, str]:
     """The worktree root that holds `cwd`, and its branch ("" when detached), read from git's files rather than by
     running git: a linked worktree's or a submodule's `.git` is a file that names its git directory."""

@@ -1304,9 +1304,9 @@ class SequenceSort(unittest.TestCase):
 
 
 class IssueFields(unittest.TestCase):
-    """A ticket's issue fields (priority, when its issue was created) come from its issue tracker through the model,
-    which reads them with its own tool for that issue tracker and records them with `tracker issue`. The tracker says
-    when they are due."""
+    """A ticket's issue fields (priority, size, due day, when its issue was created) come from its issue tracker
+    through the model, which reads them with its own tool for that issue tracker and records them with
+    `tracker issue`. The tracker says when they are due."""
 
     def tracker(self) -> tuple[str, tuple[str, str]]:
         s = slug()

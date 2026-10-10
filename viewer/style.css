@@ -12,7 +12,7 @@
   --subtle: #e1e5e9;   /* code, hovered and open rows */
   --line: #cdd2d8;     /* borders and rules */
   --ink: #22272e;      /* text */
-  --hover: color-mix(in srgb, var(--subtle) 50%, var(--surface)); /* a hovered table row */
+  --hover: color-mix(in srgb, var(--subtle) 50%, var(--surface)); /* a hovered sequence or tracker-menu row */
   --muted: #59636f;    /* secondary text and labels */
   /* Meaning colours share the tag palette; light-mode text uses darker shades for contrast. */
   --tone-strength: 50%;
@@ -221,7 +221,7 @@ html { scroll-padding-top: 64px; } /* a ticket opened from a link starts below t
 #bar button { min-height: var(--control-size); flex-shrink: 0; }
 #bar button:hover { background: var(--subtle); }
 
-/* An icon button: the theme switch, the tracker menu, a tracker's bin. */
+/* An icon button: the theme switch, the tracker menu, a tracker's ⋯. */
 .icon { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 6px; }
 .icon svg {
   width: 16px;
@@ -608,7 +608,7 @@ tr:last-child > td { border-bottom: 0; }
    in --graph-w. An opened ticket's body starts right of it, so the lines pass beside its text. The graph carries the
    sequence's status colours, so the rows keep plain text: a dot, and its ticket's id, take the ticket's status class
    (its row's s-<state>), and a link that of the ticket waited on. A closed or dropped ticket's dot is a ring of the
-   same size. Every dot sits on a halo in the panel colour that sets the lines behind it. */
+   same size. Every dot sits on a halo in the panel colour that covers the lines behind it. */
 .seq { position: relative; --graph-w: 8px; --fade: .35; } /* --fade: a closed row's cells, and the graph's lines */
 .seq summary > .graph { width: var(--graph-w); }
 .seq > details > div { padding-left: calc(var(--pad) + var(--graph-w) + var(--gap)); }
@@ -626,7 +626,7 @@ tr:last-child > td { border-bottom: 0; }
 .graph-svg circle { fill: var(--tone, var(--tag-neutral)); }
 .graph-svg circle:is(.s-closed, .s-dropped) { fill: var(--surface); stroke: var(--tone); stroke-width: 1.5; }
 .graph-svg .halo { fill: var(--surface); }
-.graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered (app.js) */
+.graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered or focused (app.js) */
 .seq .tk .id { color: var(--tone, var(--tag-neutral)); }
 /* A closed ticket's row, unless opened: every cell dimmed but the step, so the graph keeps its colours. */
 .seq details.closed:not([open]) > summary > :not(.graph) { opacity: var(--fade); }

@@ -1,7 +1,7 @@
 // work-tracker viewer: keeps the page in step with the tracker files.
 // Every 3 s it asks the server for a version "<data>.<code>.<synced>". A data change swaps <main> in place, keeping
-// open tickets and the active filter; a code change (this file, style.css, page.html, the Python) reloads the page;
-// synced is when the server last pulled PR state from GitHub.
+// open tickets and the active filter; a code change (any viewer/ file or Python module) reloads the page; synced is
+// when any sync last pulled PR state from GitHub.
 
 const slug = document.body.dataset.slug;
 const live = document.getElementById('live');

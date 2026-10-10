@@ -1,7 +1,6 @@
 # Changelog
 
-The changes a user of the plugin sees, per release. A commit with such a change adds its line under Unreleased;
-`scripts/release.py` moves those lines to the release's section (README "Develop").
+The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
@@ -25,7 +24,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 ### Changed
 
 - Viewer: the Step column draws the dependency graph instead of a number: a dot per ticket in the column of its step, and a line to each ticket that waits on it, routed beside the other dots. A line that a longer chain already implies is left out. It is drawn again for any sort or filter.
-- Viewer: the graph shows the status that row colours showed before: a dot is blue when ready, amber when under way or stackable, red when blocked, and a ring when closed; a line is red while it blocks, amber while the ticket waited on is under way and green once it is closed. Ticket titles are plain text, and a ticket's id takes its dot's colour. Hover a row to see only the chains it waits on and unblocks.
+- Viewer: the graph shows the status that row colours showed before: a dot is blue when ready, amber when under way or stackable, red when blocked, and a ring when closed; a faded line is red while it blocks, amber while the ticket waited on is under way and green once it is closed. Ticket titles are plain text, and a ticket's id takes its dot's colour. Hover a row to see only the chains it waits on and unblocks.
 - Viewer: the sequence starts in a depth-first dependency order, so a chain of tickets stays together; Step puts it back.
 - Viewer: the sequence has no Time column. An opened ticket gives its wait and cycle time on its first line.
 - Viewer: a hovered sequence row takes a fainter fill.
@@ -37,13 +36,12 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - After `/clear`, the new session stays on the tracker of the session it replaces, with its `--on` ticket. No need to link again.
 - `tracker start --decline` also unlinks a session that linked by itself.
 - The brief is shorter. It lists more than 3 closed tickets of a branch as a count (`also 9 done`). It gives the README's Context documents without their URLs (`tracker show tracker --section context` has them). It shows `check` warnings only for this session's tickets and the README, and errors as a count; `tracker check` has the rest.
-- Issue fields: an open ticket's fields are read once, not again each day. The viewer's Refresh still has them read again. The request in the brief is one line, with this session's tickets first; `tracker issue --due` says how to record them.
+- Issue fields: an open ticket's fields are read once, not again each day. The viewer's Refresh still has them read again. The request in the brief is one line, with this session's tickets first; `tracker issue` says how to record them.
 - Viewer: the server keeps one port (7316, `TRACKER_VIEWER_PORT`), so bookmarks and open pages keep working: `http://127.0.0.1:7316/` lists the trackers.
 - Viewer: a tracked agent session starts the server, and the server runs while an agent session is on a tracker; no need to ask the agent to open a page first. A page reloads itself when the server is back.
 - Every time the tracker writes is UTC to the second, in a key that ends `_at`: `updated` is now `updated_at`, `opened` and the README's `created` are now `created_at`, and `issue_created` is now `issue_created_at`. Run `tracker migrate` to rename them (format 3). The views show each time as its day.
 - `tracker issue` with no id lists the tickets whose issue fields are to read (before: `tracker issue --due`). `--due` now records the issue's due day.
 - The agent maps an issue's priority and estimate by what they mean on that issue tracker's scale, not by a raw number from its API. A value that means none ("No priority") leaves the ticket's value empty. A size is an amount of work (XS an hour or two to XL more than a week), so a time estimate maps too.
-- Viewer: the dependency graph's lines are always as faded as a closed ticket's row.
 - Each write logs what the history needs, so the agent runs no `tracker log` after one. A status change through `tracker set` or `tracker step --done` writes its own log line. `tracker add`, `put` and `drop` take `--why`, which logs why a section changes; a started ticket's Plan changes only with it.
 - Any write that leaves a ticket with nothing to wait on says so, `tracker wait <id> off` too. A write no longer ends with "log line written".
 - `tracker index`, `tracker context` and the viewer give what a record waits on, blocks and touches in the same words, each with its state: `waits on`, `stacks on`, `unblocks`, `blocks`, `touches`. An opened action lists its dates as a ticket does.
@@ -52,6 +50,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 - Viewer: a tracker that spans repos lists them under its title as `a/x, b/y`, not as a Python list.
 - A repo in a nested group (GitLab's `group/sub/name`) matches the tracker that names it; only its last two parts did.
+- The command help, `tracker rules` and the brief describe the CLI correctly: a title, a name or a link cannot be `-`, `tracker --help` says what the tool is, and `index`, `rules`, `sync`, `put` and `find` list all they do.
 
 ## 0.30.0 - 2026-10-08
 

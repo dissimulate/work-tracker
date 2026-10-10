@@ -1,4 +1,7 @@
-"""The `tracker` command line: one function per command, and the parser."""
+"""The plan and progress of a piece of work: tickets, decisions, actions and a log, in Markdown files. `tracker rules`
+gives the format, and `tracker <command> --help` a command's syntax.
+
+The `tracker` command line: one function per command, and the parser."""
 
 from __future__ import annotations
 
@@ -43,8 +46,8 @@ def from_template(name: str, meta: dict, labels: list[str]) -> str:
 
 
 def new_record(tr: Tracker, kind: str, ident: str, title: str, **meta) -> Record:
-    """Write a new record of the kind from its template: its id, title, first status and creation times, then
-    `meta`. It joins the tracker's records."""
+    """Write a new record of the kind from its template: its id, title, first status and `meta`, then `created_at`
+    and `updated_at` now. It joins the tracker's records."""
     now = utc_now()
     path = tr.root / KINDS[kind].folder / f"{ident}.md"
     path.parent.mkdir(exist_ok=True)
@@ -625,7 +628,7 @@ def ids_of(tr: Tracker, raw: list[str] | None, kinds, flag: str) -> list[str]:
 
 def link_args(tr: Tracker, kind: str, args) -> tuple[list[str], set[str], list[str]]:
     """A decision's or action's --refs, --unref and --blocks: the ids of the records it touches (KINDS refs) and of
-    the tickets it blocks. A ticket it blocks is no ref: depends_on records the block."""
+    the tickets it blocks."""
     blocks = ids_of(tr, args.blocks, {"ticket"}, "--blocks")
     refs = [r for r in ids_of(tr, args.refs, KINDS[kind].refs, "--refs") if r not in blocks]
     return refs, set(ids_of(tr, args.unref, KINDS[kind].refs, "--unref")), blocks
@@ -944,7 +947,7 @@ def cmd_start(args):
         branch = branch_of(cwd) or die("not on a git branch")
         decline(cwd)
         own = session_tracker(sid)
-        if own:  # a link the session start made by itself
+        if own:  # any link goes; most often one the session start made (AUTO_LINKED)
             drop_session(sid)
         print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
               f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
@@ -996,7 +999,6 @@ def cmd_watch(args):
 
 
 def cmd_archive(args):
-    """Anyone's, as it comes back: the session that asks lets go of the tracker; another session on it stops it."""
     tr = tracker_at(args.slug) or die(no_tracker(args.slug))
     try:
         print(archive_tracker(tr, session_id()))
@@ -1057,7 +1059,7 @@ def cmd_use(args):
     if any(r.kind != "ticket" for r in recs):
         die("`use` takes ticket ids")
     if branch not in default_branches(cwd):
-        # Recorded on each ticket, where sync and every worktree find it; the branch keeps its other tickets.
+        # Recorded on each ticket (set_branch); the branch keeps its other tickets.
         for t in recs:
             if t.get("branch") != branch:
                 set_branch(tr, t, branch, f"was {t.get('branch')}" if t.get("branch") else "")
@@ -1103,9 +1105,10 @@ IDS = {"action": "extend", "nargs": "+", "metavar": "ID"}  # a comma list, separ
 
 
 def build_parser():
-    import argparse  # here, not at the top: a hook run never needs it
-    p = argparse.ArgumentParser(prog="tracker", description=__doc__.split("\n\n")[0], epilog="Any text argument "
-                                "can be `-`: the text then comes from stdin, as a heredoc passes it (<<'EOF').")
+    import argparse
+    p = argparse.ArgumentParser(prog="tracker", description=__doc__.split("\n\n")[0], epilog="Any text argument but "
+                                "a title, a name or a link can be `-`: the text then comes from stdin, as a heredoc "
+                                "passes it (<<'EOF').")
     p.add_argument("--tracker", help="tracker slug (default: TRACKER; else the tracker folder the cwd is in, the "
                                      "session's from `tracker start`, or the repo's only tracker)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1123,16 +1126,17 @@ def build_parser():
     sp.add_argument("--title", required=True)
     sp.add_argument("--owner", required=True)
     sp.add_argument("--repo", help="GitHub owner/name (comma list if the work spans repos); enables `sync`")
-    add("rules", cmd_rules, "the tracker's contract: isolation, files, keys and who writes them, text limits, "
-                            "statuses, link labels, machine state, the decision bar, and the order, start and move "
-                            "rules")
-    sp = add("index", cmd_index, "one line per ticket, whose move each ticket under way waits on, then open decisions; "
-                            "under the headline, the wait and cycle time lines")
+    add("rules", cmd_rules, "the tracker's contract: isolation, files, keys and who writes them, machine state, body "
+                            "edits, text limits, statuses, times and value scales, link labels, the decision and "
+                            "action bars, and the order, start and move rules")
+    sp = add("index", cmd_index, "the work at a glance: the headline with the wait and cycle time lines, the Context "
+                                 "links, the user's open actions, one line per ticket, whose move each ticket under "
+                                 "way waits on, what can start and the critical path, then open decisions")
     sp.add_argument("--status", help=f"comma list of stages ({'|'.join(STAGES)})")
     sp.add_argument("--active", action="store_true", help="hide closed tickets (merged, done, dropped)")
     sp.add_argument("--group")
     sp = add("here", cmd_here, "the brief for this branch: its handoff, work the tracker may not show yet, its "
-                               "tickets under way in full, or what can start")
+                               "tickets under way with what they build on, or what can start")
     sp.add_argument("--full", action="store_true", help="include the tickets' bodies")
     sp = add("context", cmd_context, "a ticket or decision with dependency carry-forward and the decisions "
                                      "that touch it")
@@ -1149,7 +1153,7 @@ def build_parser():
     sp = add("actions", cmd_actions, "the user's open actions: tasks the agent cannot or should not do; --all adds "
                                      "the closed ones")
     sp.add_argument("--all", action="store_true", help="every action, closed ones too")
-    sp = add("find", cmd_find, "search tickets, decisions, README and log")
+    sp = add("find", cmd_find, "search tickets, decisions, actions, README and log")
     sp.add_argument("text")
     sp.add_argument("--all", action="store_true", help="search every tracker")
     sp = add("set", cmd_set, "set frontmatter keys that `set` owns (see `rules`): "
@@ -1169,8 +1173,8 @@ def build_parser():
     sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
     sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
-    sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`), with the text "
-                             "from stdin: put T-8 carry - <<'EOF' … EOF")
+    sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`) with new "
+                             "text, given or from stdin: put T-8 carry - <<'EOF' … EOF")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
                                     "options, context, goal, scope; a README section it names none of is new")
@@ -1203,13 +1207,13 @@ def build_parser():
     sp.add_argument("--force", action="store_true", help="replace a file of that name with other content")
     sp.add_argument("--append", metavar="TEXT", help=f"add the text (`-`: from stdin) at the end of the file named, "
                                                    f"which {EVIDENCE_DIR}/ holds already")
-    sp = add("new", cmd_new, "create a ticket from its template (decisions: `decide`)")
+    sp = add("new", cmd_new, "create a ticket from its template (decisions: `decide`; actions: `act`)")
     sp.add_argument("id", nargs="?")
     sp.add_argument("--title", required=True)
     sp.add_argument("--group", help="a free label that groups tickets in the views; order comes from depends_on")
     sp.add_argument("--branch")
     sp.add_argument("--repo", help="the ticket's repo, when the tracker spans several")
-    sp.add_argument("--depends", **IDS, help="ticket or decision ids it waits on")
+    sp.add_argument("--depends", **IDS, help="ticket, decision or action ids it waits on")
     sp.add_argument("--next")
     for key, scale in SCALES.items():
         sp.add_argument(f"--{key}", help=f"{scale.span} ({scale.ends}); with an Issue link, the issue's own")
@@ -1259,8 +1263,8 @@ def build_parser():
     sp = add("migrate", cmd_migrate, "bring a tracker made by an older version to the current rules "
                                      "(backs it up to $TRACKER_HOME/.backups first)")
     sp.add_argument("--dry-run", action="store_true", help="only list the changes")
-    add("sync", cmd_sync, "pull PR number/state/merge from GitHub into tickets, and the open PRs' reviews, checks and "
-                          "merge state, from which each ticket's move is computed")
+    add("sync", cmd_sync, "pull each ticket's PR (number, state, base, merge time) from GitHub, and the open PRs' "
+                          "reviews, checks and merge state, from which each ticket's move is computed")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with no id list the tickets whose fields "
                                  "are to read")
@@ -1337,7 +1341,8 @@ WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate
 def with_check(run, args) -> None:
     """Run a write command, then print the tickets it left unblocked and the `check` problems it added to the
     tracker, and end with whether `check` found new problems: no `tracker check` needs to follow a write. Each write
-    logs what the history needs, so no `tracker log` follows one either. `init` and `migrate` check for themselves."""
+    logs what the history needs, so no `tracker log` follows one either. `migrate` checks for itself; `init` is not
+    checked."""
     tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
     before = set(problem_lines(tr)) if tr else set()
     blocked = {t.id for t in tr.tickets if tr.blockers(t)} if tr else set()

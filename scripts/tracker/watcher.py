@@ -1,8 +1,8 @@
 """`tracker watch`: one watcher per tracker reports each change that may need the user, one line per ticket, agent or
 check: the new log lines, the facts no log line holds (moves, `next`, stages, tickets that can start, `check` errors),
 the agent sessions on the tracker, and GitHub (`sync`). Only the user starts it: in a terminal, or in an agent session
-they gave the watch with its skill command (a grant the prompt hook writes). Also archiving and deleting a tracker,
-which refuse while an agent session or a watch is on it."""
+they gave the watch with its skill command (a grant the prompt hook writes). Also archiving and deleting a
+tracker."""
 
 from __future__ import annotations
 
@@ -25,17 +25,18 @@ WATCH_DIR = HOME / ".watch"  # <slug>.json: a tracker's watcher and what it repo
 GRANTS = WATCH_DIR / "grants"
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
-SYNC_S = int(os.environ.get("TRACKER_WATCH_SYNC", "120"))  # GitHub; a viewer's or a hook's sync counts too
+SYNC_S = int(os.environ.get("TRACKER_WATCH_SYNC", "120"))  # between GitHub syncs
 IDLE_S = int(os.environ.get("TRACKER_WATCH_IDLE", "600"))  # an agent idle this long waits on the user
 BUSY_S = int(os.environ.get("TRACKER_WATCH_BUSY", "2700"))  # busy this long with nothing recorded: it may be stuck
 CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what changed while it was stopped
 REARM_S = 600  # a session's watch runs `--once` again and again: between two runs it still watches
-# A move of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested, open
-# review threads, ready to merge); a draft, a PR not yet open or with no review asked for is the agent's to move on.
+# A move of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested, an open
+# action, unresolved review threads, an approval); a draft, a PR with no review asked for, a closed PR or none yet is
+# the agent's to move on.
 MOVE_URGENT = 8
 LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
-REFUSED = 4  # exit code: not the user's watch, or another watcher has the tracker
+REFUSED = 4  # exit code of a refusal: not the user's watch, another watcher, a tracker in use, or a write in a watch
 
 # ---------------------------------------------------------------- the user's grant
 # Only a prompt the user types fires the UserPromptSubmit hook, so the grant it writes is the user's: no command the
@@ -94,7 +95,7 @@ def session_name(sid: str) -> str:
 
 
 # ---------------------------------------------------------------- what changed
-# An event is (key, needs the user, text); a batch prints one line per key, those that need the user first.
+# An event is (key, needs the user, text).
 
 Event = tuple[str, bool, str]
 
@@ -192,8 +193,8 @@ def lines_of(events: list[Event], now: float) -> list[str]:
 
 
 def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
-    """The first run's lines: the tickets under way with their moves and agents, the agents on none, the open
-    decisions, the user's open actions and what can start."""
+    """The first run's lines: a count line with the open decisions, the user's open actions, the tickets under way
+    with their moves and agents, the agents on no ticket, and what can start."""
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.in_flight]
@@ -239,9 +240,8 @@ def load_state(slug: str) -> dict:
 
 
 def watcher_of(tr: Tracker) -> dict:
-    """Who watches the tracker, for the viewer: `who`, `running`, `since` and `ended`; {} when no watch ran in a day.
-    A session's watch runs `--once` again and again, so while it holds the grant it still runs for REARM_S after each
-    run."""
+    """Who watches the tracker, for the viewer: `who`, `running` (REARM_S), `since` and `ended`; {} when no watch
+    ran in a day."""
     st = load_state(tr.slug)
     if not st.get("who"):
         return {}
@@ -255,7 +255,8 @@ def watcher_of(tr: Tracker) -> dict:
 class Watcher:
     """One tracker's watch. `claim` takes it (one watcher per tracker) and gives the lines to start with; `poll` looks
     once and gives the lines of what changed; `run` prints them until stopped, or until the first batch (`once`).
-    What it reported lives in WATCH_DIR/<slug>.json, so a restart misses nothing and repeats nothing."""
+    What it reported lives in WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the
+    terminal, misses nothing and repeats nothing."""
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal"):
         self.root, self.slug, self.sid, self.who = tr.root, tr.slug, sid, who
@@ -398,8 +399,7 @@ class Watcher:
         return out
 
     def run(self, once: bool) -> None:
-        """Print each batch until stopped (Ctrl-C), or the first one (`once`). A session's watch stops when the user
-        ends it (/work-tracker:watch stop)."""
+        """A session's watch stops when the user ends it (/work-tracker:watch stop)."""
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         lines = self.claim(time.time())
         try:

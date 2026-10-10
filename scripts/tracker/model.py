@@ -38,7 +38,7 @@ WINDOWS = os.name == "nt"
 @dataclass(frozen=True)
 class Stage:
     """What a ticket's stage says of its work. Code asks a record (`Record.todo`, `in_flight`, `started`, `closed`,
-    `dropped`), never compares a stage or a status with a word."""
+    `dropped`); it names a stage only where that one stage matters (in progress against in review)."""
     todo: bool = False  # its work has yet to start
     in_flight: bool = False  # under way: started, not yet closed
     closed: bool = False
@@ -50,7 +50,7 @@ class Stage:
 
 
 NO_STAGE = Stage()  # of an unknown stage (`check` reports it), and of a record that is no ticket
-# A ticket's stage, in this order: its status, overlaid by its PR once in progress (PR_STAGE).
+# A ticket's stages, in the order the views count and sort them (`Record.stage` says which one a ticket is in).
 STAGES = {"todo": Stage(todo=True), "in-progress": Stage(in_flight=True), "in-review": Stage(in_flight=True),
           "merged": Stage(closed=True), "done": Stage(closed=True), "dropped": Stage(closed=True, dropped=True)}
 PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
@@ -79,6 +79,8 @@ STATUSES = {
 # A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
 # it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
 # amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
+# A new scale is one SCALES entry: its ticket key, the CLI flags (`new`, `set`, `issue`), `check`, `tracker rules` and
+# the viewer's column follow from it.
 
 @dataclass(frozen=True)
 class Scale:
@@ -147,7 +149,6 @@ def weight(t: Record, key: str) -> float | None:
 
 
 # Every frontmatter key per file: what writes it ("set" = `tracker set`, or the command that owns it) and what it holds.
-# A key's name gives its value's form (value_form): commands read values through it, `check` holds values to it.
 DUE = "the day it should be done by; optional: only a day the user or an issue tracker gave, never your own"
 UPDATED = "the last change through the CLI"
 KEYS = {
@@ -222,7 +223,8 @@ OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`",
               "act": "use `tracker act`", "sync": "`tracker sync` writes it from the PR",
               "auto": "the tracker writes it", "issue": "`tracker issue` writes it from the ticket's issue tracker"}
 # Machine state in .state.json, never in frontmatter: what `tracker rules` says about it. A branch's entries are keyed
-# by state_key, so a tracker can span repos.
+# by state_key, so a tracker can span repos. Each key here names a part for `tracker rules`: the mark is stored as
+# `synced`, and `cleanup` is no key.
 STATE_KEEP_DAYS = 14
 STATE_RULES = {
     "mark": "the HEAD up to which a branch's commits are logged. The hooks log them against its tickets under way "
@@ -248,11 +250,10 @@ STATE_RULES = {
 
 
 # ---------------------------------------------------------------- values
-# A key's name gives its value's form (value_form): a time in a key that ends `_at`, a day in a DAY_KEYS key, a level
-# in a SCALES key, a list in a list key, and text in any other. A time the tracker writes is UTC to the second; a `_at`
-# key may hold a date alone, written before the tracker kept the time: it gives no span. A day is one that a person
-# or an issue tracker gave. Every command reads a value it is given through its form (`read_value`), `check` holds
-# each stored value to it (`valid_value`), and the views show a value by it (`show_value`): a time as its local day.
+# A key's name gives its value's form (value_form). Each form (FORMS) reads a value a command is given (`read_value`),
+# holds a stored value to it (`valid_value`, for `check`) and shows it (`show_value`); a new form is one Form subclass.
+# A time the tracker writes is UTC to the second; a `_at` key may hold a date alone, written before the tracker kept
+# the time: it gives no span.
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
@@ -422,8 +423,7 @@ def days_since(text) -> int:
     return (dt.date.today() - day).days if day else 0
 
 
-# A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to
-# the second) and in order. A dropped ticket has none.
+# A ticket's spans: name -> (key it starts at, key it ends at, what it measures).
 SPANS = {"wait": ("issue_created_at", "started_at", "issue created → started"),
          "cycle": ("started_at", "merged_at", "started → PR merged")}
 
@@ -628,7 +628,7 @@ START_RULE = (
     "merges. `tracker ready` and `tracker context <id>` name that branch, and `set <id> status=in-progress` says when "
     "the current branch does not contain it. Do not write the base as prose. The tracker never changes git.")
 # The one statement of the tracker's isolation. Every session with a tracker gets it in its brief's protocol, every
-# subagent in its SubagentStart line, and `tracker rules` prints it; the skill and the README point to it.
+# subagent in its SubagentStart line, and `tracker rules` prints it; the skill points to it.
 ISOLATION_RULE = (
     "The tracker is private to this work, isolated from the repos, PRs, issue trackers and other trackers it links "
     "to. Outside it (code, comments, commits, branch names, PR titles and bodies, issues, other trackers) write each "
@@ -647,7 +647,7 @@ class Kind:
     here, in KEYS and in STATUSES, and its command."""
     folder: str
     prefix: str  # the letter of its numbered ids (`D`: D-01, D-02); "" for a ticket, whose id is given
-    command: str  # the command that adds one and closes it
+    command: str  # the command that adds one; for a numbered kind, also the one that closes it and takes its notes
     sections: tuple[str, ...] = ()  # its ## sections, in this order and no others; none: its body is notes
     required: tuple[str, ...] = ()  # the sections it must have
     closing: str = ""  # the section a closed one must have: its answer
@@ -775,7 +775,7 @@ class Record:
 
     @property
     def stage(self) -> str:
-        """A ticket's status; once in progress, overlaid by its PR's state (STAGES). A todo ticket on a branch that
+        """A ticket's status; once in progress, overlaid by its PR's state (PR_STAGE). A todo ticket on a branch that
         holds a PR has not started, so the PR says nothing about it. Any other record's status."""
         status = str(self.get("status", STATUSES[self.kind].values[0]))
         if self.kind != "ticket" or not STAGES.get(status, NO_STAGE).in_flight:
@@ -811,8 +811,7 @@ class Record:
     def status_update(self, status: str) -> dict:
         """The keys a status change writes, every one of them: the status; `closed_at` now when it closes the record,
         or none when it opens it again. A ticket's first start from todo stamps `started_at`: its wait time ends and
-        its cycle time starts (one started before 0.29 has none, not a guess). Its close clears `next`: a closed ticket
-        has no next action, and its summary says what it delivered."""
+        its cycle time starts. Its close clears `next`: its summary says what it delivered."""
         statuses, updates = STATUSES[self.kind], {"status": status}
         closes = status in statuses.closed
         if "closed_at" in KEYS[self.kind]:
@@ -949,7 +948,7 @@ _held = threading.local()  # lock depth per thread: reentrant within a thread, e
 @contextmanager
 def locked():
     """One writer at a time, across every session and worktree: held around each read-modify-write of tracker
-    files. Reentrant within a process."""
+    files. Reentrant within a thread; other threads of this process wait."""
     if getattr(_held, "depth", 0):
         _held.depth += 1
         try:
@@ -1139,7 +1138,7 @@ class Tracker:
         return cache[id(t)][1]
 
     def stacked_on(self, t: Record) -> list[Record]:
-        """The started tickets on the branch that a ticket's open PR is based on: its PR cannot merge before theirs.
+        """The tickets past todo on the branch that a ticket's open PR is based on: its PR cannot merge before theirs.
         Computed from the PR's `base`, so it ends when the PR is retargeted."""
         base = t.get("base")
         if not base or t.get("pr_state") not in OPEN_PR:
@@ -1337,7 +1336,7 @@ def resolution(d: Record) -> str:
 
 @dataclass
 class Dep:
-    ident: str  # the record's id (a key in depends_on resolves to it), or the external id as written
+    ident: str  # the record's id (a depends_on item, an id or Issue id, resolves to it), or the external id as written
     rec: Record | None = None  # None for an external blocker
     link: Link | None = None  # an external blocker's line in ## Links
 
@@ -1453,7 +1452,7 @@ def longest_open_chain(tr: Tracker, edges: dict[str, list[str]]) -> list[str]:
 
 
 def pr_key(repo: str, pr) -> str:
-    """A PR's key in .state.json `reviews`: `owner/name#n`."""
+    """A PR's key in .state.json `prs`: `owner/name#n`."""
     return f"{repo.lower()}#{pr}"
 
 
@@ -1488,7 +1487,7 @@ MOVE_RULE = (
 
 @dataclass
 class Move:
-    who: str  # YOU (also for an open action), or the reviewers, the decision's owner or the blocker's id
+    who: str  # YOU (also for an open action), the reviewers, "CI", a decision's owner (else its id) or a blocker's id
     what: str = ""  # why it is their move, as a state: "review requested", "checks failing"
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
 
@@ -1560,7 +1559,7 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 # ---------------------------------------------------------------- the log
 # log.md holds one line per change, `- <day> [<ids>] <text>`: append_log writes it and LOG_LINE reads it back. Most
 # texts are for people. Those that code reads back have a LogForm in LOG, which both writes them and reads them, so a
-# change of words cannot part the two: `history` and `context` leave out the lines of a decision the view shows, and
+# change of words cannot part the two: `context` and the brief leave out the lines of a decision they show, and
 # the watcher counts the commits and marks a new action as one for the user.
 
 LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
@@ -1636,7 +1635,6 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, dict]], facts: dict[str, 
         upd = {"pr": str(pr["number"]), "pr_state": pr["state"], "base": pr["base"]}
         if pr["state"] == "merged":
             upd["merged_at"] = pr["merged_at"]
-        # A base that is another ticket's branch makes this ticket wait on it (Tracker.stacked_on).
         diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
         if diff:
             t.change(diff)
@@ -1703,7 +1701,8 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a ticket id, tracker sl
 
 
 # ---------------------------------------------------------------- body edits
-# Every command that changes a record's body goes through one of these; each changes one section in place.
+# Every command that changes a record's body goes through one of these, or `append_notes` for an action's notes; each
+# changes one section in place.
 
 def relabel(rec: Record, link: Link, label: str) -> bool:
     """Change one ## Links line's label in place."""

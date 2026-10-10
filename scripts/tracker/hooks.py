@@ -22,8 +22,7 @@ from .watcher import granted, set_grant
 PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's PR commands, or a push
 
 # ---------------------------------------------------------------- hooks
-# scripts/hook.sh filters each event before Python starts. A hook adds context only when it changes what the model
-# does next, and says each thing once.
+# A hook adds context only when it changes what the model does next, and says each thing once.
 
 
 def keep_viewer() -> None:
@@ -131,8 +130,8 @@ def hook_session_end(data: dict) -> None:
 
 
 def adopt_branch(m: Match, cwd: str | Path) -> None:
-    """A branch that holds one ticket's id in its name (made when the user asked): record it on the ticket, where
-    sync finds its PR and every worktree finds the ticket."""
+    """A branch that holds one ticket's id in its name (made when the user asked): record it on the ticket
+    (`set_branch`)."""
     if m.how != "name" or len(m.tickets) != 1 or m.branch in default_branches(cwd):
         return
     with locked():
@@ -173,7 +172,8 @@ COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")
 
 
 def hook_post_bash(data: dict) -> None:
-    """After `gh pr ...` or a push: sync PR state. After a commit: log it, and when it is the first since `next` last
+    """After a `gh pr` command that changes a PR (PR_COMMAND) or a push: record the branch on its ticket
+    (`adopt_branch`) and sync PR state. After a commit: log it, and when it is the first since `next` last
     changed, ask whether a step ended, while the work is fresh. A subagent's commit (its tool calls fire these hooks
     too) is logged, but the subagent is asked nothing: the session records the step, asked at its next message."""
     subagent = bool(data.get("agent_id"))
@@ -240,7 +240,7 @@ def refresh(m: Match, entry: dict, fields: dict) -> None:
     fields["sync_asked"] = int(now)
     try:
         spawn("--tracker", m.tracker.slug, "sync")
-    except OSError:  # the message's own lines still go out; the next sync is at the next session or PR command
+    except OSError:  # the message's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
         pass
 
 
@@ -249,8 +249,8 @@ WATCH_PROMPT = re.compile(r"[/$](?:work-tracker:)?watch\b(.*)", re.S)
 
 def watch_request(data: dict) -> bool:
     """The user typed /work-tracker:watch: give this session the watch (`tracker watch` then runs in it), or end it
-    (`stop`). Only a prompt the user types fires this hook, so the model cannot give itself one. A session on a
-    tracker does the work, so it does not watch."""
+    (`stop`). A session the user put on a tracker does the work, so it does not watch; one the session start linked
+    (`auto`) leaves its tracker and watches."""
     m = WATCH_PROMPT.fullmatch(str(data.get("prompt") or "").strip())
     sid = where(data)[1]
     if not m or not sid:
@@ -272,10 +272,11 @@ def watch_request(data: dict) -> bool:
 
 
 def hook_prompt(data: dict) -> None:
-    """On tracked work, each user message gets what other sessions or GitHub changed since the session's brief, and
-    `next_request` when commits (a subagent's too) passed `next`; the first message and every NUDGE_EVERY-th after it
-    get the state line, so it stays a reminder, not noise. Work since the branch's mark with no ticket in progress
-    brings the state line at once, once per mark. A stale GitHub sync starts in the background (`refresh`)."""
+    """On tracked work, each user message gets what other sessions or GitHub changed since its last message (or its
+    brief), and `next_request` when commits (a subagent's too) passed `next`; the first message and every
+    NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. Work since the branch's mark with
+    no ticket in progress brings the state line at once, once per mark. A stale GitHub sync starts in the background
+    (`refresh`)."""
     if watch_request(data):
         return
     cwd, sid = where(data)
@@ -366,7 +367,7 @@ def run_hook(event: str) -> None:
     budget(HOOK_GH_BUDGET_S)
     try:
         sid = where(data)[1]
-        os.environ["TRACKER_SESSION"] = sid
+        os.environ["TRACKER_SESSION"] = sid  # command_context, session_id() and spawned commands read it
         HOOKS[event](data)
         status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "session-end": "ended"}.get(event)
         if status and not data.get("agent_id"):
