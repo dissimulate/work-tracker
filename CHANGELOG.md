@@ -21,6 +21,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 
 ### Changed
 
+- Viewer: the Step column draws the dependency graph instead of a number: a dot per ticket in the column of its step, a colour per step, and a line to each ticket that waits on it, routed beside the other dots. A line that a longer chain already implies is left out. It is drawn again for any sort or filter. Hover a row to see only the chains it waits on and unblocks, each line green when met, amber when under way and red when it still blocks.
+- Viewer: the sequence starts in a depth-first dependency order, so a chain of tickets stays together; Step puts it back.
 - A new session on a feature branch that a ticket of one tracker names links to that tracker by itself, without the question. On a default branch such as `main`, or when the match is less sure, the session still asks. To undo, tell the agent the session is not that work.
 - After `/clear`, the new session stays on the tracker of the session it replaces, with its `--on` ticket. No need to link again.
 - `tracker start --decline` also unlinks a session that linked by itself.

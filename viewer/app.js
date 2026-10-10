@@ -66,12 +66,132 @@ function applyFilter() {
     d.hidden = !(filter === 'all' ||
       (filter === 'active' ? c !== '1' : GATES.includes(filter) ? b === filter : s === filter));
   });
-  // A step's number shows on its first shown row only, while the rows are in dependency order.
-  let step = null;
-  document.querySelectorAll('details.t:not([hidden])').forEach(d => {
-    d.classList.toggle('rep', sort.key === 'step' && d.dataset.step === step);
-    step = d.dataset.step;
+  drawSoon();
+}
+
+// The dependency graph in the Step column, drawn for the rows as they are shown, in any sort and filter. A ticket's
+// dot sits in the column of its step (data-step), and the dots and links of a step share its colour. A link leaves
+// its dot level, runs up or down a track in the gap just left of the waiting ticket's column, and enters that dot
+// level, so it never passes through another dot. A ticket's links to one step share a track; links whose runs
+// overlap get tracks of their own. Only the links no longer chain implies are drawn (data-links, drawn_links() in
+// viewer.py). Links to hidden rows are left out. While a row is hovered or
+// focused, the graph shows only what its ticket waits on and unblocks, through any chain, and greys the rest: each
+// of those links takes the state of the ticket waited on (met when closed, under way when started, else blocking).
+const GRAPH = { dot: 12, pad: 5, track: 5, node: 4.5, halo: 1.5, ring: 1.5, turn: 6, colours: 6 };
+const SVG = 'http://www.w3.org/2000/svg';
+
+function svgEl(name, attrs) {
+  const el = document.createElementNS(SVG, name);
+  Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+  return el;
+}
+
+function drawGraph() {
+  const seq = document.querySelector('.seq');
+  if (!seq) return;
+  seq.querySelector(':scope > .graph-svg')?.remove();
+  const rows = [...seq.querySelectorAll(':scope > details.t:not([hidden])')];
+  if (!rows.length) return;
+  const at = new Map(rows.map((d, i) => [d.dataset.id, i]));
+  const step = i => Number(rows[i].dataset.step) || 1;
+  const steps = Math.max(...rows.map((_, i) => step(i)));
+  const links = rows.flatMap((d, to) => (d.dataset.links || '').split(' ')
+    .filter(id => at.has(id)).map(id => [at.get(id), to])); // [the row waited on, the waiting row]
+
+  // Runs: one per ticket and step it links to, over the rows from the ticket to its last link there. Each gap, left
+  // of a step's column, gives its runs tracks: a run takes the first track free by its first row.
+  const runs = new Map();
+  links.forEach(([from, to]) => {
+    const key = `${from} ${step(to)}`;
+    const [first, last] = runs.get(key)?.rows ?? [from, from];
+    runs.set(key, { gap: step(to), rows: [Math.min(first, to), Math.max(last, to)] });
   });
+  const tracks = Array.from({ length: steps + 1 }, () => []); // per gap: each track's last row
+  [...runs.values()].sort((a, b) => a.rows[0] - b.rows[0]).forEach(run => {
+    const ends = tracks[run.gap];
+    run.track = ends.findIndex(end => end < run.rows[0]);
+    if (run.track < 0) run.track = ends.length;
+    ends[run.track] = run.rows[1];
+  });
+  // Columns and gaps, left to right: a gap is as wide as its tracks need.
+  const colX = [0, GRAPH.dot / 2];
+  const gapX = [0, 0];
+  for (let s = 2; s <= steps; s++) {
+    gapX[s] = colX[s - 1] + GRAPH.dot / 2 + GRAPH.pad;
+    colX[s] = gapX[s] + Math.max(0, tracks[s].length - 1) * GRAPH.track + GRAPH.pad + GRAPH.dot / 2;
+  }
+  seq.style.setProperty('--graph-w', `${colX[steps] + GRAPH.dot / 2}px`);
+
+  // Positions, measured once the column has its width: a dot sits at the middle of its row's head.
+  const box = seq.getBoundingClientRect();
+  const left = rows[0].querySelector('summary > :first-child').getBoundingClientRect().left - box.left;
+  const x = i => left + colX[step(i)];
+  const y = rows.map(d => {
+    const r = d.querySelector('summary').getBoundingClientRect();
+    return r.top - box.top + r.height / 2;
+  });
+  const colour = i => `g${(step(i) - 1) % GRAPH.colours}`;
+  const svg = svgEl('svg', { class: 'graph-svg', 'aria-hidden': 'true' });
+
+  // The focused ticket's chains: the links up to what it waits on and down to what it unblocks, and their tickets.
+  const focus = at.get(focusId);
+  const near = new Set(focus === undefined ? [] : [focus]);
+  const nearLinks = new Set();
+  const walk = (i, end, next) => links.forEach((link, k) => {
+    if (link[end] !== i || nearLinks.has(k)) return;
+    nearLinks.add(k);
+    near.add(link[next]);
+    walk(link[next], end, next);
+  });
+  if (focus !== undefined) {
+    walk(focus, 1, 0);
+    walk(focus, 0, 1);
+  }
+  const wait = i => (rows[i].dataset.c === '1' ? 'met'
+    : ['in-progress', 'in-review'].includes(rows[i].dataset.s) ? 'going' : 'blocks');
+  const linkClass = ([from], k) => (focus === undefined
+    ? colour(from)
+    : nearLinks.has(k) ? wait(from) : `${colour(from)} dim`);
+
+  // The focused chains go last, over the grey.
+  const drawOrder = links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b));
+  drawOrder.forEach(([link, k]) => {
+    const [from, to] = link;
+    const run = runs.get(`${from} ${step(to)}`);
+    const tx = left + gapX[run.gap] + run.track * GRAPH.track;
+    const [x1, y1, x2, y2] = [x(from), y[from], x(to), y[to]];
+    const r = Math.min(GRAPH.turn, Math.abs(y2 - y1) / 2);
+    const dy = Math.sign(y2 - y1) * r;
+    svg.append(svgEl('path', {
+      class: linkClass(link, k),
+      d: `M${x1} ${y1}H${tx - r}Q${tx} ${y1} ${tx} ${y1 + dy}V${y2 - dy}Q${tx} ${y2} ${tx + r} ${y2}H${x2}`,
+    }));
+  });
+  // Every dot has the same size and halo; a closed one's ring is drawn inside that size.
+  rows.forEach((d, i) => {
+    const state = d.dataset.s === 'dropped' ? 'dropped' : d.dataset.c === '1' ? 'closed' : '';
+    svg.append(svgEl('circle', { class: 'halo', cx: x(i), cy: y[i], r: GRAPH.node + GRAPH.halo }));
+    const dim = focus !== undefined && !near.has(i) ? 'dim' : '';
+    svg.append(svgEl('circle', { class: [colour(i), state, dim].filter(Boolean).join(' '), cx: x(i), cy: y[i],
+                                 r: state ? GRAPH.node - GRAPH.ring / 2 : GRAPH.node }));
+  });
+  seq.append(svg);
+}
+
+let drawing = 0;
+function drawSoon() {
+  cancelAnimationFrame(drawing);
+  drawing = requestAnimationFrame(drawGraph);
+}
+
+// The hovered or focused row's ticket, whose chains the graph shows (drawGraph).
+let focusId = null;
+
+function setFocus(row) {
+  const id = row?.dataset.id ?? null;
+  if (id === focusId) return;
+  focusId = id;
+  drawSoon();
 }
 
 function detailsFor(id) {
@@ -328,7 +448,11 @@ if (slug) {
     const a = e.target.closest('a[href^="#"]');
     if (a) { e.preventDefault(); openRecord(decodeURIComponent(a.getAttribute('href').slice(1))); } // no hash, no history
   });
+  const rowAt = e => e.target.closest?.('.seq summary')?.parentElement ?? null;
+  document.addEventListener('mouseover', e => setFocus(rowAt(e)));
+  document.addEventListener('focusin', e => setFocus(rowAt(e)));
   window.addEventListener('hashchange', openHash);
+  new ResizeObserver(drawSoon).observe(document.querySelector('main')); // a row opens or closes, the window resizes
   applySort();
   applyFilter();
   openHash();

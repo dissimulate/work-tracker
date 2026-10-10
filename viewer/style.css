@@ -28,6 +28,20 @@
   --tag-blocked: #ff9b91;
   --tag-neutral: #c5cdd8;
   --tag-ink: #192330;
+  /* the step palette: the dependency graph's own hues, one per step in rainbow order, apart from the status tags */
+  --step-0: #ff8a80;   /* red */
+  --step-1: #ffb36b;   /* orange */
+  --step-2: #f2d65c;   /* yellow */
+  --step-3: #7fd88f;   /* green */
+  --step-4: #7fb2ff;   /* blue */
+  --step-5: #b79cff;   /* violet */
+  /* each mixed as the status colours are */
+  --graph-0: color-mix(in srgb, var(--step-0) var(--tone-strength), var(--tag-ink));
+  --graph-1: color-mix(in srgb, var(--step-1) var(--tone-strength), var(--tag-ink));
+  --graph-2: color-mix(in srgb, var(--step-2) var(--tone-strength), var(--tag-ink));
+  --graph-3: color-mix(in srgb, var(--step-3) var(--tone-strength), var(--tag-ink));
+  --graph-4: color-mix(in srgb, var(--step-4) var(--tone-strength), var(--tag-ink));
+  --graph-5: color-mix(in srgb, var(--step-5) var(--tone-strength), var(--tag-ink));
 
   --border: 1px solid var(--line);
   --radius: 6px;       /* panels */
@@ -578,7 +592,39 @@ tr:last-child > td { border-bottom: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .seq summary > span:has(> .chip) { display: flex; align-items: center; }
 .seq summary > :first-child { color: var(--muted); font-variant-numeric: tabular-nums; }
-.seq details.rep > summary > :first-child { visibility: hidden; } /* the step shows on its first row only */
+/* The dependency graph (drawGraph in app.js): an SVG over the sequence, in the Step column, a column per step, whose
+   width app.js sets in --graph-w. An opened ticket's body starts right of it, so the lines pass beside its text. A
+   step's dots and links take one of the graph colours; a closed ticket's dot is
+   hollow, a dropped one's also muted. Every dot is the same size, on a halo in the panel
+   colour that sets the lines behind it. */
+.seq { position: relative; }
+.seq summary > .graph { width: var(--graph-w, 14px); }
+.seq > details > div { padding-left: calc(var(--pad) + var(--graph-w, 14px) + var(--gap)); }
+.graph-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.graph-svg path { fill: none; stroke: var(--graph); stroke-width: 1.5; stroke-linecap: round; }
+.graph-svg circle { fill: var(--graph); }
+.graph-svg circle.halo { fill: var(--surface); }
+.graph-svg circle:is(.closed, .dropped) { fill: var(--surface); stroke-width: 1.5; }
+.graph-svg circle.closed { stroke: var(--graph); }
+.graph-svg circle.dropped { stroke: var(--muted); }
+.graph-svg .g0 { --graph: var(--graph-0); }
+.graph-svg .g1 { --graph: var(--graph-1); }
+.graph-svg .g2 { --graph: var(--graph-2); }
+.graph-svg .g3 { --graph: var(--graph-3); }
+.graph-svg .g4 { --graph: var(--graph-4); }
+.graph-svg .g5 { --graph: var(--graph-5); }
+/* A hovered row (app.js): the rest of the graph greys; its chains' links take the state of the ticket waited on. */
+.graph-svg .dim { --graph: var(--line); }
+.graph-svg path.met { stroke: var(--done); }
+.graph-svg path.going { stroke: var(--active); }
+.graph-svg path.blocks { stroke: var(--blocked); }
 .seq details.closed:not([open]) > summary { color: var(--muted); }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened

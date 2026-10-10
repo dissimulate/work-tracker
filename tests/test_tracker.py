@@ -1178,11 +1178,13 @@ class SequenceSort(unittest.TestCase):
             attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
             return dict(re.findall(r'data-sort-(\w+)="([^"]*)"', attrs))
 
-        # step: the dependency order the page starts in (dropped last); status: its place in todo → dropped.
+        # step: the depth-first dependency order the page starts in, a chain together and dropped last; status: its
+        # place in todo → dropped.
         keys = ("step", "ticket", "group", "status", "waits", "unblocks")
         self.assertEqual([row("T-2")[k] for k in keys], ["0", "T-2", "api", "0", "0", "1"])
-        self.assertEqual([row("T-10")[k] for k in keys], ["1", "T-10", "ui", "0", "0", "0"])
-        self.assertEqual([row("T-3")[k] for k in keys], ["2", "T-3", "", "0", "1", "1"])
+        self.assertEqual([row("T-3")[k] for k in keys], ["1", "T-3", "", "0", "1", "1"])
+        self.assertEqual([row("T-5")[k] for k in keys], ["2", "T-5", "", "0", "1", "0"])
+        self.assertEqual([row("T-10")[k] for k in keys], ["3", "T-10", "ui", "0", "0", "0"])
         self.assertEqual([row("T-4")[k] for k in keys], ["4", "T-4", "api", "5", "0", "0"])
         self.assertEqual(len(row("T-2")), len(SEQ_HEAD))  # a value per heading button
 
@@ -1193,6 +1195,34 @@ class SequenceSort(unittest.TestCase):
         self.assertIn('title="waits on: T-2; unblocks: T-5"><span><span class=meta>←</span> ', deps("T-3"))
         self.assertIn('</span><span><span class=meta>→</span> <a class=id href="#T-5">T-5</a></span>', deps("T-3"))
         self.assertIn('title="unblocks: T-3"><span><span class=meta>→</span> <a class=id href="#T-3">', deps("T-2"))
+
+    def test_rows_carry_the_graph(self):
+        """viewer/app.js draws the dependency graph from each row's data: its step (its dot's column and colour) and
+        its links."""
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me")
+        run(*t, "new", "T-1", "--title", "Base")
+        run(*t, "new", "T-2", "--title", "Uses base", "--depends", "T-1")
+        run(*t, "new", "T-3", "--title", "Also uses base", "--depends", "T-1")
+        run(*t, "new", "T-4", "--title", "Joins both", "--depends", "T-3,T-2")
+        run(*t, "new", "T-5", "--title", "Alone")
+        page = viewer.main_html(model.Tracker(model.HOME / s))
+
+        def row(ident: str) -> dict[str, str]:
+            attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
+            return dict(re.findall(r'data-(waits|unblocks|step|links)="([^"]*)"', attrs))
+        self.assertEqual(row("T-1"), {"unblocks": "T-2 T-3", "step": "1"})
+        self.assertEqual(row("T-5"), {"step": "1"})
+        self.assertEqual(row("T-2"), {"waits": "T-1", "unblocks": "T-4", "step": "2", "links": "T-1"})
+        self.assertEqual(row("T-3"), {"waits": "T-1", "unblocks": "T-4", "step": "2", "links": "T-1"})
+        self.assertEqual(row("T-4"), {"waits": "T-3 T-2", "step": "3", "links": "T-3 T-2"})
+        self.assertRegex(page, r'<details data-id="T-4"[^>]*><summary><span class="graph" title="step 3"></span>')
+
+    def test_the_graph_draws_only_the_links_no_chain_implies(self):
+        edges = {"A": [], "B": ["A"], "C": ["B", "A"], "D": ["C", "A", "B"], "E": ["E2"], "E2": ["E"]}  # E: a cycle
+        self.assertEqual(viewer.drawn_links(edges),
+                         {"A": [], "B": ["A"], "C": ["B"], "D": ["C"], "E": ["E2"], "E2": ["E"]})
 
     def test_an_unknown_status_still_renders(self):
         """A hand-edited status outside STAGES sorts after them, and the page shows the check's error."""

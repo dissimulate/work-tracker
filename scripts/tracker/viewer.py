@@ -319,16 +319,17 @@ class Row(NamedTuple):
     t: Record
     order: int  # its place in the dependency order the page starts in
     step: int | str
+    links: list[str]  # the tickets it waits on that the graph draws (drawn_links)
     gate: tuple[str, Html]  # gate_html
     waits: list[tuple[str, Html]]
     unblocks: list[tuple[str, Html]]
     spans: dict[str, int | None]  # SPANS, in seconds
 
     @classmethod
-    def of(cls, tr: Tracker, t: Record, order: int, step: int | str) -> Row:
+    def of(cls, tr: Tracker, t: Record, order: int, step: int | str, links: list[str]) -> Row:
         waits = [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
-        return cls(t, order, step, gate_html(tr, t), waits, [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)],
-                   {name: span(t, name) for name in SPANS})
+        return cls(t, order, step, links, gate_html(tr, t), waits,
+                   [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)], {name: span(t, name) for name in SPANS})
 
 
 class Cell(NamedTuple):
@@ -345,6 +346,11 @@ def fit(items: list[tuple[str, Html]], limit: int) -> int:
         if len(shown) <= limit or k == 1:
             return k
     return 0
+
+
+def step_cell(r: Row) -> Cell:
+    """The graph's place: viewer/app.js draws the dependency graph over the column, from the rows' data."""
+    return Cell(NONE, {"class": "graph", "title": f"step {r.step}"})
 
 
 def ticket_cell(r: Row) -> Cell:
@@ -414,7 +420,7 @@ HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest
 # An unknown status sorts after STAGES, so the page still renders and shows the check's error; a priority most urgent
 # first; a size smallest first; dependencies by count.
 COLUMNS = (
-    Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "max-content"),
+    Column((("step", "Step", "dependency order", lambda r: r.order),), step_cell, "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
     Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
            text_cell("group"), "fit-content(var(--meta-max))", "mid"),
@@ -438,7 +444,9 @@ def hide_class(c: Column, cls: object = None) -> str | None:
 
 def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
     """A row of the sequence, which opens to the whole ticket. Its data-* carry its status (data-s), whether the server
-    counts it closed (data-c), ready or blocked (data-b), its step and its sort values (Column)."""
+    counts it closed (data-c), ready or blocked (data-b), the tickets it waits on and unblocks (data-waits,
+    data-unblocks), its step (data-step) and the links the graph draws (data-links), from which viewer/app.js draws
+    the graph and marks a hovered row's links, and its sort values (Column)."""
     t = r.t
     closed = t.stage in CLOSED_TICKET
     cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if r.gate[0] == "blocked" else ""
@@ -448,16 +456,65 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
         for c, x in zip(COLUMNS, cells))
     sorts = {f"data-sort-{key}": "" if (v := value(r)) is None else v
              for c in COLUMNS for key, _, _, value in c.sorts}
-    attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0], "data-step": r.step,
-             **sorts}
+    waits = " ".join(d.ident for d in tr.deps(t) if d.kind == "ticket")
+    unblocks = " ".join(o.id for o in tr.waiting_on(t.id) if o.kind == "ticket")
+    attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0],
+             "data-waits": waits or None, "data-unblocks": unblocks or None, "data-step": r.step,
+             "data-links": " ".join(r.links) or None, **sorts}
     return panel(t.id, summary, body_html(tr, t, (word, md_inline(str(line))) if line else None), attrs=attrs)
 
 
+def ticket_edges(tr: Tracker) -> dict[str, list[str]]:
+    """Per ticket, the tickets it waits on: its depends_on, and those its open PR stacks it on."""
+    return {t.id: list(dict.fromkeys(d.ident for d in tr.deps(t) if d.kind == "ticket" and d.ident != t.id))
+            for t in tr.tickets}
+
+
+def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Per ticket, the tickets it waits on that no longer chain of waits implies (a transitive reduction): the graph
+    draws only these, and the Deps column and a hover still show every one."""
+    below: dict[str, set[str]] = {}
+
+    def under(i: str) -> set[str]:
+        """Every ticket i waits on, through any chain; a cycle stops the walk."""
+        if i not in below:
+            below[i] = set()
+            below[i] = set().union(*({j} | under(j) for j in edges[i]))
+        return below[i]
+    return {i: [j for j in deps if not any(j in under(o) for o in deps if o != j)] for i, deps in edges.items()}
+
+
+def graph_order(tr: Tracker, edges: dict[str, list[str]], step: dict[str, int]) -> list[Record]:
+    """The tickets in depth-first dependency order, as `git log --topo-order`: each after every ticket it waits on,
+    and the tickets that this one lets start right after it, so a chain stays together; the lowest id first among
+    those ready. Dropped tickets, and any in a cycle, go last in step order."""
+    live = {t.id for t in tr.tickets if t.stage != "dropped"}
+    left = {i: sum(j in live for j in edges[i]) for i in live}
+    after: dict[str, list[str]] = {i: [] for i in live}
+    for i in live:
+        for j in edges[i]:
+            if j in live:
+                after[j].append(i)
+    stack = sorted((i for i in live if not left[i]), key=sort_key, reverse=True)
+    out: list[str] = []
+    while stack:
+        i = stack.pop()
+        out.append(i)
+        for k in after[i]:
+            left[k] -= 1
+        stack += sorted((k for k in after[i] if not left[k]), key=sort_key, reverse=True)
+    place = {i: n for n, i in enumerate(out)}
+    return sorted(tr.tickets, key=lambda t: (t.id not in place, place.get(t.id, 0), t.stage == "dropped",
+                                             step.get(t.id, 0), sort_key(t.id)))
+
+
 def sequence_html(tr: Tracker) -> Html:
-    """The tickets in dependency order, dropped last, under their filters and sortable column heads."""
+    """The tickets in depth-first dependency order (graph_order), under their filters and sortable column heads."""
     seq = sequence(tr)
-    ordered = sorted(tr.tickets, key=lambda t: (t.stage == "dropped", seq.step.get(t.id, 0), sort_key(t.id)))
-    rows = [Row.of(tr, t, i, seq.step.get(t.id, "")) for i, t in enumerate(ordered)]
+    edges = ticket_edges(tr)
+    links = drawn_links(edges)
+    rows = [Row.of(tr, t, i, seq.step.get(t.id, ""), links[t.id])
+            for i, t in enumerate(graph_order(tr, edges, seq.step))]
     cells = [[c.cell(r) for c in COLUMNS] for r in rows]
 
     def shown_at(c: Column, level: str) -> bool:
