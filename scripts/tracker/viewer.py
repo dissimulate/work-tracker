@@ -357,7 +357,7 @@ def ticket_cell(r: Row) -> Cell:
     pr = Html(" <span class=meta>PR {}</span>").format(pr_label(r.t)) if r.t.get("pr") else NONE
     title = str(r.t.get("title"))
     return Cell(Html("<span class=id>{}</span> {}{}").format(r.t.id, title, pr),
-                {"class": "tk tone", "title": f"{r.t.id} {title}"})
+                {"class": "tk", "title": f"{r.t.id} {title}"})
 
 
 def text_cell(key: str) -> Callable[[Row], Cell]:

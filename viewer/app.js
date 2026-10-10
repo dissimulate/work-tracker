@@ -70,19 +70,20 @@ function applyFilter() {
 }
 
 // The dependency graph in the Step column, drawn for the rows as they are shown, in any sort and filter. A ticket's
-// dot sits in the column of its step (data-step), and the dots and links of a step share its colour. A link leaves
-// its dot level, runs up or down a track in the gap just left of the waiting ticket's column, and enters that dot
-// level, so it never passes through another dot. A ticket's links to one step share a track; links whose runs
-// overlap get tracks of their own. Only the links no longer chain implies are drawn (data-links, drawn_links() in
-// viewer.py). Links to hidden rows are left out. While a row is hovered or
-// focused, the graph shows only what its ticket waits on and unblocks, through any chain, and greys the rest: each
-// of those links takes the state of the ticket waited on (met when closed, under way when started, else blocking).
-const GRAPH = { dot: 12, pad: 5, track: 5, node: 4.5, halo: 1.5, ring: 1.5, turn: 6, colours: 6 };
+// dot sits in the column of its step (data-step). A link leaves its dot level, runs up or down a track in the gap
+// just left of the waiting ticket's column, and enters that dot level, so it never passes through another dot. A
+// ticket's links to one step share a track; links whose runs overlap get tracks of their own. Only the links no
+// longer chain implies are drawn (data-links, drawn_links() in viewer.py). Links to hidden rows are left out. The
+// graph carries the sequence's status colours: a dot takes its ticket's state (ready, stackable, blocked, under way,
+// closed), and a link the state of the ticket waited on (met when closed, under way when started, else blocking).
+// While a row is hovered or focused, the graph keeps only what its ticket waits on and unblocks, through any chain,
+// and greys the rest.
+const GRAPH = { dot: 12, pad: 5, track: 5, node: 4.5, halo: 1.5, ring: 1.5, turn: 6 };
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svgEl(name, attrs) {
   const el = document.createElementNS(SVG, name);
-  Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+  Object.entries(attrs).forEach(([k, v]) => { if (v !== '' && v != null) el.setAttribute(k, v); }); // none: left out
   return el;
 }
 
@@ -130,7 +131,6 @@ function drawGraph() {
     const r = d.querySelector('summary').getBoundingClientRect();
     return r.top - box.top + r.height / 2;
   });
-  const colour = i => `g${(step(i) - 1) % GRAPH.colours}`;
   const svg = svgEl('svg', { class: 'graph-svg', 'aria-hidden': 'true' });
 
   // The focused ticket's chains: the links up to what it waits on and down to what it unblocks, and their tickets.
@@ -147,11 +147,9 @@ function drawGraph() {
     walk(focus, 1, 0);
     walk(focus, 0, 1);
   }
-  const wait = i => (rows[i].dataset.c === '1' ? 'met'
-    : ['in-progress', 'in-review'].includes(rows[i].dataset.s) ? 'going' : 'blocks');
-  const linkClass = ([from], k) => (focus === undefined
-    ? colour(from)
-    : nearLinks.has(k) ? wait(from) : `${colour(from)} dim`);
+  const going = i => ['in-progress', 'in-review'].includes(rows[i].dataset.s);
+  const wait = i => (rows[i].dataset.c === '1' ? 'met' : going(i) ? 'going' : 'blocks');
+  const linkClass = ([from], k) => (focus === undefined || nearLinks.has(k) ? wait(from) : 'dim');
 
   // The focused chains go last, over the grey.
   const drawOrder = links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b));
@@ -169,11 +167,13 @@ function drawGraph() {
   });
   // Every dot has the same size and halo; a closed one's ring is drawn inside that size.
   rows.forEach((d, i) => {
-    const state = d.dataset.s === 'dropped' ? 'dropped' : d.dataset.c === '1' ? 'closed' : '';
+    const state = d.dataset.s === 'dropped' ? 'dropped' : d.dataset.c === '1' ? 'closed' : going(i) ? 'going'
+      : d.classList.contains('s-stack') ? 'stack' : d.dataset.b; // data-b: ready or blocked
     svg.append(svgEl('circle', { class: 'halo', cx: x(i), cy: y[i], r: GRAPH.node + GRAPH.halo }));
     const dim = focus !== undefined && !near.has(i) ? 'dim' : '';
-    svg.append(svgEl('circle', { class: [colour(i), state, dim].filter(Boolean).join(' '), cx: x(i), cy: y[i],
-                                 r: state ? GRAPH.node - GRAPH.ring / 2 : GRAPH.node }));
+    const hollow = state === 'closed' || state === 'dropped';
+    svg.append(svgEl('circle', { class: [state, dim].filter(Boolean).join(' '), cx: x(i), cy: y[i],
+                                 r: hollow ? GRAPH.node - GRAPH.ring / 2 : GRAPH.node }));
   });
   seq.append(svg);
 }
