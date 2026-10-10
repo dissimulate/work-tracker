@@ -78,7 +78,7 @@ function applyFilter() {
 // closed), and a link the state of the ticket waited on (met when closed, under way when started, else blocking).
 // While a row is hovered or focused, the graph keeps only what its ticket waits on and unblocks, through any chain,
 // and greys the rest.
-const GRAPH = { dot: 12, pad: 5, track: 5, node: 4.5, halo: 1.5, ring: 1.5, turn: 6 };
+const GRAPH = { dot: 8, pad: 3, track: 4, node: 3.5, halo: 1, ring: 1.5, turn: 4 };
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svgEl(name, attrs) {
@@ -94,8 +94,12 @@ function drawGraph() {
   const rows = [...seq.querySelectorAll(':scope > details.t:not([hidden])')];
   if (!rows.length) return;
   const at = new Map(rows.map((d, i) => [d.dataset.id, i]));
-  const step = i => Number(rows[i].dataset.step) || 1;
-  const steps = Math.max(...rows.map((_, i) => step(i)));
+  // A column per step that has a shown row, in step order: a step the filter hides takes no room.
+  const stepOf = i => Number(rows[i].dataset.step) || 1;
+  const shown = [...new Set(rows.map((_, i) => stepOf(i)))].sort((a, b) => a - b);
+  const column = new Map(shown.map((s, k) => [s, k + 1]));
+  const step = i => column.get(stepOf(i)); // its column
+  const steps = shown.length;
   const links = rows.flatMap((d, to) => (d.dataset.links || '').split(' ')
     .filter(id => at.has(id)).map(id => [at.get(id), to])); // [the row waited on, the waiting row]
 

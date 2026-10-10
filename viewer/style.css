@@ -585,8 +585,8 @@ tr:last-child > td { border-bottom: 0; }
    of the ticket waited on: met, under way, or blocking. Every dot is the same size, on a halo in the panel
    colour that sets the lines behind it. */
 .seq { position: relative; }
-.seq summary > .graph { width: var(--graph-w, 14px); }
-.seq > details > div { padding-left: calc(var(--pad) + var(--graph-w, 14px) + var(--gap)); }
+.seq summary > .graph { width: var(--graph-w, 8px); }
+.seq > details > div { padding-left: calc(var(--pad) + var(--graph-w, 8px) + var(--gap)); }
 .graph-svg {
   position: absolute;
   inset: 0;
