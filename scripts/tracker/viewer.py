@@ -276,9 +276,9 @@ def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
     return ("ready", chip("ready")) if r.stage == "todo" else ("", NONE)
 
 
-def body_html(tr: Tracker, r: Record, lead: tuple[str, Html] | None = None) -> Html:
-    """What a ticket or decision shows when it opens: one grid of its line (next or summary), dependencies, facts and
-    links, then the body."""
+def body_html(tr: Tracker, r: Record, lead: list[tuple[str, Html]] | None = None) -> Html:
+    """What a ticket or decision shows when it opens: one grid of its lead lines (time, next or summary), dependencies,
+    facts and links, then the body."""
     deps = [("waits on", comma(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
     start = tr.start_point(r) if r.kind == "ticket" else None
     if start and start.stacked:
@@ -297,7 +297,7 @@ def body_html(tr: Tracker, r: Record, lead: tuple[str, Html] | None = None) -> H
             facts.append((k.removesuffix("_at"),
                           Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
     move = whose_move(tr, r) if r.kind == "ticket" else None
-    head = ([lead] if lead else []) + ([("move", move_chip(move))] if move else [])
+    head = (lead or []) + ([("move", move_chip(move))] if move else [])
     props = props_html([head, deps, facts, link_rows(r.links)])
     return Html("<div>{}{}</div>").format(props, md_to_html(without_section(r.body, "Links")))
 
@@ -323,13 +323,11 @@ class Row(NamedTuple):
     gate: tuple[str, Html]  # gate_html
     waits: list[tuple[str, Html]]
     unblocks: list[tuple[str, Html]]
-    spans: dict[str, int | None]  # SPANS, in seconds
 
     @classmethod
     def of(cls, tr: Tracker, t: Record, order: int, step: int, links: list[str]) -> Row:
         waits = [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
-        return cls(t, order, step, links, gate_html(tr, t), waits,
-                   [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)], {name: span(t, name) for name in SPANS})
+        return cls(t, order, step, links, gate_html(tr, t), waits, [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)])
 
 
 class Cell(NamedTuple):
@@ -382,15 +380,6 @@ def status_cell(r: Row) -> Cell:
     return Cell(gate_chip if tag == "ready" else chip(r.t.stage))
 
 
-def time_cell(r: Row) -> Cell:
-    """`wait → cycle`, either side blank when the ticket has none."""
-    if all(x is None for x in r.spans.values()):
-        return Cell("")
-    shown = ["" if x is None else duration(x) for x in r.spans.values()]
-    title = "; ".join(f"{name} ({SPANS[name][2]}): {text or 'none'}" for name, text in zip(r.spans, shown))
-    return Cell(Html("{} <span class=meta>→</span> {}").format(*shown), {"title": title})
-
-
 def deps_cell(r: Row) -> Cell:
     """A line `← ` what the ticket waits on, a line `→ ` what it unblocks."""
     lists = [(arrow, label, items) for arrow, label, items in
@@ -429,8 +418,6 @@ COLUMNS = (
     Column((("priority", "Priority", "priority", lambda r: level(r.t, "priority")),), priority_cell, "max-content",
            "narrow"),
     Column((("size", "Size", "size", lambda r: level(r.t, "size")),), size_cell, "max-content", "narrow"),
-    Column((("wait", "Wait", "wait time", lambda r: r.spans["wait"]),
-            ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, "max-content", "mid"),
     Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),
             ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))),
            deps_cell, "fit-content(var(--meta-max))", "narrow"),
@@ -453,6 +440,7 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
     dot = ("dropped" if t.stage == "dropped" else "closed" if closed else "going" if t.stage in IN_FLIGHT
            else "stack" if tr.stackable(t) else r.gate[0] or t.stage)
     word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
+    lead = [x for x in (("time", time_html(t)), (word, md_inline(str(line)) if line else None)) if x[1]]
     summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
         {"class": hide_class(c, x.attrs.get("class")), **{k: v for k, v in x.attrs.items() if k != "class"}}), x.body)
         for c, x in zip(COLUMNS, cells))
@@ -460,7 +448,13 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
              for c in COLUMNS for key, _, _, value in c.sorts}
     attrs = {"class": f"t{' closed' * closed} s-{dot}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0],
              **sorts, "data-step": r.step, "data-links": " ".join(r.links) or None, "data-dot": dot}
-    return panel(t.id, summary, body_html(tr, t, (word, md_inline(str(line))) if line else None), attrs=attrs)
+    return panel(t.id, summary, body_html(tr, t, lead), attrs=attrs)
+
+
+def time_html(t: Record) -> Html | None:
+    """A ticket's wait and cycle time (SPANS), those it has."""
+    return Html(" · ").join(Html('<span title="{}">{} {}</span>').format(SPANS[name][2], name, duration(x))
+                            for name in SPANS if (x := span(t, name)) is not None) or None
 
 
 def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:

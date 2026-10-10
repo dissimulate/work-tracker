@@ -76,7 +76,7 @@ def run(*args: str, cwd: Path | None = None, code: int = 0) -> str:
 
 
 SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
-            ("priority", "Priority"), ("size", "Size"), ("wait", "Wait"), ("cycle", "→ Cycle"), ("waits", "← Waits on"),
+            ("priority", "Priority"), ("size", "Size"), ("waits", "← Waits on"),
             ("unblocks", "→ Unblocks")]  # the viewer's sequence heading buttons, as (sort key, label)
 
 
@@ -1545,16 +1545,15 @@ class Spans(unittest.TestCase):
         page = viewer.main_html(tr)
         self.assertEqual(seq_head(page), SEQ_HEAD)
 
-        def spans(ident: str) -> tuple[str, str]:
-            return re.search(rf'<details data-id="{ident}"[^>]* data-sort-wait="([^"]*)" data-sort-cycle="([^"]*)"',
-                             page).groups()
-        self.assertEqual((spans("S-1"), spans("S-2")), (("7200", "21600"), ("", "")))
-        self.assertRegex(page, r'data-id="S-1".*?<summary>.*?<span class="hide-mid" '
-                               r'title="wait \(issue created → started\): 2 h; cycle \(started → PR merged\): 6 h">'
-                               r'2 h <span class=meta>→</span> 6 h</span>')
-        run("--tracker", s, "set", "S-1", "summary=Shipped the API")  # the opened row still leads with its summary
+        # The opened ticket's first line gives its times, those it has, then its summary.
+        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>time</dt><dd>'
+                               r'<span title="issue created → started">wait 2 h</span> · '
+                               r'<span title="started → PR merged">cycle 6 h</span></dd>')
+        self.assertNotIn("<dt>time</dt>", re.search(r'<details data-id="S-2".*?</details>', page, re.S).group())
+        run("--tracker", s, "set", "S-1", "summary=Shipped the API")
         page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>summary</dt><dd>Shipped the API</dd>')
+        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>time</dt><dd>.*?</dd>'
+                               r'<dt>summary</dt><dd>Shipped the API</dd>')
         lines = views.span_lines(tr)
         self.assertEqual(len(lines), 2)
         self.assertIn("".join(f"<p class=lead>{html.escape(x)}</p>" for x in lines), page)
