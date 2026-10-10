@@ -25,7 +25,7 @@ from .model import (CLI, EVIDENCE_DIR, HOME, PACKAGE, PYTHON, README_SECTIONS, R
     Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
-from .views import duration, pr_label, span_lines, stage_counts, start_text
+from .views import dep_facts, duration, pr_label, span_lines, stage_counts
 from .github import sync
 from .watcher import archive_tracker, delete_tracker, in_use, unarchive_tracker, watcher_of, Refused
 
@@ -263,38 +263,28 @@ def dep_html(d: Dep) -> Html:
 
 
 def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
-    """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision or action
-    blocks."""
-    if r.kind != "ticket":
-        later = [t.id for t in tr.waiting_on(r.id)]
-        return "", chip("blocked", f"blocks {', '.join(later)}") if later and not r.closed else NONE
-    if r.closed:
+    """(filter tag, summary chip) of Tracker.gate: what a ticket waits on, or that it is ready; what an open decision
+    or action blocks. A ticket that can stack is in the blocked filter, in its own tone."""
+    g = tr.gate(r)
+    if not g.state:
         return "", NONE
-    blockers = tr.blockers(r)
-    if blockers:
-        tone, verb = ("stack", "stacks on") if tr.stackable(r) else ("blocked", "waits on")
-        return "blocked", chip(tone, f"{verb} {', '.join(d.ident for d in blockers)}")
-    return ("ready", chip("ready")) if r.todo else ("", NONE)
+    tag = "ready" if g.state == "ready" else "" if g.state == "blocks" else "blocked"
+    return tag, chip("blocked" if g.state == "blocks" else g.state, g.text())
 
 
 def body_html(tr: Tracker, r: Record, lead: list[tuple[str, Html]] | None = None) -> Html:
-    """What a ticket or decision shows when it opens: one grid of its lead lines (time, next or summary), dependencies,
-    facts and links, then the body."""
-    deps = [("waits on", comma(dep_html(d) for d in tr.deps(r)))] if r.kind == "ticket" and tr.deps(r) else []
-    start = tr.start_point(r) if r.kind == "ticket" else None
-    if start and start.stacked:
-        deps.append(("start", start_text(tr, start)))
-    if tr.waiting_on(r.id):
-        deps.append(("unblocks" if r.kind == "ticket" else "blocks", comma(ref(t.id) for t in tr.waiting_on(r.id))))
+    """What a record shows when it opens: one grid of its lead lines (time, next or summary), what it waits on and
+    what waits on it (dep_facts, as the text views give them), its facts and links, then the body."""
+    deps = [(label, v if isinstance(v, str) else comma(dep_html(d) for d in v)) for label, v in dep_facts(tr, r)]
     if r.kind == "ticket" and tr.decisions_for(r):
         deps.append(("decisions", comma(
             toned("closed", ref(d.id) + " ✓") if d.closed else toned("blocked", ref(d.id))
             for d in tr.decisions_for(r))))
     facts = []
-    for k in ("branch", "base", "repo", "group", "refs", "owner", "due", "created_at", "started_at", "merged_at",
-              "closed_at", "updated_at"):
+    for k in ("branch", "base", "repo", "group", "owner", "due", "created_at", "started_at", "merged_at", "closed_at",
+              "updated_at"):
         if r.get(k):
-            value = comma(ref(x) for x in r.list(k)) if k == "refs" else show_value(k, r.get(k))
+            value = show_value(k, r.get(k))
             facts.append((k.removesuffix("_at"),
                           Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
     move = whose_move(tr, r) if r.kind == "ticket" else None
@@ -432,7 +422,7 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
     closed = t.closed
     # Its state: dropped or closed; under way, stackable, ready or blocked; else its unknown status.
     dot = ("dropped" if t.dropped else "closed" if closed else "going" if t.in_flight
-           else "stack" if tr.stackable(t) else r.gate[0] or t.stage)
+           else tr.gate(t).state or t.stage)
     word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
     lead = [x for x in (("time", time_html(t)), (word, md_inline(str(line)) if line else None)) if x[1]]
     summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
@@ -607,11 +597,10 @@ def due_text(d: dt.date) -> str:
 
 
 def action_html(tr: Tracker, a: Record, buttons: bool) -> Html:
-    """An action as a decision shows: one line that opens to what it concerns and blocks, its dates and its notes. The
-    line: its id, what it blocks while open (gate_html), its title (whole on hover), and when open its due day, if it
-    has one (in the blocked colour once past, the active one on the day), with `buttons` Done and Drop; when closed,
-    its status and when it closed."""
-    notes = strip_comments(a.body).strip()
+    """An action as a decision shows: one line that opens to what it blocks and touches, its dates and its notes
+    (body_html). The line: its id, what it blocks while open (gate_html), its title (whole on hover), and when open its
+    due day, if it has one (in the blocked colour once past, the active one on the day), with `buttons` Done and Drop;
+    when closed, its status and when it closed."""
     status = str(a.get("status", "open"))
     due = due_date(a)
     if a.closed:
@@ -627,12 +616,7 @@ def action_html(tr: Tracker, a: Record, buttons: bool) -> Html:
     title = str(a.get("title"))
     head = Html('<span class=id>{}</span>{}{}<b title="{}">{}</b>{}{}').format(
         a.id, chip(status) if a.closed else NONE, gate_html(tr, a)[1], title, title, when, btns)
-    facts = [(k, v) for k, v in (("concerns", comma(ref(x) for x in a.list("refs"))),
-                                 ("blocks", comma(ref(t.id) for t in tr.waiting_on(a.id))), ("due", a.get("due")),
-                                 ("added", day_text(a.get("created_at"))), ("closed", day_text(a.get("closed_at"))))
-             if v]
-    return panel(a.id, head, Html("<div>{}{}</div>").format(props_html([facts]), md_to_html(notes) if notes else NONE),
-                 attrs={"class": "act"})
+    return panel(a.id, head, body_html(tr, a), attrs={"class": "act"})
 
 
 def actions_html(tr: Tracker) -> Html:

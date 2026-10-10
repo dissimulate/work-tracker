@@ -46,6 +46,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Viewer: the dependency graph's lines are always as faded as a closed ticket's row.
 - Each write logs what the history needs, so the agent runs no `tracker log` after one. A status change through `tracker set` or `tracker step --done` writes its own log line. `tracker add`, `put` and `drop` take `--why`, which logs why a section changes; a started ticket's Plan changes only with it.
 - Any write that leaves a ticket with nothing to wait on says so, `tracker wait <id> off` too. A write no longer ends with "log line written".
+- `tracker index`, `tracker context` and the viewer give what a record waits on, blocks and touches in the same words, each with its state: `waits on`, `stacks on`, `unblocks`, `blocks`, `touches`. An opened action lists its dates as a ticket does.
 
 ### Fixed
 

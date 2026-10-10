@@ -1156,6 +1156,17 @@ class Tracker:
         blockers = self.blockers(t)
         return bool(blockers) and all(d.rec and d.rec.in_flight for d in blockers)
 
+    def gate(self, r: Record) -> Gate:
+        """What stands before a record: a ticket's open blockers, or that it is ready; the tickets an open decision or
+        action blocks. The text views and the viewer show it the same."""
+        if r.kind != "ticket":
+            later = tuple(t.id for t in self.waiting_on(r.id))
+            return Gate("blocks", later) if later and not r.closed else Gate()
+        blockers = () if r.closed else tuple(d.ident for d in self.blockers(r))
+        if blockers:
+            return Gate("stack" if self.stackable(r) else "blocked", blockers)
+        return Gate("ready") if r.todo else Gate()
+
     def holds(self, t: Record, o: Record, seen: frozenset[str] = frozenset()) -> bool:
         """t's branch holds o's work: they share a branch, or t's open PR is based on o's branch, directly or through
         other tickets' branches."""
@@ -1346,6 +1357,21 @@ class Dep:
         if self.done:
             return f"{self.ident} {self.rec.stage} ✓"
         return f"{self.ident} {self.rec.stage}" + (f": {self.rec.get('title')}" if self.kind != "ticket" else "")
+
+
+@dataclass(frozen=True)
+class Gate:
+    """What stands before a record (Tracker.gate). `state`: `ready`, a todo ticket that nothing blocks; `stack`, a
+    ticket that waits only on work under way, so it can stack on it; `blocked`, a ticket with any other open blocker;
+    `blocks`, an open decision or action that tickets wait on; "" for none. `ids`: its blockers, or the tickets it
+    blocks."""
+    state: str = ""
+    ids: tuple[str, ...] = ()
+
+    def text(self) -> str:
+        """`waits on T-5, D-10`, `stacks on T-4`, `blocks T-2`, `ready`; "" for none."""
+        verb = {"stack": "stacks on", "blocked": "waits on", "blocks": "blocks"}.get(self.state)
+        return f"{verb} {', '.join(self.ids)}" if verb else self.state
 
 
 @dataclass

@@ -390,7 +390,7 @@ class Starts(unittest.TestCase):
                       "A-1 or A-4", run("--tracker", s, "seq"))
         index = run("--tracker", s, "index")
         self.assertIn("[stacks on A-1] ", index)
-        self.assertIn("[waits R-1] ", index)
+        self.assertIn("[waits on R-1] ", index)
         self.assertIn("start: stack on fa (A-1 in-progress; you: no PR yet)", run("--tracker", s, "context", "S-1"))
         self.assertIn("blocked by: A-1, D-01", run("--tracker", s, "context", "W-2"))
         self.assertIn("<dt>start</dt><dd>stack on fa (A-1 in-progress; you: no PR yet)</dd>",
@@ -2065,6 +2065,16 @@ class Actions(unittest.TestCase):
         ticket(self.root, "A-02")  # a ticket made before actions, whose id has an action's form
         self.assertIn("A-03 added", run(*self.t, "act", "Book the review room"))  # A-02 is taken
         self.assertEqual(cli.check(self.tr())[0], [])
+
+    def test_the_text_and_the_page_show_the_same_links(self):
+        run(*self.t, "new", "T-2", "--title", "Billing")
+        run(*self.t, "act", "Get read access to the prod DB", "--blocks", "T-1", "--refs", "T-2")
+        self.assertIn("blocks: T-1 todo; touches: T-2 todo",
+                      "; ".join(run(*self.t, "context", "A-01").splitlines()))
+        self.assertIn("[waits on A-01] ", run(*self.t, "index"))
+        page = viewer.main_html(self.tr())
+        self.assertRegex(page, r"<dt[^>]*>blocks</dt><dd>.*T-1.*</dd><dt[^>]*>touches</dt><dd>.*T-2")
+        self.assertIn('<span class="chip s-blocked">blocks T-1</span>', page)  # Tracker.gate, as the index's
 
     def test_the_brief_prints_the_readmes_instructions(self):
         work = repo("feat/T-1")

@@ -11,7 +11,7 @@ from statistics import median
 from .markdown import section, strip_comments
 from .model import (BIN, ISOLATION_RULE, KINDS, NO_STAGE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS, STAGES,
     STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence, short,
-    show_value, span, utc_seconds, whose_move, Record, Start, Tracker)
+    show_value, span, utc_seconds, whose_move, Dep, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -100,14 +100,9 @@ def stage_counts(tr: Tracker) -> dict[str, int]:
 
 
 def gate(tr: Tracker, t: Record) -> str:
-    """`[waits T-5, D-10] `, `[stacks on T-4] ` (it waits only on work under way) or `[ready] ` for an unfinished
-    ticket."""
-    if t.closed:
-        return ""
-    blockers = tr.blockers(t)
-    if blockers:
-        return f"[{'stacks on' if tr.stackable(t) else 'waits'} {', '.join(d.ident for d in blockers)}] "
-    return "[ready] " if t.todo else ""
+    """`[waits on T-5, D-10] `, `[stacks on T-4] ` (it waits only on work under way) or `[ready] ` (Tracker.gate)."""
+    g = tr.gate(t)
+    return f"[{g.text()}] " if g.state else ""
 
 
 def start_text(tr: Tracker, s: Start) -> str:
@@ -143,25 +138,32 @@ def order_lines(tr: Tracker) -> list[str]:
     return out
 
 
-def dep_lines(tr: Tracker, rec: Record) -> list[str]:
-    out = []
-    deps = tr.deps(rec) if rec.kind == "ticket" else []
-    if deps:
-        out.append("waits on: " + "; ".join(d.describe() for d in deps))
-    blockers = [d.ident for d in deps if not d.done]
+def dep_facts(tr: Tracker, rec: Record) -> list[tuple[str, list[Dep] | str]]:
+    """What a record waits on and what waits on it, as the text views (dep_lines) and the viewer both show it: a
+    ticket's dependencies and where it can start stacked, the tickets that wait on the record, and the records it
+    touches (refs). Each as (label, the records it names, or a text)."""
+    out: list[tuple[str, list[Dep] | str]] = []
+    if rec.kind == "ticket" and tr.deps(rec):
+        out.append(("waits on", tr.deps(rec)))
     start = tr.start_point(rec) if rec.kind == "ticket" else None
     if start and start.stacked:
-        out.append(f"start: {start_text(tr, start)}")
-    elif rec.kind == "ticket" and blockers and not rec.closed:
-        out.append("blocked by: " + ", ".join(blockers))
-    elif rec.todo:
-        out.append("blocked by: nothing — ready to start")
-    later = tr.waiting_on(rec.id)
-    if later:
-        verb = "unblocks" if rec.kind == "ticket" else "blocks"
-        out.append(f"{verb}: " + ", ".join(f"{t.id} {t.stage}" for t in later))
-    if rec.list("refs"):
-        out.append("touches: " + ", ".join(rec.list("refs")))
+        out.append(("start", start_text(tr, start)))
+    if later := tr.waiting_on(rec.id):
+        out.append(("unblocks" if rec.kind == "ticket" else "blocks", [Dep(t.id, t) for t in later]))
+    if refs := rec.list("refs"):
+        out.append(("touches", [Dep(r.id, r) if (r := tr.lookup(x)) else Dep(x) for x in refs]))
+    return out
+
+
+def dep_lines(tr: Tracker, rec: Record) -> list[str]:
+    """dep_facts as lines, each record with its state; after what a ticket waits on, what still blocks it."""
+    facts = dep_facts(tr, rec)
+    out = [f"{label}: {v if isinstance(v, str) else '; '.join(d.describe() for d in v)}" for label, v in facts]
+    g, stacked = tr.gate(rec), any(label == "start" for label, _ in facts)
+    line = ("blocked by: " + ", ".join(g.ids) if g.state in ("stack", "blocked") and not stacked
+            else "blocked by: nothing — ready to start" if g.state == "ready" else "")
+    if line:
+        out.insert(1 if facts and facts[0][0] == "waits on" else 0, line)
     return out
 
 
