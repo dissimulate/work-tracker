@@ -71,7 +71,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
-- **Actions.** A task that the agent cannot or should not do (talk to a person, get an access or a sign-off) is an action for you. The agent asks before it adds one (`tracker act "<text>" --refs <ids>`, `--due <date>` when you give a day), and closes it when you say it is done or no longer needed (`tracker act A-<n> --done` or `--drop`). The brief lists the open ones, soonest due first, so the agent adds none twice and asks about one past its due day, or with none, open longer than a week.
+- **Actions.** A task that the agent cannot or should not do (talk to a person, get an access or a sign-off) is an action for you. The agent asks before it adds one (`tracker act "<text>" --refs <ids>`, `--due <date>` when you give a day, `--blocks <ids>` when tickets cannot go on until it is done, as a decision can block them), and closes it when you say it is done or no longer needed (`tracker act A-<n> --done` or `--drop`). The brief lists the open ones, soonest due first, so the agent adds none twice and asks about one past its due day, or with none, open longer than a week.
 - The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other.
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.

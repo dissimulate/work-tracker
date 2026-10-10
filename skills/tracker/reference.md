@@ -16,7 +16,7 @@ The `tracker` skill points here. `tracker rules` is the full contract: every key
 
 **One source per fact.** Each fact has one home; every view is computed from it, so write it there once:
 
-- **Order and blockers**: the waiting ticket's `depends_on` (the README may keep *why* an order was chosen); an open PR based on another ticket's branch also waits on it (from the PR, not written). Ready, blocked, unblocks and the critical path are computed.
+- **Order and blockers**: the waiting ticket's `depends_on`: tickets, decisions, the user's actions and external blockers (the README may keep *why* an order was chosen); an open PR based on another ticket's branch also waits on it (from the PR, not written). Ready, blocked, unblocks and the critical path are computed.
 - **Where a ticket starts**: computed from the same. A todo ticket that waits only on tickets under way can start stacked on their branch; `tracker ready` and `context` name it. Do not write the base into the Plan, `next` or the log.
 - **A branch's tickets**: each ticket's `branch`. A branch holds any number; the session works on the ones under way (in progress or in review).
 - **PR state**: written by `sync`. Once a ticket is in progress, its PR shows it in review or merged. You set only the work status.

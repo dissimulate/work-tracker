@@ -2023,6 +2023,33 @@ class Actions(unittest.TestCase):
         self.assertIn("A-01 renamed: Reply to Sam on SC-1 → Reply to Sam on SC-1 (login copy)",
                       (self.root / "log.md").read_text())
 
+    def test_an_action_blocks_tickets_as_a_decision_does(self):
+        run(*self.t, "new", "T-2", "--title", "Billing")
+        self.assertIn("A-01 added, blocks T-1",
+                      run(*self.t, "act", "Get read access to the prod DB", "--blocks", "T-1", "--refs", "T-1,T-2"))
+        tr = self.tr()
+        t1, a = tr.lookup("T-1"), tr.action("A-01")
+        self.assertEqual((t1.list("depends_on"), a.list("refs")), (["A-01"], ["T-2"]))  # a block is not a ref
+        self.assertEqual([d.ident for d in tr.blockers(t1)], ["A-01"])
+        self.assertIn("waits on: A-01 open: Get read access to the prod DB", run(*self.t, "context", "T-1"))
+        self.assertIn("A-01: Get read access to the prod DB (T-2); blocks T-1", "\n".join(views.action_lines(tr)))
+        self.assertIn("blocks T-1", viewer.main_html(tr))
+        t1.save({"status": "in-progress"})
+        self.assertEqual(model.whose_move(self.tr(), self.tr().lookup("T-1")).text(), "you: A-01 open")
+
+        run(*self.t, "wait", "T-2", "on", "a-1")  # the wait takes the ticket out of refs
+        self.assertEqual((self.tr().lookup("T-2").list("depends_on"), self.tr().action("A-01").list("refs")),
+                         (["A-01"], []))
+        self.tr().action("A-01").save({"refs": ["T-2"]})
+        self.assertIn("A-01: refs T-2, which also waits on it — drop it from refs (`tracker act A-01 --unref T-2`)",
+                      "\n".join(cli.check(self.tr())[1]))
+        run(*self.t, "act", "A-01", "--unref", "T-2")
+        self.assertEqual(self.tr().action("A-01").list("refs"), [])
+        self.assertIn("no action A-09", run(*self.t, "wait", "T-1", "on", "A-09", code=2))
+        run(*self.t, "act", "A-01", "--done", "--blocks", "T-2", code=2)
+        self.assertIn("nothing blocks T-1, T-2 now", run(*self.t, "act", "A-01", "--done"))
+        self.assertEqual(self.tr().blockers(self.tr().lookup("T-1")), [])
+
     def test_the_brief_prints_the_readmes_instructions(self):
         work = repo("feat/T-1")
         run(*self.t, "set", "T-1", "branch=feat/T-1")

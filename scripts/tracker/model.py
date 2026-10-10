@@ -70,8 +70,8 @@ KEYS = {
         "branch": ("set", "the git branch the ticket is built on; finds the ticket and its PR. A branch holds any "
                           "number of tickets. `set status=in-progress` records the current branch when empty"),
         "repo": ("set", "owner/name of the ticket's repo, when the tracker spans several"),
-        "depends_on": ("wait", "what the ticket waits on: ticket, decision or external ids; the only record of "
-                               "order and blockers"),
+        "depends_on": ("wait", "what the ticket waits on: ticket, decision, action or external ids; the only "
+                               "record of order and blockers"),
         "next": ("set", "one concrete next action, true as of now; cleared when the ticket closes"),
         "summary": ("set", "one line: what the ticket delivered or why it was dropped; shown once it is closed"),
         "priority": ("set", "how urgent the ticket is; see Priority"),
@@ -103,7 +103,7 @@ KEYS = {
         "id": ("act", "A-<n>; also the file name"),
         "title": ("act", "what the user must do, and with whom"),
         "status": ("act", "open until `act --done` or `act --drop` closes it"),
-        "refs": ("act", "the tickets and decisions it concerns"),
+        "refs": ("act", "tickets and decisions it concerns but does not block; a block is the ticket's depends_on"),
         "due": ("act", DUE),
         "created_at": ("auto", "when it was added"),
         "updated_at": ("auto", UPDATED),
@@ -488,8 +488,9 @@ ACTION_BAR = (
     "gives a day it is due by, pass `--due YYYY-MM-DD`; never set one they did not give.")
 WAIT_RULE = (
     "Order and blockers live only in the waiting ticket's `depends_on`: when a ticket must wait on another ticket, "
-    "a decision or something outside the tracker, or stops waiting, run `tracker wait <id> on|off <ids>` "
-    "(`decide ... --blocks <ids>` for a decision). Do not write order or blockers as prose.")
+    "a decision, a user's action or something outside the tracker, or stops waiting, run `tracker wait <id> on|off "
+    "<ids>` (`decide` or `act ... --blocks <ids>` for a new decision or action). Do not write order or blockers as "
+    "prose.")
 START_RULE = (
     "A todo ticket can start when nothing blocks it, from the default branch. A ticket that waits only on tickets "
     "under way can start stacked on their work: from the branch that holds all of it (the branch they share, or the "
@@ -792,7 +793,8 @@ class Tracker:
 
     @cached_property
     def actions(self) -> list[Record]:
-        """The user's actions (ACTION_BAR): apart from `records`, so no id lookup finds one."""
+        """The user's actions (ACTION_BAR): apart from `records`, so only a ticket's wait (`dep_record`) finds one by
+        id."""
         return sorted((load_record(p, "action") for p in (self.root / "actions").glob("*.md")),
                       key=lambda r: sort_key(r.id))
 
@@ -880,9 +882,14 @@ class Tracker:
             return hits[0] if hits else None
         return next((t for t in self.tickets if t.get("branch") == ident), None)
 
+    def dep_record(self, ident: str) -> Record | None:
+        """The record an item of a ticket's depends_on names: a ticket or decision (`lookup`), else a user's action;
+        None for an external blocker."""
+        return self.lookup(ident) or self.action(ident)
+
     def canonical(self, ident: str) -> str:
-        """The id of the record `ident` names, else `ident` as written (an external blocker)."""
-        rec = self.lookup(ident)
+        """The id of the record a depends_on item names, else the item as written (an external blocker)."""
+        rec = self.dep_record(ident)
         return rec.id if rec else ident
 
     def find(self, ident: str) -> Record:
@@ -911,7 +918,7 @@ class Tracker:
         if id(t) not in cache:  # keyed by the record itself; it is kept alive with its deps
             out = []
             for ident in t.list("depends_on"):
-                rec = self.lookup(ident)
+                rec = self.dep_record(ident)
                 out.append(Dep(rec.id, rec) if rec else Dep(ident, link=blocker_link(t, ident)))
             have = {d.ident for d in out}
             cache[id(t)] = (t, out + [Dep(o.id, o) for o in self.stacked_on(t) if o.id not in have])
@@ -930,8 +937,8 @@ class Tracker:
         return [d for d in self.deps(t) if not d.done]
 
     def stackable(self, t: Record) -> bool:
-        """Blocked only by tickets already in flight: its work can stack on their branches. An open decision or an
-        external blocker still blocks it."""
+        """Blocked only by tickets already in flight: its work can stack on their branches. Any other open blocker (a
+        decision, an action, an external one) still blocks it."""
         blockers = self.blockers(t)
         return bool(blockers) and all(d.kind == "ticket" and d.rec.stage in IN_FLIGHT for d in blockers)
 
@@ -957,7 +964,7 @@ class Tracker:
         return [(t, s) for t in self.tickets if (s := self.start_point(t))]
 
     def waiting_on(self, ident: str) -> list[Record]:
-        """The tickets whose depends_on names this ticket or decision."""
+        """The tickets whose depends_on names this ticket, decision or action."""
         index = self.index()
         if "waiting" not in index:
             waiting: dict[str, list[Record]] = {}
@@ -1096,11 +1103,11 @@ def resolution(d: Record) -> str:
 
 # ---------------------------------------------------------------- dependencies
 # A ticket's `depends_on` is the one place an order or a blocker is written, always on the ticket that waits. Each
-# item is a ticket (satisfied once it is merged, done or dropped), a decision (satisfied once closed), or any other
-# id: an external blocker, satisfied only when it is removed, and named by a `- Blocker:` line in the ticket's ## Links
-# that says where it is and why it blocks. An open PR based on another ticket's branch also waits on that ticket: that
-# comes from the PR's `base`, not depends_on. Blockers, "unblocks", steps, the critical path and the ready list are all
-# computed.
+# item is a ticket (satisfied once it is merged, done or dropped), a decision or a user's action (satisfied once
+# closed), or any other id: an external blocker, satisfied only when it is removed, and named by a `- Blocker:` line
+# in the ticket's ## Links that says where it is and why it blocks. An open PR based on another ticket's branch also
+# waits on that ticket: that comes from the PR's `base`, not depends_on. Blockers, "unblocks", steps, the critical
+# path and the ready list are all computed.
 
 DECISION_ID = re.compile(r"D-\d+", re.I)
 ACTION_ID = re.compile(r"A-\d+", re.I)
@@ -1123,13 +1130,14 @@ class Dep:
         return bool(self.rec and self.rec.closed)
 
     def describe(self) -> str:
-        """`T-5 in-review`, `D-10 open: <title>`, `X external: <why>`, for the AI's plain-text context."""
+        """`T-5 in-review`, `D-10 open: <title>`, `A-2 open: <title>`, `X external: <why>`, for the AI's plain-text
+        context."""
         if not self.rec:
             return f"{self.ident} external" + (f": {plain_link(self.link.text)}" if self.link else "")
         status = self.rec.stage if self.rec.kind == "ticket" else self.rec.get("status", "")
         if self.done:
             return f"{self.ident} {status} ✓"
-        return f"{self.ident} {status}" + (f": {self.rec.get('title')}" if self.kind == "decision" else "")
+        return f"{self.ident} {status}" + (f": {self.rec.get('title')}" if self.kind != "ticket" else "")
 
 
 @dataclass
@@ -1147,6 +1155,12 @@ class Start:
 
 def names(link: Link, ident: str) -> bool:
     return bool(re.search(rf"(?<![\w-]){re.escape(ident)}(?![\w-])", link.text, re.I))
+
+
+def unknown_dep(tr: Tracker, ident: str) -> str:
+    """Why an item of a ticket's depends_on names no record of the tracker."""
+    kind = "decision" if DECISION_ID.fullmatch(ident) else "action" if ACTION_ID.fullmatch(ident) else ""
+    return f"no {kind} {ident}" if kind else f"{ident} is not a ticket, decision or action in {tr.slug}"
 
 
 def blocker_link(t: Record, ident: str) -> Link | None:
@@ -1211,20 +1225,21 @@ def pr_key(repo: str, pr) -> str:
 
 # ---------------------------------------------------------------- whose move
 # Whose turn a ticket under way waits on: this side (the user and the AI) or the people or thing named. Computed from
-# the review facts `sync` reads from the PR, and the ticket's open decisions and external blockers; nothing writes it.
+# the review facts `sync` reads from the PR, and the ticket's open decisions, actions and external blockers; nothing
+# writes it.
 
 YOU = "you"
 MOVE_RULE = (
     "A ticket under way has a move: whose turn it waits on, computed, never written. In order: merge conflicts, "
     "failing checks or requested changes not re-requested are yours; a requested review is the reviewer's; an open "
-    "decision it waits on is its owner's; an external blocker is that blocker's; then unresolved review threads, an "
-    "approval (CI's while its checks run), a draft or a PR with no review requested are yours. `next` holds your own "
-    "next action: do not write a wait on a reviewer into it.")
+    "decision it waits on is its owner's, an open action yours; an external blocker is that blocker's; then "
+    "unresolved review threads, an approval (CI's while its checks run), a draft or a PR with no review requested are "
+    "yours. `next` holds your own next action: do not write a wait on a reviewer into it.")
 
 
 @dataclass
 class Move:
-    who: str  # YOU, or the reviewers, the decision's owner or the blocker's id
+    who: str  # YOU (also for an open action), or the reviewers, the decision's owner or the blocker's id
     what: str = ""  # why it is their move, as a state: "review requested", "checks failing"
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
 
@@ -1265,6 +1280,8 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
         if d.kind == "decision":
             owner = str(d.rec.get("owner") or "")
             return Move(owner or d.ident, f"{d.ident} open" if owner else "open decision", 5)
+        if d.kind == "action":  # the user's to do: this side's
+            return Move(YOU, f"{d.ident} open", 5)
         if d.kind == "external":
             note = link_title(d.link).partition(" — ")[2] if d.link else ""
             return Move(d.ident, short(note, 60) if note else "", 6)

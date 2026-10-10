@@ -20,6 +20,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - A tracker's README can hold `## Instructions`: standing rules for the agent on this work, such as an action to add when a kind of ticket's PR opens. Every session's brief prints it.
 - Any ticket or decision can have a due day, like an action: `tracker new --due`, `tracker set <id> due=<YYYY-MM-DD>`. The agent sets one only when you or the issue tracker give it; `tracker issue --due` records the issue's.
 - Tickets, decisions and actions keep when they closed (`closed_at`), and a ticket when it was added (`created_at`).
+- An action can block tickets, as a decision can: `tracker act "<text>" --blocks <ids>`, `tracker act A-<n> --blocks <ids>` or `tracker wait <id> on A-<n>`. A ticket under way that waits on one shows it as your move, and closing the action names the tickets it no longer blocks. The brief and the viewer show what each open action blocks. `tracker act A-<n> --unref <ids>` drops ids from what it concerns.
 
 ### Changed
 

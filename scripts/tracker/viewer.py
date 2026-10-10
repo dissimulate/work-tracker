@@ -263,8 +263,9 @@ def dep_html(d: Dep) -> Html:
 
 
 def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
-    """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision blocks."""
-    if r.kind == "decision":
+    """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision or action
+    blocks."""
+    if r.kind != "ticket":
         later = [t.id for t in tr.waiting_on(r.id)]
         return "", chip("blocked", f"blocks {', '.join(later)}") if later and not r.closed else NONE
     if r.stage in CLOSED_TICKET:
@@ -605,10 +606,11 @@ def due_text(d: dt.date) -> str:
     return f"{d.day} {d:%b}" + (f" {d.year}" if d.year != dt.date.today().year else "")
 
 
-def action_html(a: Record, buttons: bool) -> Html:
-    """An action as a decision shows: one line that opens to what it concerns, its dates and its notes. The line: its
-    id, its title (whole on hover), and when open its due day, if it has one (in the blocked colour once past, the
-    active one on the day), with `buttons` Done and Drop; when closed, its status and when it closed."""
+def action_html(tr: Tracker, a: Record, buttons: bool) -> Html:
+    """An action as a decision shows: one line that opens to what it concerns and blocks, its dates and its notes. The
+    line: its id, what it blocks while open (gate_html), its title (whole on hover), and when open its due day, if it
+    has one (in the blocked colour once past, the active one on the day), with `buttons` Done and Drop; when closed,
+    its status and when it closed."""
     notes = strip_comments(a.body).strip()
     status = str(a.get("status", "open"))
     due = due_date(a)
@@ -623,9 +625,10 @@ def action_html(a: Record, buttons: bool) -> Html:
         Html('<button type=button data-close="{}" data-ref="{}">{}</button>').format(what, a.id, what.capitalize())
         for what in CLOSE_ACTION)) if buttons and not a.closed else NONE
     title = str(a.get("title"))
-    head = Html('<span class=id>{}</span>{}<b title="{}">{}</b>{}{}').format(
-        a.id, chip(status) if a.closed else NONE, title, title, when, btns)
-    facts = [(k, v) for k, v in (("concerns", comma(ref(x) for x in a.list("refs"))), ("due", a.get("due")),
+    head = Html('<span class=id>{}</span>{}{}<b title="{}">{}</b>{}{}').format(
+        a.id, chip(status) if a.closed else NONE, gate_html(tr, a)[1], title, title, when, btns)
+    facts = [(k, v) for k, v in (("concerns", comma(ref(x) for x in a.list("refs"))),
+                                 ("blocks", comma(ref(t.id) for t in tr.waiting_on(a.id))), ("due", a.get("due")),
                                  ("added", day_text(a.get("created_at"))), ("closed", day_text(a.get("closed_at"))))
              if v]
     return panel(a.id, head, Html("<div>{}{}</div>").format(props_html([facts]), md_to_html(notes) if notes else NONE),
@@ -635,7 +638,7 @@ def action_html(a: Record, buttons: bool) -> Html:
 def actions_html(tr: Tracker) -> Html:
     """The user's open actions, above Now so they are seen first; none open, no section."""
     acts = tr.open_actions()
-    return sec("actions", "Your actions", len(acts), NONE.join(action_html(a, not tr.archived) for a in acts),
+    return sec("actions", "Your actions", len(acts), NONE.join(action_html(tr, a, not tr.archived) for a in acts),
                True) if acts else NONE
 
 
@@ -670,7 +673,7 @@ def reference_html(tr: Tracker) -> Html:
         panel("_closed", named("Closed decisions", str(len(settled))), NONE.join(decision_html(tr, d) for d in settled))
         if settled else NONE,
         panel("_closed-actions", named("Closed actions", f"{len(closed)}, newest first"),
-              NONE.join(action_html(a, False) for a in closed)) if closed else NONE,
+              NONE.join(action_html(tr, a, False) for a in closed)) if closed else NONE,
         panel("_readme", named("More about this work", ", ".join(headings(extra))), md_to_html(extra))
         if headings(extra) else NONE,
         panel("_log", named("Log", f"{len(log_lines)} entries, newest first"), log,

@@ -17,7 +17,7 @@ from .model import (ACTION_ADDED, ACTION_ID, BLOCKER, CLOSED_TICKET, DECISION_ID
     append_notes, append_to_section, archived_at, archived_trackers, atomic_file, atomic_write, blocker_link,
     close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit, id_list, link_url, load_record,
     locked, names, norm_id, parse_day, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
-    set_branch, short, sort_key, spawn, today, unblocked, utc_now, value_form, Busy, Record, Tracker)
+    set_branch, short, sort_key, spawn, today, unblocked, unknown_dep, utc_now, value_form, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
@@ -288,8 +288,8 @@ def cmd_new(args):
         die("D-<n> ids are decisions; open one with `tracker decide \"<title>\"`")
     deps = []
     for x in id_list(args.depends):
-        rec = tr.lookup(x) or die(f"--depends {x}: no such ticket or decision; for an external blocker, "
-                                  f"`tracker wait {args.id} on {x} --link \"<url> — <why>\"` after creating the ticket")
+        rec = tr.dep_record(x) or die(f"--depends {x}: {unknown_dep(tr, x)}; for an external blocker, `tracker wait "
+                                      f"{args.id} on {x} --link \"<url> — <why>\"` after creating the ticket")
         deps.append(rec.id)
     if args.repo and args.repo not in tr.repos:
         die(f"--repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
@@ -351,15 +351,15 @@ def cmd_wait(args):
                 f"{t.id} does not wait on {', '.join(args.items)}")
         t.change({"depends_on": keep})
         for x in args.items:  # a Blocker line for something no longer waited on becomes a plain link
-            link = None if tr.lookup(x) else blocker_link(t, x)
+            link = None if tr.dep_record(x) else blocker_link(t, x)
             if link:
                 relabel(t, link, "Related")
         append_log(tr, f"{t.id} no longer waits on {', '.join(args.items)}", [t.id])
     else:
         items = []
-        external = [x for x in args.items if not tr.lookup(x) and not blocker_link(t, x)]
+        external = [x for x in args.items if not tr.dep_record(x) and not blocker_link(t, x)]
         for x in args.items:
-            rec = tr.lookup(x)
+            rec = tr.dep_record(x)
             if rec and rec.id == t.id:
                 die("a ticket cannot wait on itself")
             if not rec and not blocker_link(t, x):
@@ -367,10 +367,8 @@ def cmd_wait(args):
                 if named and not args.link:
                     relabel(t, named, BLOCKER)  # an existing link line already says where it is
                 elif not args.link or len(external) > 1:
-                    what = (f"no decision {x}" if DECISION_ID.fullmatch(x)
-                            else f"{x} is not a ticket or decision in {tr.slug}")
-                    die(f"{what}. For an external blocker, say where it is and why it blocks, one blocker per "
-                        f"command: `--link \"<url> — <why>\"` (adds a `- {BLOCKER}:` line to ## Links)")
+                    die(f"{unknown_dep(tr, x)}. For an external blocker, say where it is and why it blocks, one "
+                        f"blocker per command: `--link \"<url> — <why>\"` (adds a `- {BLOCKER}:` line to ## Links)")
                 else:
                     url, _, why = args.link.partition(" ")
                     text = (f"[{x}]({url})" + (f" — {why.strip().lstrip('—-').strip()}" if why.strip() else "")
@@ -380,8 +378,8 @@ def cmd_wait(args):
         added = add_waits(tr, t, items)
         if not added:
             die(f"{t.id} already waits on {', '.join(items)}")
-        for d in (tr.lookup(x) for x in added):
-            if d and d.kind == "decision" and t.id in d.list("refs"):  # depends_on now says so
+        for d in (tr.dep_record(x) for x in added):
+            if d and t.id in d.list("refs"):  # a decision's or action's: depends_on now says so
                 d.change({"refs": [r for r in d.list("refs") if r != t.id]})
         append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
     print("\n".join(dep_lines(tr, t)) or f"{t.id} waits on nothing")
@@ -634,8 +632,25 @@ def ticket_ids(tr: Tracker, raw: list[str] | None, flag: str) -> list[str]:
 
 
 def block_tickets(tr: Tracker, ident: str, blocks: list[str]) -> list[str]:
-    """Record that each ticket in `blocks` waits on this decision. Returns the tickets newly blocked."""
+    """Record that each ticket in `blocks` waits on this decision or action. Returns the tickets newly blocked."""
     return [t for t in blocks if add_waits(tr, tr.find(t), [ident])]
+
+
+def blocks_line(tr: Tracker, rec: Record, blocks: list[str]) -> str:
+    """`--blocks` on an existing decision or action: record and log the tickets newly blocked; the line, or ""."""
+    newly = block_tickets(tr, rec.id, blocks)
+    if not newly:
+        return ""
+    msg = f"{', '.join(newly)} now {'waits' if len(newly) == 1 else 'wait'} on {rec.id}"
+    append_log(tr, msg, [rec.id, *newly])
+    return msg
+
+
+def refs_after(tr: Tracker, rec: Record, refs: list[str], unrefs: set[str], blocks: list[str]) -> list[str]:
+    """A decision's or action's refs after `--refs`, `--unref` and `--blocks`: what it touches but does not block. A
+    ticket that waits on it leaves refs: depends_on says so."""
+    waiting = {t.id for t in tr.waiting_on(rec.id)} | set(blocks)
+    return sorted((set(rec.list("refs")) | set(refs)) - unrefs - waiting, key=sort_key)
 
 
 def cmd_decide(args):
@@ -651,8 +666,7 @@ def cmd_decide(args):
             die("nothing to change: pass --note, --resolve, --refs, --unref, --blocks, --owner or --question")
         upd = {}
         if refs or unrefs or blocks:
-            waiting = {t.id for t in tr.waiting_on(existing.id)} | set(blocks)
-            upd["refs"] = sorted((set(existing.list("refs")) | set(refs)) - unrefs - waiting, key=sort_key)
+            upd["refs"] = refs_after(tr, existing, refs, unrefs, blocks)
         if args.owner:
             upd["owner"] = args.owner
         existing.change(upd)
@@ -661,10 +675,7 @@ def cmd_decide(args):
         if args.note:
             append_to_section(existing, "Options", f"- {dated(args.note)}")
             append_log(tr, f"Updated {existing.id}: {short(args.note)}", [existing.id, *tr.touched_by(existing)])
-        newly = block_tickets(tr, existing.id, blocks)
-        if newly:
-            msg = f"{', '.join(newly)} now {'waits' if len(newly) == 1 else 'wait'} on {existing.id}"
-            append_log(tr, msg, [existing.id, *newly])
+        if msg := blocks_line(tr, existing, blocks):
             print(msg)
         if args.resolve:
             print(resolve_decision(tr, existing, args.resolve, args.by))
@@ -706,25 +717,31 @@ def cmd_decide(args):
 
 def cmd_act(args):
     tr = resolve(args)
-    refs = [tr.find(r).id for r in id_list(args.refs)]
+    blocks = ticket_ids(tr, args.blocks, "--blocks")
+    refs = [r for r in (tr.find(r).id for r in id_list(args.refs)) if r not in blocks]  # depends_on records a block
+    unrefs = {tr.find(r).id for r in id_list(args.unref)}
     if args.done and args.drop:
         die("--done or --drop, not both")
+    if blocks and (args.done or args.drop):
+        die("--blocks with --done or --drop: a closed action blocks nothing")
     notes = args.note or []
     for n in notes:
         fit("note", n)
     due = None if args.due is None else value_arg("due", args.due)
     existing = tr.action(args.target) if ACTION_ID.fullmatch(args.target) else None
     if existing:
-        if not (args.done or args.drop or args.note or refs or due is not None or args.title):
-            die("nothing to change: pass --done, --drop, --note, --refs, --due or --title")
+        if not (args.done or args.drop or args.note or refs or unrefs or blocks or due is not None or args.title):
+            die("nothing to change: pass --done, --drop, --note, --refs, --unref, --blocks, --due or --title")
         if args.title:
             fit("action", args.title)
             old = existing.get("title")
             existing.change({"title": " ".join(args.title.split())})
             append_log(tr, f"{existing.id} renamed: {old} → {existing.get('title')}",
                        [existing.id, *existing.list("refs")])
-        if refs:
-            existing.change({"refs": sorted(set(existing.list("refs")) | set(refs), key=sort_key)})
+        if refs or unrefs or blocks:
+            existing.change({"refs": refs_after(tr, existing, refs, unrefs, blocks)})
+        if msg := blocks_line(tr, existing, blocks):
+            print(msg)
         if due is not None:
             existing.change({"due": due})
             append_log(tr, f"{existing.id} due {due}" if due else f"{existing.id} has no due date now",
@@ -740,8 +757,8 @@ def cmd_act(args):
         return
     if ACTION_ID.fullmatch(args.target):
         die(f"no action {args.target}; to add one, pass what the user must do instead")
-    if args.done or args.drop or args.title:
-        die("--done, --drop and --title change an action: pass its A-id")
+    if args.done or args.drop or args.title or unrefs:
+        die("--done, --drop, --title and --unref change an action: pass its A-id")
     fit("action", args.target)
     clash = [a for a in tr.open_actions() if similar(str(a.get("title")), args.target) >= 0.5]
     if clash and not args.force:
@@ -759,8 +776,10 @@ def cmd_act(args):
     rec = load_record(path, "action")
     append_notes(rec, notes)
     tr.actions.append(rec)
-    append_log(tr, f"{ACTION_ADDED} {args.target}" + (f" (due {due})" if due else ""), [ident, *refs])
-    print(f"{ident} added: {path}")
+    newly = block_tickets(tr, ident, blocks)
+    append_log(tr, f"{ACTION_ADDED} {args.target}" + (f" (due {due})" if due else "")
+               + (f"; blocks {', '.join(newly)}" if newly else ""), [ident, *refs, *newly])
+    print(f"{ident} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {path}")
 
 
 def cmd_actions(args):
@@ -1268,7 +1287,10 @@ def build_parser():
     sp = add("act", cmd_act, "add a task for the user that the agent cannot or should not do (by its text), or note "
                              "on / close one (by A-id): act \"Ask Sam whether v1 stays\" --refs T-3 / act A-01 --done")
     sp.add_argument("target", nargs="?", help="what the user must do, and with whom; or an existing A-id")
-    sp.add_argument("--refs", **IDS, help="ticket or decision ids it concerns")
+    sp.add_argument("--refs", **IDS, help="ticket or decision ids it concerns but does not block")
+    sp.add_argument("--unref", **IDS, help="ids to drop from refs")
+    sp.add_argument("--blocks", **IDS, help="ticket ids that cannot proceed until it is done (adds it to their "
+                                            "depends_on)")
     sp.add_argument("--note", action="append", help="one fact: the context (what to ask or say, and why), or the "
                                                    "reply or outcome; a line in the action. Repeat it for each "
                                                    "fact")
@@ -1278,11 +1300,11 @@ def build_parser():
     sp.add_argument("--done", action="store_true", help="the user did it; closes the action")
     sp.add_argument("--drop", action="store_true", help="no longer needed; closes the action")
     sp.add_argument("--force", action="store_true", help="add even though a similar action is open")
-    sp = add("wait", cmd_wait, "record what a ticket waits on, or remove it: wait T-14 on T-7 D-10 / "
+    sp = add("wait", cmd_wait, "record what a ticket waits on, or remove it: wait T-14 on T-7 D-10 A-02 / "
                                "wait T-6 on X-1 --link \"<url> — why\" / wait T-14 off D-10")
     sp.add_argument("id", help="the ticket that waits")
     sp.add_argument("mode", choices=["on", "off"])
-    sp.add_argument("items", nargs="+", help="ticket ids, decision ids, or an external blocker's id")
+    sp.add_argument("items", nargs="+", help="ticket, decision or action ids, or an external blocker's id")
     sp.add_argument("--link", help=f"for a new external blocker: \"<url> — <why it blocks>\"; adds a "
                                    f"`- {BLOCKER}:` line to ## Links")
     sp = add("seq", cmd_seq, "the order: step, waits on and unblocks per ticket; ready list; critical path")

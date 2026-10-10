@@ -57,8 +57,8 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
 
 
 def action_lines(tr: Tracker, width: int = 0) -> list[str]:
-    """The user's open actions, the soonest due first, each with what it concerns and its due day. One past its due
-    day, or with none and open longer than STALE_ACTION_DAYS, says to ask the user."""
+    """The user's open actions, the soonest due first, each with what it concerns, the tickets it blocks and its due
+    day. One past its due day, or with none and open longer than STALE_ACTION_DAYS, says to ask the user."""
     acts = tr.open_actions()
     if not acts:
         return []
@@ -69,8 +69,9 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
         ask = ": ask the user whether it is done"
         stale = (f" (due {due}" + (f", overdue{ask}" if due < dt.date.today() else "") + ")" if due
                  else f" (open {age} days{ask})" if age > STALE_ACTION_DAYS else "")
-        refs = ", ".join(a.list("refs"))
-        out.append("  " + cut(f"{a.id}{stale}: {a.get('title')}" + (f" ({refs})" if refs else ""), width))
+        refs, blocks = ", ".join(a.list("refs")), ", ".join(t.id for t in tr.waiting_on(a.id))
+        out.append("  " + cut(f"{a.id}{stale}: {a.get('title')}" + (f" ({refs})" if refs else "")
+                              + (f"; blocks {blocks}" if blocks else ""), width))
     return out
 
 

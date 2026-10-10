@@ -6,14 +6,14 @@ import datetime as dt
 import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (ACTION_BAR, BLOCKER, CLOSED_TICKET, DAY_KEYS, DECISION_BAR, DECISION_ID, DECISION_SECTIONS,
+from .model import (ACTION_BAR, BLOCKER, CLOSED_TICKET, DAY_KEYS, DECISION_BAR, DECISION_SECTIONS,
     DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE,
     OPEN_DECISIONS_WARN, OWN_VALUE_RULE, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS,
     README_TOKEN_BUDGET, RENAMED_KEYS, RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES,
     STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, TICKET_SECTIONS,
     VALUE_FORMS, WAIT_RULE,
-    append_to_section, blocker_link, days_since, level, names, norm_id, relabel, resolution, sequence, valid_value,
-    value_form, Record, Tracker)
+    append_to_section, blocker_link, days_since, level, names, norm_id, relabel, resolution, sequence, unknown_dep,
+    valid_value, value_form, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -59,14 +59,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
     for d in tr.decisions:
-        waiting = {t.id for t in tr.waiting_on(d.id)}
-        for ref in d.list("refs"):
-            rec = tr.lookup(ref)
-            if not rec or rec.kind != "ticket":
-                errors.append(f"{d.id}: refs {ref}: no such ticket")
-            elif rec.id in waiting:
-                warnings.append(f"{d.id}: refs {ref}, which also waits on it — drop it from refs "
-                                f"(`tracker decide {d.id} --unref {ref}`); depends_on already says so")
+        check_refs(tr, d, {"ticket"}, errors, warnings)
         if not d.closed and idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
     check_actions(tr, errors, warnings)
@@ -102,7 +95,20 @@ def check_actions(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{a.id}: missing title")
         check_meta(tr, a.id, "action", a.meta, errors, warnings)
         errors += [f"{a.path.relative_to(tr.root)}: {x}" for x in a.problems]
-        errors += [f"{a.id}: refs {r}: no such ticket or decision" for r in a.list("refs") if not tr.lookup(r)]
+        check_refs(tr, a, {"ticket", "decision"}, errors, warnings)
+
+
+def check_refs(tr: Tracker, r: Record, kinds: set[str], errors: list[str], warnings: list[str]) -> None:
+    """A decision's or action's refs: each names a record of `kinds`, and none a ticket that waits on it, which its
+    depends_on says."""
+    waiting = {t.id for t in tr.waiting_on(r.id)}
+    for ref in r.list("refs"):
+        rec = tr.lookup(ref)
+        if not rec or rec.kind not in kinds:
+            errors.append(f"{r.id}: refs {ref}: no such {' or '.join(sorted(kinds, reverse=True))}")
+        elif rec.id in waiting:
+            warnings.append(f"{r.id}: refs {ref}, which also waits on it — drop it from refs "
+                            f"(`tracker {KEYS[r.kind]['refs'][0]} {r.id} --unref {ref}`); depends_on already says so")
 
 
 def check_meta(tr: Tracker, where: str, kind: str, meta: dict, errors: list[str], warnings: list[str]) -> None:
@@ -130,9 +136,8 @@ def check_deps(tr: Tracker, t: Record, errors: list[str], warnings: list[str]) -
         seen.add(d.ident.lower())
         if d.kind == "external":
             if not d.link:
-                what = "no such decision" if DECISION_ID.fullmatch(d.ident) else "not a ticket or decision here"
-                errors.append(f"{t.id}: depends_on {d.ident}: {what}, and no `- {BLOCKER}:` line in ## Links names "
-                              f"it — add one with the URL and why it blocks, or fix the id")
+                errors.append(f"{t.id}: depends_on {d.ident}: {unknown_dep(tr, d.ident)}, and no `- {BLOCKER}:` line "
+                              f"in ## Links names it — add one with the URL and why it blocks, or fix the id")
         elif d.ident == t.id:
             errors.append(f"{t.id}: depends_on itself")
         elif d.kind == "ticket" and d.rec.stage == "dropped":
