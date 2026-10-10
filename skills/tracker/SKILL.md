@@ -45,7 +45,7 @@ Record each fact at the moment it forms, in its home:
 | a task only the user should do: talk to or follow up with a person, get an access or a sign-off, a step on a system you cannot reach | ask the user whether to add it; on yes, `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day. When the user says it is done or no longer needed: `tracker act A-<n> --done` (or `--drop`), with `--note "<outcome>"` when it has one. A new text: `tracker act A-<n> --title "..."` |
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
-| a `[work-tracker]` line names issue fields due | with a tool for their issue tracker (such as an MCP server), run `tracker issue --due` and record what it asks for; with none, leave them: never guess a value |
+| a `[work-tracker]` line names issue fields to read | with a tool for their issue tracker (such as an MCP server), run `tracker issue` and record what it asks for; with none, leave them: never guess a value |
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker: put what one needs in its prompt (`tracker context <id> --brief`, or the part that matters), and record what it reports as your own work.

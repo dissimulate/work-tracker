@@ -809,11 +809,11 @@ class Upgrade(unittest.TestCase):
             run(*t, "issue", ident)
             model.Tracker(model.HOME / s).lookup(ident).save({"priority": word})
         self.assertIn("T-4: priority 'Someday' is not 0-4 — run `tracker migrate`", run(*t, "check", code=1))
-        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+        self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
         run(*t, "migrate")
         tr = model.Tracker(model.HOME / s)
         self.assertEqual([tr.lookup(x).meta.get("priority") for x in words], ["1", "0", "4", None])
-        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-4"])  # read again
+        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-4"])  # read again
         self.assertNotIn("priority", run(*t, "check"))
 
 
@@ -1150,8 +1150,8 @@ class BriefSize(unittest.TestCase):
         for i in (8, 9):  # the session's own ticket named first
             run(*t, "add", f"B-{i}", "link", f"Issue: [SC-{i} Story](https://issues.example/{i})")
         tr = model.Tracker(model.HOME / s)
-        self.assertIn("Issue fields due for 2 ticket(s): B-9, B-8.", views.issue_request(tr, [tr.lookup("B-9")]))
-        due = run(*t, "issue", "--due")
+        self.assertIn("Issue fields to read for 2 ticket(s): B-9, B-8.", views.issue_request(tr, [tr.lookup("B-9")]))
+        due = run(*t, "issue")
         self.assertIn("B-8  https://issues.example/8", due)
         self.assertIn(views.ISSUE_HOW, due)
 
@@ -1270,27 +1270,27 @@ class IssueFields(unittest.TestCase):
 
     def test_records_fields_and_says_which_are_due(self):
         s, t = self.tracker()
-        due = run(*t, "issue", "--due")
+        due = run(*t, "issue")
         self.assertIn("T-1  https://issues.example/story/1", due)  # never read
         self.assertIn("T-3  https://issues.example/story/3", due)  # closed, but never read: its creation time
         self.assertNotIn("T-2", due)  # no Issue link: nothing to read
         run(*t, "new", "T-9", "--title", "Closed before starts were recorded")
         run(*t, "add", "T-9", "link", "Issue: [SC-9 Story nine](https://issues.example/story/9)")
         run(*t, "set", "T-9", "status=done", "summary=shipped")
-        self.assertNotIn("T-9", run(*t, "issue", "--due"))  # no start: its issue's creation time gives no span
+        self.assertNotIn("T-9", run(*t, "issue"))  # no start: its issue's creation time gives no span
 
         out = run(*t, "issue", "T-1", "--priority", "1", "--created", "2026-10-01T09:30:00.123+10:00")
-        self.assertIn("T-1: priority=1, issue_created=2026-09-30T23:30:00Z", out)
+        self.assertIn("T-1: priority=1, issue_created_at=2026-09-30T23:30:00Z", out)
         t1 = model.Tracker(model.HOME / s).lookup("T-1")
-        self.assertEqual((t1.get("priority"), t1.get("issue_created")), ("1", "2026-09-30T23:30:00Z"))
+        self.assertEqual((t1.get("priority"), t1.get("issue_created_at")), ("1", "2026-09-30T23:30:00Z"))
         self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
-        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+        self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
 
         self.read_at(s, "T-1", time.time() - 30 * 86400)  # read once is enough: no read again by age
-        self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
+        self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
 
         viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh asks again for every open one
-        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-1"])
+        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])
 
         run(*t, "issue", "T-1", "--priority", "")
         self.assertNotIn("priority", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its priority
@@ -1310,7 +1310,7 @@ class IssueFields(unittest.TestCase):
         self.assertIn("is not 0-4", run(*t, "issue", "T-1", "--priority", "High", code=2))
         run(*t, "set", "T-2", "priority=")
         self.assertIsNone(model.level(model.Tracker(model.HOME / s).lookup("T-2"), "priority"))
-        self.assertIn("Priority: a number from 0 (most urgent) to 4", run(*t, "rules"))
+        self.assertIn("Priority: 0 (most urgent) to 4 (least)", run(*t, "rules"))
 
     def test_size_is_a_number_any_ticket_can_have(self):
         s, t = self.tracker()
@@ -1328,7 +1328,7 @@ class IssueFields(unittest.TestCase):
         model.Tracker(model.HOME / s).lookup("T-2").save({"size": "Large"})
         self.assertIn("T-2: size 'Large' is not 1-5", run(*t, "check", code=1))
         rules = run(*t, "rules")
-        self.assertIn("Size: a number from 1 (XS) to 5 (XL)", rules)
+        self.assertIn("Size: 1 (XS) to 5 (XL)", rules)
         self.assertIn("leave it empty when you do not know it or cannot estimate it reliably", rules)
 
     def test_the_brief_and_a_refresh_ask_for_due_fields(self):
@@ -1338,17 +1338,17 @@ class IssueFields(unittest.TestCase):
         env = {**os.environ, "TRACKER_SESSION": sid}
         subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, check=True)
         brief = said(hook("session-start", sid, work, source="startup"))
-        self.assertIn("Issue fields due for 2 ticket(s): T-1, T-3", brief)
+        self.assertIn("Issue fields to read for 2 ticket(s): T-1, T-3", brief)
         self.assertIn("never guess", brief)
 
         run(*t, "issue", "T-1", "--priority", "1")
         run(*t, "issue", "T-3")
-        self.assertNotIn("Issue fields due", said(hook("session-start", sid, work, source="startup")))
-        self.assertNotIn("Issue fields due", said(hook("prompt", sid, work, prompt="go")))
+        self.assertNotIn("Issue fields to read", said(hook("session-start", sid, work, source="startup")))
+        self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="go")))
 
         viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh, which cannot read issues itself
-        self.assertIn("Issue fields due for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
-        self.assertNotIn("Issue fields due", said(hook("prompt", sid, work, prompt="again")))  # once per request
+        self.assertIn("Issue fields to read for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
+        self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="again")))  # once per request
 
     def test_the_viewer_shows_priority_and_what_a_refresh_waits_on(self):
         s, t = self.tracker()
@@ -1917,7 +1917,7 @@ class Actions(unittest.TestCase):
         run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--refs", "T-1")
         run(*self.t, "act", "Get read access to the prod DB")
         run(*self.t, "act", "A-02", "--done")
-        self.tr().action("A-01").save({"opened": "2026-01-01"})
+        self.tr().action("A-01").save({"created_at": "2026-01-01T09:00:00Z"})
         index = run(*self.t, "index")
         self.assertIn("Open actions for the user", index)
         self.assertRegex(index, r"A-01 \(open \d+ days: ask the user whether it is done\): Ask Sam .* \(T-1\)")
@@ -1975,7 +1975,7 @@ class Actions(unittest.TestCase):
         run(*self.t, "act", "A-03", "--due", "none")
         self.assertEqual(self.tr().action("A-03").get("due"), "")
         self.tr().action("A-02").save({"due": "soon"})
-        self.assertIn("A-02: due 'soon' is not a date (YYYY-MM-DD)", cli.check(self.tr())[0])
+        self.assertIn("A-02: due 'soon' is not a day (YYYY-MM-DD)", cli.check(self.tr())[0])
 
     def test_an_action_gets_a_new_title(self):
         run(*self.t, "act", "Reply to Sam on SC-1", "--refs", "T-1")
@@ -2005,6 +2005,94 @@ class Actions(unittest.TestCase):
         events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.ACTION_ADDED} Ask Sam",
                                      "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])
         self.assertEqual([urgent for _, urgent, _ in events], [True, False])
+
+
+class Values(unittest.TestCase):
+    """Each value has one form whatever its source: a level on a scale, a UTC time in an `_at` key, a day in `due`. A
+    status is one of its kind's own words; closing a record stamps `closed_at`."""
+
+    def setUp(self):
+        self.s = slug()
+        self.t = ("--tracker", self.s)
+        run("init", self.s, "--title", "Work", "--owner", "me")
+        run(*self.t, "new", "T-1", "--title", "One")
+        self.root = model.HOME / self.s
+
+    def tr(self) -> model.Tracker:
+        return model.Tracker(self.root)
+
+    def test_a_scale_names_and_weighs_its_levels(self):
+        for key, scale in model.SCALES.items():
+            self.assertEqual(len(scale.names), len(scale.levels))
+            self.assertEqual(len(scale.weights), len(scale.levels))
+        run(*self.t, "set", "T-1", "priority=0", "size=4")
+        t = self.tr().lookup("T-1")
+        self.assertEqual([model.level_name(t, k) for k in ("priority", "size")], ["P0", "L"])
+        self.assertEqual([model.weight(t, k) for k in ("priority", "size")], [8, 5])  # amounts that add up
+        run(*self.t, "set", "T-1", "size=")
+        self.assertIsNone(model.weight(self.tr().lookup("T-1"), "size"))
+
+    def test_times_are_utc_and_closing_stamps_closed_at(self):
+        utc = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+        t = self.tr().lookup("T-1")
+        for key in ("created_at", "updated_at"):
+            self.assertRegex(t.get(key), utc)
+        self.assertRegex(self.tr().meta["created_at"], utc)
+        run(*self.t, "set", "T-1", "status=done", "summary=shipped")
+        self.assertRegex(self.tr().lookup("T-1").get("closed_at"), utc)
+        run(*self.t, "set", "T-1", "status=todo")  # open again: no close time
+        self.assertNotIn("closed_at", self.tr().lookup("T-1").meta)
+        run(*self.t, "decide", "Auth scheme", "--resolve", "OAuth", "--by", "me")
+        run(*self.t, "act", "Ask Sam about v1")
+        run(*self.t, "act", "A-01", "--done")
+        self.assertRegex(self.tr().lookup("D-01").get("closed_at"), utc)
+        self.assertTrue(self.tr().lookup("D-01").closed)
+        self.assertRegex(self.tr().action("A-01").get("closed_at"), utc)
+        self.tr().lookup("T-1").save({"started_at": "last week"})
+        self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(cli.check(self.tr())[0]))
+
+    def test_any_record_can_have_a_due_day(self):
+        run(*self.t, "new", "T-2", "--title", "Two", "--due", "2099-03-01")
+        run(*self.t, "set", "T-1", "due=2099-02-01")
+        run(*self.t, "decide", "Auth scheme")
+        run(*self.t, "set", "D-01", "due=2099-01-15")
+        self.assertIn("is not a day", run(*self.t, "set", "T-1", "due=soon", code=2))
+        self.assertIn("is not a day", run(*self.t, "new", "T-3", "--title", "Three", "--due", "2099-13-01", code=2))
+        tr = self.tr()
+        self.assertEqual([model.due_date(tr.lookup(x)).isoformat() for x in ("T-2", "T-1", "D-01")],
+                         ["2099-03-01", "2099-02-01", "2099-01-15"])
+        self.assertIn("due: 2099-02-01", run(*self.t, "context", "T-1"))
+        self.assertIn("due: 2099-01-15", run(*self.t, "context", "D-01"))
+        run(*self.t, "add", "T-1", "link", "Issue: [SC-1 Story](https://issues.example/1)")
+        run(*self.t, "issue", "T-1", "--due", "2099-04-01")
+        self.assertEqual(self.tr().lookup("T-1").get("due"), "2099-04-01")
+        run(*self.t, "issue", "T-1", "--due", "")  # the issue has none now
+        self.assertNotIn("due", self.tr().lookup("T-1").meta)
+        self.tr().lookup("T-2").save({"due": "soon"})
+        self.assertIn("T-2: due 'soon' is not a day (YYYY-MM-DD)", cli.check(self.tr())[0])
+
+    def test_migrate_names_keys_by_their_form(self):
+        run(*self.t, "decide", "Auth scheme", "--resolve", "OAuth")
+        run(*self.t, "act", "Ask Sam about v1")
+        run(*self.t, "act", "A-01", "--done")
+        tr = self.tr()
+        for r in (tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")):
+            old = {new: name for name, new in model.RENAMED_KEYS[r.kind].items()}
+            keys = {k: v for k, v in r.meta.items() if k in old or k == "closed_at"}
+            r.save({**{k: None for k in keys}, **{old[k]: "2026-09-01" for k in keys if k in old}})
+        tr.lookup("T-1").save({"issue_created": "2026-08-30T10:00:00Z"})
+        readme = tr.readme()
+        readme.save({"created_at": None, "created": "2026-08-01", "schema": 2})
+        warnings = "\n".join(cli.check(self.tr())[1])
+        self.assertIn("frontmatter key 'updated' is retired — run `tracker migrate`", warnings)
+        run(*self.t, "migrate")
+        tr = self.tr()
+        t, d, a = tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")
+        self.assertEqual((t.get("updated_at"), t.get("issue_created_at")), ("2026-09-01", "2026-08-30T10:00:00Z"))
+        self.assertEqual((d.get("created_at"), d.get("closed_at")), ("2026-09-01", model.today()))  # Resolution's day
+        self.assertEqual(a.get("closed_at"), "2026-09-01")  # an action's `updated` was when it closed
+        self.assertEqual((tr.meta.get("created_at"), tr.schema), ("2026-08-01", model.SCHEMA))
+        self.assertEqual(cli.check(tr), ([], ["README.md: ## Context lists nothing"]))
 
 
 if __name__ == "__main__":

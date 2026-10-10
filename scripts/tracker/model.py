@@ -35,18 +35,32 @@ CLI = [*PYTHON, "-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from tra
        str(PACKAGE.parent)]
 WINDOWS = os.name == "nt"
 
-TICKET_STATUSES = ["todo", "in-progress", "done", "dropped"]  # stored: what you set
+@dataclass(frozen=True)
+class Statuses:
+    """The words one kind of file's `status` holds, the first a new file's, and those that close it. Each kind keeps
+    its own words; whether a record is closed is `Record.closed`, never a comparison with a word."""
+    values: tuple[str, ...]
+    closed: frozenset[str]
+
+
+STATUSES = {
+    "ticket": Statuses(("todo", "in-progress", "done", "dropped"), frozenset({"done", "dropped"})),  # what you set
+    "decision": Statuses(("open", "closed"), frozenset({"closed"})),
+    "action": Statuses(("open", "done", "dropped"), frozenset({"done", "dropped"})),
+    "tracker": Statuses(("planning", "active", "paused", "done"), frozenset({"done"})),  # the work's
+}
 STAGES = ["todo", "in-progress", "in-review", "merged", "done", "dropped"]  # shown: the status, overlaid by the PR
 PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
 OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
-CLOSED_TICKET = {"merged", "done", "dropped"}  # stages
+CLOSED_TICKET = STATUSES["ticket"].closed | {"merged"}  # stages
 OPEN_STAGES = set(STAGES) - CLOSED_TICKET
-DECISION_STATUSES = ["open", "closed"]
-ACTION_STATUSES = ["open", "done", "dropped"]
 LIST_KEYS = {"depends_on", "refs", "labels"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
 
 # Every frontmatter key per file: what writes it ("set" = `tracker set`, or the command that owns it) and what it holds.
+# A key's name gives its value's form (value_form): `rules` adds the form to the meaning, `check` holds values to it.
+DUE = "the day it should be done by; optional: only a day the user or an issue tracker gave, never your own"
+UPDATED = "the last change through the CLI"
 KEYS = {
     "ticket": {
         "id": ("new", "the ticket's id; also its file name"),
@@ -60,17 +74,19 @@ KEYS = {
                                "order and blockers"),
         "next": ("set", "one concrete next action, true as of now; cleared when the ticket closes"),
         "summary": ("set", "one line: what the ticket delivered or why it was dropped; shown once it is closed"),
-        "updated": ("auto", "date of the last change through the CLI"),
-        "started_at": ("auto", "when `set status=in-progress` first started the ticket, UTC (YYYY-MM-DDTHH:MM:SSZ)"),
+        "priority": ("set", "how urgent the ticket is; see Priority"),
+        "size": ("set", "how much work the ticket is; see Size"),
+        "due": ("set", DUE),
+        "created_at": ("auto", "when `tracker new` added it"),
+        "updated_at": ("auto", UPDATED),
+        "started_at": ("auto", "when `set status=in-progress` first started it; none for one started before 0.29"),
+        "closed_at": ("auto", "when its status closed it (done or dropped); a merged PR's time is merged_at"),
         "pr": ("sync", "the PR number"),
         "pr_state": ("sync", "draft|open|merged|closed, from the PR"),
         "base": ("sync", "the PR's base branch; while the PR is open, a base that is other tickets' branch makes "
                          "this ticket wait on them (computed; depends_on does not change)"),
-        "merged_at": ("sync", "when the PR merged, UTC (YYYY-MM-DDTHH:MM:SSZ); a date alone before 0.29"),
-        "priority": ("set", "how urgent the ticket is, 0 (most) to 4 (least); see Priority"),
-        "size": ("set", "how much work the ticket is, 1 (XS) to 5 (XL); see Size"),
-        "issue_created": ("issue", "when the ticket's issue was created in its issue tracker, UTC "
-                                   "(YYYY-MM-DDTHH:MM:SSZ)"),
+        "merged_at": ("sync", "when the PR merged"),
+        "issue_created_at": ("issue", "when the ticket's issue was created in its issue tracker"),
     },
     "decision": {
         "id": ("decide", "D-<n>; also the file name"),
@@ -78,31 +94,42 @@ KEYS = {
         "status": ("decide", "open until `decide --resolve` closes it; the answer is ## Resolution"),
         "refs": ("decide", "tickets it touches but does not block; a block is the ticket's depends_on"),
         "owner": ("set", "who must decide"),
-        "opened": ("auto", "date it was opened"),
-        "updated": ("auto", "date of the last change through the CLI"),
+        "due": ("set", DUE),
+        "created_at": ("auto", "when it was opened"),
+        "updated_at": ("auto", UPDATED),
+        "closed_at": ("auto", "when `decide --resolve` closed it"),
     },
     "action": {
         "id": ("act", "A-<n>; also the file name"),
         "title": ("act", "what the user must do, and with whom"),
         "status": ("act", "open until `act --done` or `act --drop` closes it"),
         "refs": ("act", "the tickets and decisions it concerns"),
-        "due": ("act", "the day the user should do it by (YYYY-MM-DD); optional, only a date the user gave"),
-        "opened": ("auto", "date it was added"),
-        "updated": ("auto", "date of the last change through the CLI; once closed, when it closed"),
+        "due": ("act", DUE),
+        "created_at": ("auto", "when it was added"),
+        "updated_at": ("auto", UPDATED),
+        "closed_at": ("auto", "when `act --done` or `act --drop` closed it"),
     },
     "tracker": {
         "title": ("set", "name of the work"),
         "repo": ("set", "GitHub owner/name, or a list when the work spans repos; enables `sync`"),
         "status": ("set", "the work's status"),
         "owner": ("set", "who owns the work"),
-        "created": ("auto", "date the tracker was made"),
+        "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
         "schema": ("auto", "the tracker's format version; `tracker migrate` brings an older one up to date"),
     },
 }
-SCHEMA = 2  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
-# `migrate` removes them
-RETIRED_KEYS = {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}
+SCHEMA = 3  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+# Keys an older format named otherwise, old: new; `migrate` renames them
+RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
+                "decision": {"opened": "created_at", "updated": "updated_at"},
+                "action": {"opened": "created_at", "updated": "updated_at"},
+                "tracker": {"created": "created_at"}}
+# `migrate` removes them, or renames them
+RETIRED_KEYS = {kind: removed | set(RENAMED_KEYS[kind]) for kind, removed in
+                {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
+# `tracker issue`'s flags: the ticket key each records from the ticket's issue
+ISSUE_FIELDS = {"priority": "priority", "size": "size", "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
               "act": "use `tracker act`", "sync": "`tracker sync` writes it from the PR",
               "auto": "the tracker writes it", "issue": "`tracker issue` writes it from the ticket's issue tracker"}
@@ -122,46 +149,153 @@ STATE_RULES = {
     "reviews": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state; each sync "
                "replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
-              "viewer's Refresh asked for them again. A ticket with an Issue link is due when open and never read or "
-              "read before the request; when closed, only when never read and it has a "
+              "viewer's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
+              "or read before the request; when closed, only when never read and it has a "
               "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
-              "due ones for the model, which reads them with the issue tracker's tool",
+              "ones to read for the model, which reads them with the issue tracker's tool",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
                f"branch's tickets are closed, and a mark, or a handoff on a branch no ticket is on, {STATE_KEEP_DAYS} "
                f"days after it was set. `use` keeps only unfinished tickets",
 }
 
 
-PRIORITIES = range(5)  # a ticket's priority: 0 most urgent, 4 least; the same whatever the issue tracker
-SIZES = range(1, 6)  # a ticket's size: 1 XS to 5 XL; the same whatever the issue tracker
-SIZE_NAMES = dict(zip(SIZES, ("XS", "S", "M", "L", "XL")))
-SCALES = {"priority": PRIORITIES, "size": SIZES}  # the ticket keys that hold a number on a scale
+# ---------------------------------------------------------------- scales
+# A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
+# it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
+# amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
+
+@dataclass(frozen=True)
+class Scale:
+    levels: range
+    names: tuple[str, ...]  # each level's name in the views, in order
+    weights: tuple[int, ...]  # each level's amount, in order: what a sum adds
+    ends: str  # what its ends mean
+    rule: str  # how a level is chosen; `tracker rules` prints it
+
+    @property
+    def span(self) -> str:
+        return f"{self.levels[0]}-{self.levels[-1]}"
+
+    def parse(self, value) -> int | None:
+        """A stored value as a level; None for none, or a value `check` refuses."""
+        text = "" if value is None else str(value).strip()
+        return int(text) if text.isdigit() and int(text) in self.levels else None
+
+    def name(self, n: int) -> str:
+        return self.names[self.levels.index(n)]
+
+    def weight(self, n: int) -> int:
+        return self.weights[self.levels.index(n)]
+
+
+SCALES = {
+    "priority": Scale(range(5), ("P0", "P1", "P2", "P3", "P4"), (8, 5, 3, 2, 1), "0 is the most urgent, 4 the least",
+                      "0 (most urgent) to 4 (least): Urgent, Highest or Blocker 0, High 1, Medium or Normal 2, Low 3, "
+                      "Lowest or Trivial 4, and P0-P4 their digit. Yours: from how urgent the work is"),
+    "size": Scale(range(1, 6), ("XS", "S", "M", "L", "XL"), (1, 2, 3, 5, 8), "1 is XS, 5 XL",
+                  "1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a "
+                  "week, XL more. A T-shirt size is its letter; points take their place on the issue tracker's "
+                  "sequence (Fibonacci 1, 2, 3, 5, 8+; powers of two 1, 2, 4, 8, 16+); a time estimate goes by its "
+                  "amount. Yours: from how much work its Plan is"),
+}
+SCALE_RULE = (
+    "a ticket with an Issue link takes its issue's value, mapped by what it means on that issue tracker's own scale, "
+    "never by a raw number its API gives. A value that means none (No priority, unestimated) leaves the key empty; "
+    "one past an end takes that end. Record it with `tracker issue <id> --priority <n> --size <n>`. A ticket with "
+    "no issue value (no Issue link, or an issue tracker without the field) gets yours: `tracker new --priority <n> "
+    "--size <n>` or `tracker set <id> priority=<n> size=<n>`")
 OWN_VALUE_RULE = (
     "a value you set by your own judgement (priority, size) is your best estimate; leave it empty when you do not "
     "know it or cannot estimate it reliably. A value from an issue tracker or the user is never a guess")
-PRIORITY_RULE = (
-    "a number from 0 (most urgent) to 4 (least), the same for every issue tracker. A ticket with an Issue link takes "
-    "its issue's priority: put the issue tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, "
-    "Low 3, Lowest 4; P0-P4 as their digit) and record it with `tracker issue <id> --priority <n>`. A ticket without "
-    "one gets yours, from how urgent its work is: `tracker new --priority <n>` or `tracker set <id> priority=<n>`")
-SIZE_RULE = (
-    "a number from 1 (XS) to 5 (XL), the same for every issue tracker. A ticket whose issue has an estimate takes it: "
-    "put the issue tracker's scale in order onto 1-5 (Fibonacci points 1 or less, 2, 3, 5, 8 or more; powers of two "
-    "1, 2, 4, 8, 16 or more; T-shirt XS, S, M, L, XL) and record it with `tracker issue <id> --size <n>`. Any other "
-    "ticket gets yours, from how much work its Plan is: `tracker new --size <n>` or `tracker set <id> size=<n>`")
+
+
+def level(t: Record, key: str) -> int | None:
+    """A ticket's level on SCALES[key]; None when it has none, or a value `check` refuses."""
+    return SCALES[key].parse(t.get(key))
+
+
+def level_name(t: Record, key: str) -> str:
+    """A ticket's level by its name (P1, XS); a value `check` refuses as it is; "" for none."""
+    n = level(t, key)
+    return SCALES[key].name(n) if n is not None else str(t.get(key, ""))
+
+
+def weight(t: Record, key: str) -> int | None:
+    """A ticket's level as its scale's amount, which adds up; None when it has no level."""
+    n = level(t, key)
+    return SCALES[key].weight(n) if n is not None else None
+
+
+# ---------------------------------------------------------------- times and days
+# A time the tracker writes is UTC to the second, in a key whose name ends `_at`; a day that a person or an issue
+# tracker gives is a date, in a DAY_KEYS key. A `_at` key may hold a date alone, written before the tracker kept the
+# time: it gives no span. The views show a time as its local day (day_text).
+
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+DAY_KEYS = {"due"}
+VALUE_FORMS = {"time": "a time, UTC to the second (YYYY-MM-DDTHH:MM:SSZ), or a date alone when written before the "
+                       "time was kept",
+               "day": "a day (YYYY-MM-DD)"}
+
+
+def value_form(key: str) -> str:
+    """The form of a key's value: "time", "day", "level" (a SCALES key), or "" for text."""
+    return "time" if key.endswith("_at") else "day" if key in DAY_KEYS else "level" if key in SCALES else ""
+
+
+def utc_now() -> str:
+    return time.strftime(TIME_FORMAT, time.gmtime())
+
+
+def utc_seconds(text) -> int | None:
+    """A time as epoch seconds; None for anything else, a date alone included."""
+    try:
+        return calendar.timegm(time.strptime(str(text), TIME_FORMAT))
+    except ValueError:
+        return None
+
+
+def parse_day(text) -> dt.date | None:
+    """A `YYYY-MM-DD` day; None for anything else."""
+    text = str(text or "").strip()
+    try:
+        return dt.date.fromisoformat(text) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
+    except ValueError:
+        return None
+
+
+def day_of(text) -> dt.date | None:
+    """A time's local day, or a date alone as it is; None for anything else."""
+    seconds = utc_seconds(text)
+    return dt.date.fromtimestamp(seconds) if seconds is not None else parse_day(text)
+
+
+def day_text(text) -> str:
+    """A time as its local day (YYYY-MM-DD); any other value as it is."""
+    day = day_of(text)
+    return day.isoformat() if day else str(text or "")
+
+
+def days_since(text) -> int:
+    """Whole days from a time's or a date's day to today; 0 for anything else."""
+    day = day_of(text)
+    return (dt.date.today() - day).days if day else 0
+
+
+def valid_value(key: str, value) -> bool:
+    """A value fits its key's form (value_form); an empty one always does."""
+    form = value_form(key)
+    if value in ("", None) or not form:
+        return True
+    if form == "time":
+        return utc_seconds(value) is not None or parse_day(value) is not None
+    return (parse_day(value) if form == "day" else SCALES[key].parse(value)) is not None
+
 
 # A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to
 # the second) and in order. A dropped ticket has none.
-SPANS = {"wait": ("issue_created", "started_at", "issue created → started"),
+SPANS = {"wait": ("issue_created_at", "started_at", "issue created → started"),
          "cycle": ("started_at", "merged_at", "started → PR merged")}
-
-
-def utc_seconds(text: str) -> int | None:
-    """A `YYYY-MM-DDTHH:MM:SSZ` time as epoch seconds; None for anything else, a date alone included."""
-    try:
-        return calendar.timegm(time.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ"))
-    except ValueError:
-        return None
 
 
 def span(t: Record, name: str) -> int | None:
@@ -170,12 +304,6 @@ def span(t: Record, name: str) -> int | None:
         return None
     start, end = (utc_seconds(t.get(k)) for k in SPANS[name][:2])
     return int(end - start) if start is not None and end is not None and end >= start else None
-
-
-def level(t: Record, key: str) -> int | None:
-    """A ticket's value on SCALES[key]; None when it has none, or a value `check` refuses."""
-    text = str(t.get(key, "")).strip()
-    return int(text) if text.isdigit() and int(text) in SCALES[key] else None
 
 
 def state_key(repo: str, branch: str) -> str:
@@ -224,10 +352,6 @@ def dated(text: str) -> str:
 
 def today() -> str:
     return dt.date.today().isoformat()
-
-
-def utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def die(msg: str, code: int = 2) -> None:
@@ -342,9 +466,8 @@ def fit(kind: str, text: str | None) -> None:
 README_SECTIONS = ["Context", "Goal", "Scope"]  # required, first, in this order; any sections may follow
 # An optional README section: this work's standing instructions for the agent, which every brief prints in full.
 README_INSTRUCTIONS = "Instructions"
-README_KEYS = ["title", "repo", "status", "owner", "created"]  # required frontmatter; repo may be empty
+README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required frontmatter; repo may be empty
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
-TRACKER_STATUSES = ["planning", "active", "paused", "done"]
 OPEN_DECISIONS_WARN = 12  # more open than this and the list is carrying ticket-level questions
 
 DECISION_BAR = (
@@ -481,6 +604,29 @@ class Record:
         has not started, so the PR says nothing about it."""
         status = self.get("status", "todo")
         return PR_STAGE.get(self.get("pr_state"), status) if status == "in-progress" else status
+
+    @property
+    def closed(self) -> bool:
+        """A ticket by its stage (a merged PR closes it too); any other record by its kind's closed statuses."""
+        if self.kind == "ticket":
+            return self.stage in CLOSED_TICKET
+        statuses = STATUSES[self.kind]
+        return self.get("status", statuses.values[0]) in statuses.closed
+
+    def status_update(self, status: str) -> dict:
+        """The keys a status change writes: the status, and `closed_at` now when it closes the record, or none when
+        it opens it again."""
+        statuses, updates = STATUSES[self.kind], {"status": status}
+        if "closed_at" in KEYS[self.kind]:
+            if status not in statuses.closed and self.get("closed_at"):
+                updates["closed_at"] = None
+            elif self.get("status") not in statuses.closed:
+                updates["closed_at"] = utc_now()
+        return updates
+
+    def change(self, updates: dict | None = None) -> None:
+        """Save a change made through the CLI: the updates, and `updated_at` now (the README has none)."""
+        self.save({**(updates or {}), **({"updated_at": utc_now()} if "updated_at" in KEYS[self.kind] else {})})
 
     def save(self, updates: dict) -> None:
         text = self.path.read_text()
@@ -652,7 +798,7 @@ class Tracker:
 
     def open_actions(self) -> list[Record]:
         """The open ones, the soonest due first, then those with no due date."""
-        return sorted((a for a in self.actions if a.get("status", "open") == "open"),
+        return sorted((a for a in self.actions if not a.closed),
                       key=lambda a: (due_date(a) or dt.date.max, sort_key(a.id)))
 
     def action(self, ident: str) -> Record | None:
@@ -748,7 +894,7 @@ class Tracker:
         return [t for t in self.tickets if branch and t.get("branch") == branch]
 
     def open_decisions(self) -> list[Record]:
-        return [d for d in self.decisions if d.get("status", "open") == "open"]
+        return [d for d in self.decisions if not d.closed]
 
     def decisions_for(self, t: Record) -> list[Record]:
         """The decisions that touch a ticket: those whose refs name it, and those it waits on."""
@@ -868,7 +1014,7 @@ class Tracker:
         out["pr_match"] = {k: v for k, v in state.get("pr_match", {}).items() if now - v.get("at", 0) < PR_MATCH_TTL_S}
         return {k: v for k, v in out.items() if v != {}}
 
-    def issue_due(self) -> list[Record]:
+    def issues_to_read(self) -> list[Record]:
         """The tickets whose issue fields the model should read from their issue tracker (STATE_RULES["issues"])."""
         issues = self.raw_state().get("issues", {})
         read, asked = issues.get("read", {}), issues.get("requested", 0)
@@ -974,11 +1120,7 @@ class Dep:
 
     @property
     def done(self) -> bool:
-        if not self.rec:
-            return False
-        if self.rec.kind == "ticket":
-            return self.rec.stage in CLOSED_TICKET
-        return self.rec.get("status") == "closed"
+        return bool(self.rec and self.rec.closed)
 
     def describe(self) -> str:
         """`T-5 in-review`, `D-10 open: <title>`, `X external: <why>`, for the AI's plain-text context."""
@@ -1155,12 +1297,9 @@ def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     return line
 
 
-def due_date(a: Record) -> dt.date | None:
-    """An action's due day; None when it has none, or one `check` refuses."""
-    try:
-        return dt.date.fromisoformat(str(a.get("due") or ""))
-    except ValueError:
-        return None
+def due_date(r: Record) -> dt.date | None:
+    """A record's due day; None when it has none, or one `check` refuses."""
+    return parse_day(r.get("due"))
 
 
 ACTION_ADDED = "Action for the user:"  # how the log line of a new action starts: `tracker watch` marks it
@@ -1169,9 +1308,9 @@ ACTION_ADDED = "Action for the user:"  # how the log line of a new action starts
 def close_action(tr: Tracker, a: Record, status: str, notes: list[str] | None = None) -> str:
     """Close a user's action as done or dropped, with its outcome notes when it has some; log it. Returns what it
     did."""
-    if a.get("status", "open") != "open":
+    if a.closed:
         die(f"{a.id} is {a.get('status')} already")
-    a.save({"status": status, "updated": today()})
+    a.change(a.status_update(status))
     append_notes(a, notes or [])
     append_log(tr, f"{a.id} {status}: {a.get('title')}" + (f" → {short('; '.join(notes))}" if notes else ""),
                [a.id, *a.list("refs")])
@@ -1190,7 +1329,7 @@ def append_notes(a: Record, notes: list[str]) -> None:
 def set_branch(tr: Tracker, t: Record, branch: str, note: str = "") -> None:
     """Record the branch a ticket is built on, where sync finds its PR and every worktree finds the ticket; log it,
     with `note` (how the branch was found)."""
-    t.save({"branch": branch, "updated": today()})
+    t.change({"branch": branch})
     append_log(tr, f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id])
 
 

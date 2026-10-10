@@ -9,12 +9,12 @@ from pathlib import Path
 from statistics import median
 
 from .markdown import section, strip_comments
-from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, README_INSTRUCTIONS, SPANS, STAGES,
-    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, due_date, link_lines, resolution, sequence, short, span,
-    utc_seconds, whose_move, Record, Start, Tracker)
+from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS,
+    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence,
+    short, span, utc_seconds, whose_move, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
-from .contract import check, days_since
+from .contract import check
 
 # ---------------------------------------------------------------- views
 
@@ -65,7 +65,7 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
     out = ["Open actions for the user (not yours to do; when the user says one is done or no longer needed: "
            "`act A-<n> --done` or `--drop`):"]
     for a in acts:
-        age, due = days_since(a.get("opened")), due_date(a)
+        age, due = days_since(a.get("created_at")), due_date(a)
         ask = ": ask the user whether it is done"
         stale = (f" (due {due}" + (f", overdue{ask}" if due < dt.date.today() else "") + ")" if due
                  else f" (open {age} days{ask})" if age > STALE_ACTION_DAYS else "")
@@ -206,12 +206,13 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
 
 
 def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, branch, repo, next action or summary, move, handoff, dependencies and links."""
+    """A ticket's own facts: its line, branch, repo, due day, next action or summary, move, handoff, dependencies and
+    links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
     closed = rec.stage in CLOSED_TICKET
-    for k in ("branch", "repo", "summary" if closed else "next"):
+    for k in ("branch", "repo", "due", "summary" if closed else "next"):
         if rec.get(k):
             out.append(f"{k}: {rec.get(k)}")
     move = whose_move(tr, rec)
@@ -269,11 +270,11 @@ def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[s
     who = " and ".join(ids) if len(ids) < 3 else "these tickets"
     decisions = list({d.id: d for t in tickets for d in tr.decisions_for(t)}.values())
     out = []
-    open_d = [d for d in decisions if d.get("status", "open") == "open"]
+    open_d = [d for d in decisions if not d.closed]
     if open_d:
         out += ["", f"Open decisions touching {who}:"]
         out += [f"  {d.id}: {d.get('title')}" + ("" if width else f"  ({d.path})") for d in open_d]
-    settled = [d for d in decisions if d.get("status") == "closed"]
+    settled = [d for d in decisions if d.closed]
     if settled:
         out += ["", f"Settled decisions touching {who} (they hold; `context D-<n>` for the detail):"]
         out += ["  " + cut(f"{d.id}: {d.get('title')} → {resolution(d)}", width) for d in settled]
@@ -283,8 +284,10 @@ def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[s
 def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log: int = CONTEXT_LOG) -> list[str]:
     if rec.kind == "decision":
         out = [f"{rec.id} · {rec.get('status', 'open')} · {rec.get('title')}", *dep_lines(tr, rec)]
-        if rec.get("status") == "closed":
+        if rec.closed:
             out.append(f"resolution: {resolution(rec)}")
+        elif rec.get("due"):
+            out.append(f"due: {rec.get('due')}")
     else:
         out = ticket_lines(tr, rec) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
     shown = {d.id for d in tr.decisions_for(rec)} if rec.kind == "ticket" else {rec.id}
@@ -375,25 +378,25 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
     return lines
 
 
-ISSUE_DUE_SHOWN = 5  # due tickets named in the request for their issue fields; the rest as a count
-ISSUE_HOW = ("Read each issue's priority, estimate and creation time with its issue tracker's tool and record them: "
-             "`tracker issue <id> --priority <0-4: its level's place on its tracker's scale, 0 most urgent> --size "
-             "<1-5: its estimate's place on its tracker's scale, 1 XS> --created <ISO 8601 time>`; leave out a flag "
-             "whose field the issue lacks. Never guess a value.")
+ISSUE_SHOWN = 5  # tickets named in the request for their issue fields; the rest as a count
+ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time with its issue tracker's tool and record "
+             "them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
+             + " --due <YYYY-MM-DD> --created <ISO 8601 time>`. Map each by what it means on its issue tracker's own "
+             "scale, not by a raw number its API gives (`tracker rules` gives the mapping). Leave out a flag whose "
+             "field the issue tracker lacks; pass it empty when the issue's value means none. Never guess a value.")
 
 
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
-    """The request for the issue fields that are due (STATE_RULES["issues"]), or "": one line, the `first` tickets
-    (the session's own) named first. `tracker issue --due` gives the links and how to record them (ISSUE_HOW). The
-    model reads them with the issue tracker's tool; the tracker cannot."""
-    due = sorted(tr.issue_due(), key=lambda t: t not in first)
+    """The request for the issue fields to read (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
+    session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The model reads
+    them with the issue tracker's tool; the tracker cannot."""
+    due = sorted(tr.issues_to_read(), key=lambda t: t not in first)
     if not due:
         return ""
-    ids = ", ".join(t.id for t in due[:ISSUE_DUE_SHOWN]) + (f" +{len(due) - ISSUE_DUE_SHOWN}"
-                                                             if len(due) > ISSUE_DUE_SHOWN else "")
-    return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
-            "(such as an MCP server), run `tracker issue --due` for their links and how to record them; with none, "
-            "leave them: never guess a value.")
+    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
+            "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
+            "them: never guess a value.")
 
 
 def instructions(tr: Tracker) -> str:

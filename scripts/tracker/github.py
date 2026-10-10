@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .markdown import format_value
 from .model import (OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, append_log, branch_entry, locked, pr_key,
-    put_entry, set_branch, today, unblocked, Record, Tracker)
+    put_entry, set_branch, unblocked, Record, Tracker)
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
@@ -202,9 +202,8 @@ def apply_sync(tr: Tracker, found: dict[str, tuple[str, dict]], reviews: dict[st
         # A base that is another ticket's branch makes this ticket wait on it (Tracker.stacked_on).
         diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
         if diff:
-            diff["updated"] = today()
-            t.save(diff)
-            changes.append(f"{t.id}: " + ", ".join(f"{k}={format_value(v)}" for k, v in diff.items() if k != "updated"))
+            t.change(diff)
+            changes.append(f"{t.id}: " + ", ".join(f"{k}={format_value(v)}" for k, v in diff.items()))
             if "pr_state" in diff:
                 pr_name = f"{repo}#{upd['pr']}" if len(tr.repos) > 1 else f"#{upd['pr']}"
                 events.setdefault((pr_name, pr_state), []).append(t.id)

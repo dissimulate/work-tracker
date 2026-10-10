@@ -7,7 +7,8 @@ branch:
 depends_on: []
 next:
 summary:
-updated:
+created_at:
+updated_at:
 ---
 
 ## Plan

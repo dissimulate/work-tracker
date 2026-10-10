@@ -20,9 +20,9 @@ from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, SIZE_NAMES, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
-    close_action, due_date, files_hash, level, locked, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy,
-    Dep, Move, Record, Tracker)
+    ROOT, SCALES, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
+    close_action, day_text, due_date, files_hash, level, level_name, locked, sequence, sort_key, span, spawn,
+    tracker_at, value_form, whose_move, Busy, Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .views import duration, pr_label, span_lines, stage_counts, start_text
@@ -266,7 +266,7 @@ def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
     """(filter tag, summary chip): what a ticket waits on, or that it is ready; what an open decision blocks."""
     if r.kind == "decision":
         later = [t.id for t in tr.waiting_on(r.id)]
-        return "", chip("blocked", f"blocks {', '.join(later)}") if later and r.get("status") == "open" else NONE
+        return "", chip("blocked", f"blocks {', '.join(later)}") if later and not r.closed else NONE
     if r.stage in CLOSED_TICKET:
         return "", NONE
     blockers = tr.blockers(r)
@@ -287,13 +287,14 @@ def body_html(tr: Tracker, r: Record, lead: list[tuple[str, Html]] | None = None
         deps.append(("unblocks" if r.kind == "ticket" else "blocks", comma(ref(t.id) for t in tr.waiting_on(r.id))))
     if r.kind == "ticket" and tr.decisions_for(r):
         deps.append(("decisions", comma(
-            toned("closed", ref(d.id) + " ✓") if d.get("status") == "closed" else toned("blocked", ref(d.id))
+            toned("closed", ref(d.id) + " ✓") if d.closed else toned("blocked", ref(d.id))
             for d in tr.decisions_for(r))))
     facts = []
-    for k in ("branch", "base", "repo", "group", "refs", "owner", "started_at", "merged_at", "updated"):
+    for k in ("branch", "base", "repo", "group", "refs", "owner", "due", "created_at", "started_at", "merged_at",
+              "closed_at", "updated_at"):
         if r.get(k):
-            value = (comma(ref(x) for x in r.list(k)) if k == "refs"
-                     else ", ".join(r.list(k)) if k in LIST_KEYS else str(r.get(k)))
+            value = (comma(ref(x) for x in r.list(k)) if k == "refs" else ", ".join(r.list(k)) if k in LIST_KEYS
+                     else day_text(r.get(k)) if value_form(k) == "time" else str(r.get(k)))
             facts.append((k.removesuffix("_at"),
                           Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
     move = whose_move(tr, r) if r.kind == "ticket" else None
@@ -362,16 +363,9 @@ def text_cell(key: str) -> Callable[[Row], Cell]:
     return lambda r: Cell(str(r.t.get(key, "")))
 
 
-def priority_cell(r: Row) -> Cell:
-    """P0 (most urgent) to P4; a value `check` refuses shows as it is."""
-    n = level(r.t, "priority")
-    return Cell(f"P{n}" if n is not None else str(r.t.get("priority", "")))
-
-
-def size_cell(r: Row) -> Cell:
-    """XS to XL; a value `check` refuses shows as it is."""
-    n = level(r.t, "size")
-    return Cell(SIZE_NAMES[n] if n is not None else str(r.t.get("size", "")))
+def scale_cell(key: str) -> Callable[[Row], Cell]:
+    """A level by its name (P0, XS); a value `check` refuses shows as it is."""
+    return lambda r: Cell(level_name(r.t, key))
 
 
 def status_cell(r: Row) -> Cell:
@@ -406,8 +400,8 @@ class Column(NamedTuple):
 
 HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
 
-# An unknown status sorts after STAGES, so the page still renders and shows the check's error; a priority most urgent
-# first; a size smallest first; dependencies by count.
+# An unknown status sorts after STAGES, so the page still renders and shows the check's error; a scale by its level
+# (a priority most urgent first, a size smallest first); dependencies by count.
 COLUMNS = (
     Column((("step", "Step", "dependency order", lambda r: r.order),), step_cell, "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
@@ -415,9 +409,8 @@ COLUMNS = (
              lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
     Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
            text_cell("group"), "fit-content(var(--meta-max))", "mid"),
-    Column((("priority", "Priority", "priority", lambda r: level(r.t, "priority")),), priority_cell, "max-content",
-           "narrow"),
-    Column((("size", "Size", "size", lambda r: level(r.t, "size")),), size_cell, "max-content", "narrow"),
+    *(Column(((key, key.capitalize(), key, lambda r, key=key: level(r.t, key)),), scale_cell(key), "max-content",
+             "narrow") for key in SCALES),
     Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),
             ("unblocks", "→ Unblocks", "unblocks", lambda r: len(r.unblocks))),
            deps_cell, "fit-content(var(--meta-max))", "narrow"),
@@ -619,8 +612,8 @@ def action_html(a: Record, buttons: bool) -> Html:
     notes = strip_comments(a.body).strip()
     status = str(a.get("status", "open"))
     due = due_date(a)
-    if status != "open":
-        when = Html("<span class=meta>{}</span>").format(a.get("updated"))
+    if a.closed:
+        when = Html("<span class=meta>{}</span>").format(day_text(a.get("closed_at")))
     elif due:
         late = " overdue" if due < dt.date.today() else " due-today" if due == dt.date.today() else ""
         when = Html('<span class="meta{}" title="{}">Due: {}</span>').format(late, due.isoformat(), due_text(due))
@@ -628,12 +621,12 @@ def action_html(a: Record, buttons: bool) -> Html:
         when = NONE
     btns = Html("<span class=btns>{}</span>").format(NONE.join(
         Html('<button type=button data-close="{}" data-ref="{}">{}</button>').format(what, a.id, what.capitalize())
-        for what in CLOSE_ACTION)) if buttons and status == "open" else NONE
+        for what in CLOSE_ACTION)) if buttons and not a.closed else NONE
     title = str(a.get("title"))
     head = Html('<span class=id>{}</span>{}<b title="{}">{}</b>{}{}').format(
-        a.id, chip(status) if status != "open" else NONE, title, title, when, btns)
+        a.id, chip(status) if a.closed else NONE, title, title, when, btns)
     facts = [(k, v) for k, v in (("concerns", comma(ref(x) for x in a.list("refs"))), ("due", a.get("due")),
-                                 ("added", a.get("opened")), ("closed", a.get("updated") if status != "open" else ""))
+                                 ("added", day_text(a.get("created_at"))), ("closed", day_text(a.get("closed_at"))))
              if v]
     return panel(a.id, head, Html("<div>{}{}</div>").format(props_html([facts]), md_to_html(notes) if notes else NONE),
                  attrs={"class": "act"})
@@ -653,7 +646,7 @@ def close_from_page(tr: Tracker, ident: str, what: str) -> str:
         a = tr.action(ident)
         if not a:
             return f"no action {ident}"
-        if a.get("status", "open") != "open":
+        if a.closed:
             return f"{a.id} is {a.get('status')} already"
         close_action(tr, a, CLOSE_ACTION[what])
     return ""
@@ -664,9 +657,9 @@ def close_from_page(tr: Tracker, ident: str, what: str) -> str:
 def reference_html(tr: Tracker) -> Html:
     """What is settled or past, one collapsed row each: closed decisions and actions, the rest of the README, the
     log."""
-    settled = [d for d in tr.decisions if d.get("status") == "closed"]
-    closed = sorted((a for a in tr.actions if a.get("status", "open") != "open"),
-                    key=lambda a: (str(a.get("updated")), sort_key(a.id)), reverse=True)
+    settled = [d for d in tr.decisions if d.closed]
+    closed = sorted((a for a in tr.actions if a.closed),
+                    key=lambda a: (str(a.get("closed_at")), sort_key(a.id)), reverse=True)
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
@@ -689,7 +682,8 @@ def main_html(tr: Tracker) -> Html:
     problems = NONE.join([*(Html("<li>✗ {}</li>").format(x) for x in errors),
                           *(Html("<li>⚠ {}</li>").format(x) for x in warnings)])
     open_ds = tr.open_decisions()
-    facts = " · ".join(f"{k}: {tr.meta[k]}" for k in ("status", "owner", "repo", "created") if tr.meta.get(k))
+    facts = " · ".join(f"{k.removesuffix('_at')}: {day_text(tr.meta[k])}"
+                       for k in ("status", "owner", "repo", "created_at") if tr.meta.get(k))
     goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))
     state_line = issue_state(tr)

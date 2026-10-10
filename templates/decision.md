@@ -4,8 +4,8 @@ title:
 status: open
 refs: []
 owner:
-opened:
-updated:
+created_at:
+updated_at:
 ---
 
 ## Question

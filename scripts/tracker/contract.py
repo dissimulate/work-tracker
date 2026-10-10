@@ -6,13 +6,14 @@ import datetime as dt
 import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (ACTION_BAR, ACTION_STATUSES, BLOCKER, CLOSED_TICKET, DECISION_BAR, DECISION_ID, DECISION_SECTIONS,
-    DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX,
-    MOVE_RULE, OPEN_DECISIONS_WARN, OWN_VALUE_RULE, PR_STAGE, PRIORITIES, PRIORITY_RULE, README_INSTRUCTIONS,
-    README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RETIRED_KEYS, SCALES, SCHEMA, SCOPE_PARTS, SIZE_RULE, STAGES,
-    STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, TEXT_MAX, TICKET_SECTIONS,
-    TICKET_STATUSES, TRACKER_STATUSES, WAIT_RULE, append_to_section, blocker_link, due_date, level, names, norm_id,
-    relabel, sequence, Record, Tracker)
+from .model import (ACTION_BAR, BLOCKER, CLOSED_TICKET, DAY_KEYS, DECISION_BAR, DECISION_ID, DECISION_SECTIONS,
+    DEFAULT_LABELS, EVIDENCE_DIR, ISOLATION_RULE, ISSUE, KEYS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE,
+    OPEN_DECISIONS_WARN, OWN_VALUE_RULE, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS,
+    README_TOKEN_BUDGET, RENAMED_KEYS, RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES,
+    STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, TICKET_SECTIONS,
+    VALUE_FORMS, WAIT_RULE,
+    append_to_section, blocker_link, days_since, level, names, norm_id, relabel, resolution, sequence, valid_value,
+    value_form, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -27,9 +28,9 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             errors.append(f"{r.id}: file name {r.path.name} does not match id")
         if not r.get("title"):
             errors.append(f"{r.id}: missing title")
-        check_keys(r.id, r.kind, r.meta, warnings)
+        check_meta(tr, r.id, r.kind, r.meta, errors, warnings)
         errors += [f"{r.path.relative_to(tr.root)}: {x}" for x in r.problems]
-    check_keys("README.md", "tracker", tr.meta, warnings)
+    check_meta(tr, "README.md", "tracker", tr.meta, errors, warnings)
     if tr.schema < SCHEMA:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA} — run `tracker migrate`")
     elif tr.schema > SCHEMA:
@@ -38,14 +39,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     aliases: dict[str, str] = {}
     for t in tr.tickets:
         status = t.get("status", "")
-        if status not in TICKET_STATUSES:
-            hint = " — run `tracker migrate`" if status in STAGES else ""
-            errors.append(f"{t.id}: status '{status}' not one of {'|'.join(TICKET_STATUSES)}{hint}")
         check_deps(tr, t, errors, warnings)
-        for key, scale in SCALES.items():
-            if str(t.get(key, "")).strip() and level(t, key) is None:
-                hint = " — run `tracker migrate`" if key == "priority" and tr.schema < SCHEMA else ""
-                errors.append(f"{t.id}: {key} '{t.get(key)}' is not {scale[0]}-{scale[-1]}{hint}")
         if t.stage in ("merged", "done") and len(t.carry_forward) > MERGED_CARRY_FORWARD_MAX:
             warnings.append(f"{t.id}: {t.stage} but Carry forward has {len(t.carry_forward)} bullets "
                             f"(limit {MERGED_CARRY_FORWARD_MAX}) — keep what a later ticket needs; the detail is in "
@@ -65,9 +59,6 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
     for d in tr.decisions:
-        status = d.get("status", "")
-        if status not in DECISION_STATUSES:
-            errors.append(f"{d.id}: status '{status}' not one of {'|'.join(DECISION_STATUSES)}")
         waiting = {t.id for t in tr.waiting_on(d.id)}
         for ref in d.list("refs"):
             rec = tr.lookup(ref)
@@ -76,7 +67,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             elif rec.id in waiting:
                 warnings.append(f"{d.id}: refs {ref}, which also waits on it — drop it from refs "
                                 f"(`tracker decide {d.id} --unref {ref}`); depends_on already says so")
-        if status == "open" and idle_days(d) > STALE_DECISION_DAYS:
+        if not d.closed and idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
     check_actions(tr, errors, warnings)
     errors += [f"dependency cycle: {' → '.join(c)}" for c in sequence(tr).cycles]
@@ -109,19 +100,26 @@ def check_actions(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{a.id}: file name {a.path.name} does not match id")
         if not a.get("title"):
             errors.append(f"{a.id}: missing title")
-        check_keys(a.id, "action", a.meta, warnings)
+        check_meta(tr, a.id, "action", a.meta, errors, warnings)
         errors += [f"{a.path.relative_to(tr.root)}: {x}" for x in a.problems]
-        if a.get("status", "") not in ACTION_STATUSES:
-            errors.append(f"{a.id}: status '{a.get('status', '')}' not one of {'|'.join(ACTION_STATUSES)}")
         errors += [f"{a.id}: refs {r}: no such ticket or decision" for r in a.list("refs") if not tr.lookup(r)]
-        if a.get("due") and not due_date(a):
-            errors.append(f"{a.id}: due '{a.get('due')}' is not a date (YYYY-MM-DD)")
 
 
-def check_keys(where: str, kind: str, meta: dict, warnings: list[str]) -> None:
+def check_meta(tr: Tracker, where: str, kind: str, meta: dict, errors: list[str], warnings: list[str]) -> None:
+    """A file's frontmatter: known keys, a status of its kind's, and each value in its key's form (value_form). An
+    older format's value may be one `migrate` changes."""
     warnings += [f"{where}: frontmatter key '{k}' is retired — run `tracker migrate`" if k in RETIRED_KEYS[kind]
                  else f"{where}: unknown frontmatter key '{k}' (keys: {', '.join(KEYS[kind])})"
                  for k in meta if k not in KEYS[kind]]
+    statuses, status = STATUSES[kind].values, meta.get("status", "")
+    hint = " — run `tracker migrate`" if tr.schema < SCHEMA else ""
+    if (kind != "tracker" or "status" in meta) and status not in statuses:
+        stage = " — run `tracker migrate`" if kind == "ticket" and status in STAGES else hint
+        errors.append(f"{where}: status '{status}' not one of {'|'.join(statuses)}{stage}")
+    for k, v in meta.items():
+        if not valid_value(k, v):
+            form = SCALES[k].span if value_form(k) == "level" else VALUE_FORMS[value_form(k)]
+            errors.append(f"{where}: {k} '{v}' is not {form}{hint}")
 
 
 def check_deps(tr: Tracker, t: Record, errors: list[str], warnings: list[str]) -> None:
@@ -163,9 +161,9 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
     errors += [f"README.md: missing ## {h}" for h in README_SECTIONS if h not in heads]
     if all(h in heads for h in README_SECTIONS) and heads[:len(README_SECTIONS)] != README_SECTIONS:
         warnings.append(f"README.md: sections should start {', '.join(README_SECTIONS)}, in that order")
-    errors += [f"README.md: missing frontmatter {k}" for k in README_KEYS if k not in tr.meta]
-    if "status" in tr.meta and tr.meta["status"] not in TRACKER_STATUSES:
-        errors.append(f"README.md: status '{tr.meta.get('status', '')}' not one of {'|'.join(TRACKER_STATUSES)}")
+    old = {new: old for old, new in RENAMED_KEYS["tracker"].items()}  # `migrate` renames it; check_meta says so
+    errors += [f"README.md: missing frontmatter {k}" for k in README_KEYS
+               if k not in tr.meta and old.get(k) not in tr.meta]
     if "Context" in heads:
         if not tr.context:
             warnings.append("README.md: ## Context lists nothing")
@@ -185,23 +183,16 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
         heads = headings(d.body)
         if "Question" not in heads:
             errors.append(f"{d.id}: missing ## Question")
-        if d.get("status") == "closed" and "Resolution" not in heads:
+        if d.closed and "Resolution" not in heads:
             errors.append(f"{d.id}: closed without ## Resolution")
         warnings += [f"{d.id}: unexpected ## {h} (sections are {', '.join(DECISION_SECTIONS)})"
                      for h in heads if h not in DECISION_SECTIONS]
 
 
 def idle_days(r: Record) -> int:
-    """Days since a ticket or decision last changed: its `updated`, or a later direct edit of the file."""
+    """Days since a ticket or decision last changed: its `updated_at`, or a later direct edit of the file."""
     edited = dt.date.fromtimestamp(r.path.stat().st_mtime).isoformat() if r.path.exists() else ""
-    return min(days_since(r.get("updated") or r.get("opened")), days_since(edited) if edited else 10 ** 6)
-
-
-def days_since(date: str) -> int:
-    try:
-        return (dt.date.today() - dt.date.fromisoformat(str(date))).days
-    except ValueError:
-        return 0
+    return min(days_since(r.get("updated_at") or r.get("created_at")), days_since(edited) if edited else 10 ** 6)
 
 
 def rules_lines(tr: Tracker | None) -> list[str]:
@@ -240,16 +231,18 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "hand. `tracker show <ids> --section <name>` prints sections as they are.",
         "Text limits in characters, refused when written: "
         + ", ".join(f"{what} {most}" for most, what, _ in TEXT_MAX.values()) + ".",
-        f"Ticket status (you set it): {'|'.join(TICKET_STATUSES)}. Set in-progress when its work starts: from a "
-        f"branch, that records the branch when the ticket has none (a branch holds any number of tickets). Once in "
-        f"progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
+        f"Ticket status (you set it): {'|'.join(STATUSES['ticket'].values)}. Set in-progress when its work starts: "
+        f"from a branch, that records the branch when the ticket has none (a branch holds any number of tickets). Once "
+        f"in progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
         + f". Stages {', '.join(sorted(CLOSED_TICKET))} are closed; closing clears `next` and wants a `summary`.",
-        f"Decision status: {'|'.join(DECISION_STATUSES)}, changed only by `tracker decide`.",
-        f"Action status: {'|'.join(ACTION_STATUSES)}, changed only by `tracker act`.",
-        f"Work status: {'|'.join(TRACKER_STATUSES)} (`tracker set tracker status=...`).",
+        f"Decision status: {'|'.join(STATUSES['decision'].values)}, changed only by `tracker decide`.",
+        f"Action status: {'|'.join(STATUSES['action'].values)}, changed only by `tracker act`.",
+        f"Work status: {'|'.join(STATUSES['tracker'].values)} (`tracker set tracker status=...`).",
+        f"Times and days: a key ending `_at` holds {VALUE_FORMS['time']}; {', '.join(sorted(DAY_KEYS))} holds "
+        f"{VALUE_FORMS['day']}.",
+        "Issue tracker values: " + SCALE_RULE + ".",
         "Your own values: " + OWN_VALUE_RULE + ".",
-        "Priority: " + PRIORITY_RULE + ".",
-        "Size: " + SIZE_RULE + ".",
+        *(f"{key.capitalize()}: {scale.rule}." for key, scale in SCALES.items()),
         "Link lines (README ## Context, ticket ## Links): `- Label: [title](url) — why it matters`, nested bullets "
         f"for detail. Labels: {', '.join(labels)}. Add one for this tracker: `tracker set tracker labels=A,B` "
         "(the tracker's own labels; the defaults stay).",
@@ -266,7 +259,7 @@ def exact(tr: Tracker, ident: str) -> Record | None:
     return next((r for r in tr.records if norm_id(r.id) == norm_id(ident)), None)
 
 
-# Schema 1 kept an issue's priority in its issue tracker's words; these become PRIORITIES, as P0-P4 do. Any other word
+# Schema 1 kept an issue's priority in its issue tracker's words; these become levels, as P0-P4 do. Any other word
 # goes, and the issue is read again.
 PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
                   "low": 3, "lowest": 4, "trivial": 4}
@@ -274,9 +267,27 @@ PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high"
 
 def priority_from_word(word: str) -> int | None:
     word = word.strip().lower()
-    if re.fullmatch(r"p\d", word) and int(word[1]) in PRIORITIES:
+    if re.fullmatch(r"p\d", word) and int(word[1]) in SCALES["priority"].levels:
         return int(word[1])
     return PRIORITY_WORDS.get(word)
+
+
+def renamed_keys(r: Record) -> dict:
+    """Schema 3 names each key by its value's form (value_form): an older key becomes its new name, which keeps its
+    value. A closed decision or action gets the `closed_at` it had no key for: the day of its latest ## Resolution
+    line, or an action's `updated` (written when it closed). A date alone, as it was: the time was not kept."""
+    upd = {}
+    for old, new in RENAMED_KEYS[r.kind].items():
+        if old in r.meta:
+            upd[old] = None
+            if str(r.meta[old]).strip() and not r.get(new):
+                upd[new] = r.meta[old]
+    if r.kind in ("decision", "action") and r.closed and not r.get("closed_at"):
+        day = re.match(r"\d{4}-\d{2}-\d{2}", resolution(r)) if r.kind == "decision" else None
+        closed = day[0] if day else r.get("updated") if r.kind == "action" else ""
+        if closed:
+            upd["closed_at"] = closed
+    return upd
 
 
 def migrate(tr: Tracker, apply: bool) -> list[str]:
@@ -297,7 +308,7 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
         if str(t.get("priority", "")).strip() and level(t, "priority") is None:
             upd["priority"] = priority_from_word(str(t.get("priority")))
             if upd["priority"] is None:
-                reread.append(t.id)  # due again: the model maps the issue's level onto PRIORITIES
+                reread.append(t.id)  # to read again: the model maps the issue's level onto the scale
         if "slice" in t.meta:
             upd["slice"] = None
             if t.get("slice") != "" and not t.get("group"):
@@ -340,6 +351,13 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
             out.append(f"{d.id}: resolved=(removed) (the date is on the ## Resolution line)")
             if apply:
                 d.save({"resolved": None})
+    for r in [tr.readme(), *tr.records, *tr.actions]:
+        upd = renamed_keys(r)
+        if upd:
+            out.append(f"{r.path.name}: " + ", ".join(f"{k}={'(removed)' if v is None else format_value(v)}"
+                                                      for k, v in upd.items()))
+            if apply:
+                r.save(upd)
     used = {x.label for x in tr.context} | {x.label for t in tr.tickets for x in t.links}
     extra = sorted(used - set(tr.labels) - {ISSUE, BLOCKER})
     if extra:

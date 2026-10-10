@@ -18,6 +18,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - `tracker act A-<n> --title` gives an action a new text.
 - A ticket can have a size from 1 (XS) to 5 (XL): `tracker new --size` and `tracker set <id> size=<n>`. The agent takes it from the issue's estimate when it has one (`tracker issue --size`), or else gives its best estimate, and leaves it empty when it cannot estimate it reliably. The viewer shows it in a Size column.
 - A tracker's README can hold `## Instructions`: standing rules for the agent on this work, such as an action to add when a kind of ticket's PR opens. Every session's brief prints it.
+- Any ticket or decision can have a due day, like an action: `tracker new --due`, `tracker set <id> due=<YYYY-MM-DD>`. The agent sets one only when you or the issue tracker give it; `tracker issue --due` records the issue's.
+- Tickets, decisions and actions keep when they closed (`closed_at`), and a ticket when it was added (`created_at`).
 
 ### Changed
 
@@ -35,6 +37,9 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Issue fields: an open ticket's fields are read once, not again each day. The viewer's Refresh still has them read again. The request in the brief is one line, with this session's tickets first; `tracker issue --due` says how to record them.
 - Viewer: the server keeps one port (7316, `TRACKER_VIEWER_PORT`), so bookmarks and open pages keep working: `http://127.0.0.1:7316/` lists the trackers.
 - Viewer: a tracked agent session starts the server, and the server runs while an agent session is on a tracker; no need to ask the agent to open a page first. A page reloads itself when the server is back.
+- Every time the tracker writes is UTC to the second, in a key that ends `_at`: `updated` is now `updated_at`, `opened` and the README's `created` are now `created_at`, and `issue_created` is now `issue_created_at`. Run `tracker migrate` to rename them (format 3). The views show each time as its day.
+- `tracker issue` with no id lists the tickets whose issue fields are to read (before: `tracker issue --due`). `--due` now records the issue's due day.
+- The agent maps an issue's priority and estimate by what they mean on that issue tracker's scale, not by a raw number from its API. A value that means none ("No priority") leaves the ticket's value empty. A size is an amount of work (XS an hour or two to XL more than a week), so a time estimate maps too.
 
 ## 0.30.0 - 2026-10-08
 

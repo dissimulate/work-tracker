@@ -11,18 +11,18 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (ACTION_ADDED, ACTION_ID, BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS,
-    DECISION_STATUSES, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, KEYS, LIST_KEYS, LIST_OR_ONE,
-    OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, TICKET_SECTIONS, TICKET_STATUSES,
-    TRACKER_STATUSES, all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers,
-    atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, die, drop_from_section, fit, id_list,
-    link_url, load_record, locked, names, norm_id, put_section, relabel, replace_in_section, resolution, same_repo,
-    sequence, set_branch, short, sort_key, spawn, today, unblocked, utc_now, Busy, Record, Tracker)
+from .model import (ACTION_ADDED, ACTION_ID, BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DEFAULT_LABELS,
+    EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, ISSUE_FIELDS, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT,
+    ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, TICKET_SECTIONS, TIME_FORMAT, all_trackers, append_log,
+    append_notes, append_to_section, archived_at, archived_trackers, atomic_file, atomic_write, blocker_link,
+    close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit, id_list, link_url, load_record,
+    locked, names, norm_id, parse_day, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
+    set_branch, short, sort_key, spawn, today, unblocked, utc_now, value_form, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
     save_session, session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
-from .contract import check, days_since, migrate, rules_lines
+from .contract import check, migrate, rules_lines
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, brief, context_lines, dep_lines,
     history_lines, index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
@@ -72,7 +72,7 @@ def cmd_init(args):
     (root / "decisions").mkdir(exist_ok=True)
     repos = csv(args.repo)
     meta = {"title": args.title, "repo": repos if len(repos) > 1 else "".join(repos), "status": "planning",
-            "owner": args.owner, "created": today(), "schema": SCHEMA}
+            "owner": args.owner, "created_at": utc_now(), "schema": SCHEMA}
     create(root / "README.md", from_template("README", meta, DEFAULT_LABELS))
     create(root / "log.md", f"# Log — {args.title}\n\nAppend-only. Newest at the bottom.\n\n")
     create(root / ".gitignore", ".state.json\n*.tmp\n")
@@ -121,11 +121,11 @@ def cmd_decisions(args):
     for d in rows:
         state = d.get("status", "open")
         touched = ", ".join(tr.touched_by(d))
-        tail = f" → {resolution(d)}" if state == "closed" else (f" · owner {d.get('owner')}" if d.get("owner") else "")
+        tail = f" → {resolution(d)}" if d.closed else (f" · owner {d.get('owner')}" if d.get("owner") else "")
         print(f"{d.id}  {state:<6}  {d.get('title')}" + (f"  ({touched})" if touched else "") + tail)
     if not rows:
         print("no decisions" if args.all or args.status else "no open decisions")
-    settled = sum(d.get("status") == "closed" for d in tr.decisions)
+    settled = sum(d.closed for d in tr.decisions)
     if not (args.all or args.status) and settled:
         print(f"{settled} settled (`tracker decisions --all` lists them too; `tracker context D-<n>` gives one)")
 
@@ -173,14 +173,13 @@ def cmd_set(args):
         if schema[k][0] != "set":
             die(f"{k}: {OWNER_HINT[schema[k][0]]}, not `set`")
         if k == "status":
-            allowed = TICKET_STATUSES if rec.kind == "ticket" else TRACKER_STATUSES
+            allowed = STATUSES[rec.kind].values
             if v not in allowed:
                 hint = "; in-review and merged come from the ticket's PR" if v in STAGES else ""
                 die(f"status must be one of {'|'.join(allowed)}{hint}")
         if k in ("next", "summary") and rec.kind == "ticket":
             fit(k, v)
-        if k in SCALES:
-            v = level_arg(k, v)
+        v = value_arg(k, v)
         if k == "repo" and rec.kind == "ticket" and v and v not in tr.repos:
             die(f"repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
         items = csv(v)
@@ -198,11 +197,11 @@ def cmd_set(args):
         # gets none, not a guess.
         if not rec.get("started_at") and rec.get("status") == "todo":
             updates["started_at"] = utc_now()
-    if rec.kind != "tracker":
-        updates["updated"] = today()
+    if "status" in updates:
+        updates.update(rec.status_update(updates["status"]))
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     was = rec.stage if rec.kind == "ticket" else ""
-    rec.save(updates)
+    rec.change(updates)
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if was == "todo" and updates.get("status") == "in-progress":
@@ -285,11 +284,13 @@ def cmd_new(args):
         die(f"--repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
     if args.branch and len(tr.repos) > 1 and not args.repo:
         die(f"the tracker spans {len(tr.repos)} repos: pass --repo ({', '.join(tr.repos)})")
-    meta = {"id": args.id, "title": args.title, "group": args.group or "", "status": "todo",
-            "branch": args.branch or "", "depends_on": [], "next": args.next or "", "updated": today()}
-    for key in SCALES:
+    now = utc_now()
+    meta = {"id": args.id, "title": args.title, "group": args.group or "", "status": STATUSES["ticket"].values[0],
+            "branch": args.branch or "", "depends_on": [], "next": args.next or "", "created_at": now,
+            "updated_at": now}
+    for key in [*SCALES, "due"]:
         if getattr(args, key):
-            meta[key] = level_arg(key, getattr(args, key))
+            meta[key] = value_arg(key, getattr(args, key))
     if args.repo:
         meta["repo"] = args.repo
     path.parent.mkdir(exist_ok=True)
@@ -304,7 +305,7 @@ def cmd_new(args):
 def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
     who = f" ({by})" if by else ""
     blocked = {t.id for t in tr.waiting_on(rec.id) if tr.blockers(t)}
-    rec.save({"status": "closed", "updated": today()})
+    rec.change(rec.status_update("closed"))
     append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
     append_log(tr, f"Decided {rec.id} {rec.get('title')}{who}: {short(answer)}", [rec.id, *tr.touched_by(rec)])
     return "\n".join([f"{rec.id} closed", *unblocked(tr, blocked)])
@@ -317,7 +318,7 @@ def add_waits(tr: Tracker, t: Record, idents: list[str]) -> list[str]:
     added = [x for x in dict.fromkeys(idents) if x.lower() not in have]
     if not added:
         return []
-    t.save({"depends_on": before + added, "updated": today()})
+    t.change({"depends_on": before + added})
     cycle = next((c for c in sequence(tr).cycles if t.id in c), None)
     if cycle:
         t.save({"depends_on": before})
@@ -338,7 +339,7 @@ def cmd_wait(args):
             die(f"{t.id} waits on {', '.join(stacked)} because its PR is based on their branch "
                 f"{t.get('base')}; that ends when the PR is retargeted" if stacked else
                 f"{t.id} does not wait on {', '.join(args.items)}")
-        t.save({"depends_on": keep, "updated": today()})
+        t.change({"depends_on": keep})
         for x in args.items:  # a Blocker line for something no longer waited on becomes a plain link
             link = None if tr.lookup(x) else blocker_link(t, x)
             if link:
@@ -371,7 +372,7 @@ def cmd_wait(args):
             die(f"{t.id} already waits on {', '.join(items)}")
         for d in (tr.lookup(x) for x in added):
             if d and d.kind == "decision" and t.id in d.list("refs"):  # depends_on now says so
-                d.save({"refs": [r for r in d.list("refs") if r != t.id], "updated": today()})
+                d.change({"refs": [r for r in d.list("refs") if r != t.id]})
         append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
     print("\n".join(dep_lines(tr, t)) or f"{t.id} waits on nothing")
 
@@ -461,11 +462,6 @@ def require_links(tr: Tracker, text: str) -> None:
             die(f"label '{x.label}' is not one of {', '.join(tr.labels)} (`tracker set tracker labels=...` adds one)")
 
 
-def touch(rec: Record) -> None:
-    if rec.kind != "tracker":
-        rec.save({"updated": today()})
-
-
 def cmd_add(args):
     tr, rec = record_for(args, args.id)
     heading = section_named(rec, args.section, new=True)
@@ -474,7 +470,7 @@ def cmd_add(args):
         fit("carry", text)
     if args.replace:
         replace_in_section(rec, heading, args.replace, text)
-        touch(rec)
+        rec.change()
         print(f"{rec.id} {heading}: replaced")
         return
     if heading in LIST_SECTIONS and not BULLET.match(text):
@@ -482,7 +478,7 @@ def cmd_add(args):
     if heading in LINK_SECTIONS:
         require_links(tr, text)
     append_to_section(rec, heading, text)
-    touch(rec)
+    rec.change()
     print(f"{rec.id} {heading}: added")
 
 
@@ -499,7 +495,7 @@ def cmd_put(args):
         for b in bullets(text):
             fit("carry", b)
     put_section(rec, heading, text)
-    touch(rec)
+    rec.change()
     print(f"{rec.id} {heading}: replaced")
 
 
@@ -507,7 +503,7 @@ def cmd_drop(args):
     rec = record_for(args, args.id)[1]
     heading = section_named(rec, args.section)
     n = drop_from_section(rec, heading, args.text)
-    touch(rec)
+    rec.change()
     print(f"{rec.id} {heading}: dropped {n} line(s)")
 
 
@@ -570,7 +566,7 @@ def cmd_attach(args):
                 append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
         elif not (args.append is not None and f"({EVIDENCE_DIR}/{name})" in rec.body):
             append_to_section(rec, "Options", f"- {today()}: {EVIDENCE}: {link}")
-        touch(rec)
+        rec.change()
         refs.append(rec.id)
     append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
     print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
@@ -630,13 +626,13 @@ def cmd_decide(args):
     if existing:
         if not (args.note or args.resolve or refs or unrefs or blocks or args.owner or args.question):
             die("nothing to change: pass --note, --resolve, --refs, --unref, --blocks, --owner or --question")
-        upd = {"updated": today()}
+        upd = {}
         if refs or unrefs or blocks:
             waiting = {t.id for t in tr.waiting_on(existing.id)} | set(blocks)
             upd["refs"] = sorted((set(existing.list("refs")) | set(refs)) - unrefs - waiting, key=sort_key)
         if args.owner:
             upd["owner"] = args.owner
-        existing.save(upd)
+        existing.change(upd)
         if args.question:
             append_to_section(existing, "Question", dated(args.question))
         if args.note:
@@ -664,8 +660,9 @@ def cmd_decide(args):
             "decision", 3)
     nums = [int(m[1]) for d in tr.decisions if (m := re.fullmatch(r"D-(\d+)", d.id))]
     ident = f"D-{max(nums, default=0) + 1:02d}"
-    meta = {"id": ident, "title": args.target, "status": "open", "refs": refs, "owner": args.owner or "",
-            "opened": today(), "updated": today()}
+    now = utc_now()
+    meta = {"id": ident, "title": args.target, "status": STATUSES["decision"].values[0], "refs": refs,
+            "owner": args.owner or "", "created_at": now, "updated_at": now}
     path = tr.root / "decisions" / f"{ident}.md"
     path.parent.mkdir(exist_ok=True)
     create(path, from_template("decision", meta, tr.labels))
@@ -692,12 +689,7 @@ def cmd_act(args):
     notes = args.note or []
     for n in notes:
         fit("note", n)
-    due = None if args.due is None else "" if args.due.lower() in ("", "none") else args.due
-    if due:
-        try:
-            due = dt.date.fromisoformat(due).isoformat()
-        except ValueError:
-            die(f"--due {args.due}: pass a date, YYYY-MM-DD (or `none` to remove it)")
+    due = None if args.due is None else value_arg("due", args.due)
     existing = tr.action(args.target) if ACTION_ID.fullmatch(args.target) else None
     if existing:
         if not (args.done or args.drop or args.note or refs or due is not None or args.title):
@@ -705,13 +697,13 @@ def cmd_act(args):
         if args.title:
             fit("action", args.title)
             old = existing.get("title")
-            existing.save({"title": " ".join(args.title.split()), "updated": today()})
+            existing.change({"title": " ".join(args.title.split())})
             append_log(tr, f"{existing.id} renamed: {old} → {existing.get('title')}",
                        [existing.id, *existing.list("refs")])
         if refs:
-            existing.save({"refs": sorted(set(existing.list("refs")) | set(refs), key=sort_key), "updated": today()})
+            existing.change({"refs": sorted(set(existing.list("refs")) | set(refs), key=sort_key)})
         if due is not None:
-            existing.save({"due": due, "updated": today()})
+            existing.change({"due": due})
             append_log(tr, f"{existing.id} due {due}" if due else f"{existing.id} has no due date now",
                        [existing.id, *existing.list("refs")])
         if args.done or args.drop:
@@ -719,7 +711,7 @@ def cmd_act(args):
             return
         if notes:
             append_notes(existing, notes)
-            existing.save({"updated": today()})
+            existing.change()
             append_log(tr, f"Updated {existing.id}: {short('; '.join(notes))}", [existing.id, *existing.list("refs")])
         print(f"{existing.id} updated")
         return
@@ -735,8 +727,9 @@ def cmd_act(args):
         die("add to that one with `tracker act A-<n> --note ...`, or pass --force if this is a different action", 3)
     nums = [int(m[1]) for a in tr.actions if (m := re.fullmatch(r"A-(\d+)", a.id))]
     ident = f"A-{max(nums, default=0) + 1:02d}"
-    meta = {"id": ident, "title": args.target, "status": "open", "refs": refs, "due": due or "", "opened": today(),
-            "updated": today()}
+    now = utc_now()
+    meta = {"id": ident, "title": args.target, "status": STATUSES["action"].values[0], "refs": refs, "due": due or "",
+            "created_at": now, "updated_at": now}
     path = tr.root / "actions" / f"{ident}.md"
     path.parent.mkdir(exist_ok=True)
     create(path, from_template("action", meta, tr.labels))
@@ -753,9 +746,9 @@ def cmd_actions(args):
     for a in rows:
         state = a.get("status", "open")
         refs = ", ".join(a.list("refs"))
-        age = days_since(a.get("opened"))
-        when = (f"due {a.get('due')}" if a.get("due") else f"open {age} d" if age else "added today") \
-            if state == "open" else str(a.get("updated"))
+        age = days_since(a.get("created_at"))
+        when = day_text(a.get("closed_at")) if a.closed else \
+            f"due {a.get('due')}" if a.get("due") else f"open {age} d" if age else "added today"
         print(f"{a.id}  {state:<7}  {a.get('title')}" + (f"  ({refs})" if refs else "") + f" · {when}")
     if not rows:
         print("no actions" if args.all else "no open actions")
@@ -807,42 +800,47 @@ def cmd_sync(args):
 
 
 def cmd_issue(args):
-    """Record what the model read from a ticket's issue tracker, or list the tickets whose issue fields are due."""
-    if args.due:
-        tr = resolve(args)
-        due = tr.issue_due()
-        print("\n".join([*(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due),
-                         "", ISSUE_HOW]) if due else "no ticket's issue fields are due")
-        return
+    """Record what the model read from a ticket's issue tracker, or, with no id, list the tickets whose issue fields
+    are to read."""
     if not args.id:
-        die("give a ticket id, or --due for the tickets whose issue fields are due")
+        tr = resolve(args)
+        due = tr.issues_to_read()
+        print("\n".join([*(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due),
+                         "", ISSUE_HOW]) if due else "no ticket's issue fields are to read")
+        return
     tr, t = locate(args, args.id)
     if t.kind != "ticket" or not t.aliases:
         die(f"{t.id} has no Issue link: add one first (`tracker add {t.id} link \"Issue: [ID Title](url)\"`)")
     updates = {}
-    for key in SCALES:
-        if getattr(args, key) is not None:
-            updates[key] = level_arg(key, getattr(args, key)) or None  # empty: the issue has no value now
-    if args.created is not None:
-        updates["issue_created"] = utc_time(args.created)
+    for flag, key in ISSUE_FIELDS.items():
+        given = getattr(args, flag)
+        if given is not None:
+            value = given.strip() and (utc_time(given) if value_form(key) == "time" else value_arg(key, given))
+            updates[key] = value or None  # empty: the issue has none now
     if updates:
-        t.save(updates)
+        t.save(updates)  # not `updated_at`: reading the issue is no change to the work
     state = tr.raw_state()
     state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
     tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
 
 
-SCALE_ENDS = {"priority": "0 is the most urgent, 4 the least", "size": "1 is XS, 5 XL"}
-
-
-def level_arg(key: str, text: str) -> str:
-    """A value on SCALES[key] as given; "" for an empty one, which clears it."""
-    text, scale = text.strip(), SCALES[key]
-    if text and not (text.isdigit() and int(text) in scale):
-        die(f"{key} '{text}' is not {scale[0]}-{scale[-1]}: {SCALE_ENDS[key]} (`tracker rules` says how an issue "
-            f"tracker's values map onto it)")
-    return str(int(text)) if text else ""
+def value_arg(key: str, text: str) -> str:
+    """A value given for a key, held to its form (value_form) and written as stored: a level as its number, a day as
+    YYYY-MM-DD. An empty one (for a day, also `none`) clears the key. Any other key's value as given."""
+    text, form = text.strip(), value_form(key)
+    if form == "level":
+        scale = SCALES[key]
+        if text and scale.parse(text) is None:
+            die(f"{key} '{text}' is not {scale.span}: {scale.ends} (`tracker rules` says how an issue tracker's values "
+                f"map onto it)")
+        return str(int(text)) if text else ""
+    if form == "day" and text.lower() in ("", "none"):
+        return ""
+    if form == "day":
+        day = parse_day(text) or die(f"{key} '{text}' is not a day: YYYY-MM-DD (or `none` to remove it)")
+        return day.isoformat()
+    return text
 
 
 def utc_time(text: str) -> str:
@@ -853,7 +851,7 @@ def utc_time(text: str) -> str:
         die(f"'{text}' is not an ISO 8601 time (2026-10-01T09:30:00Z)")
     if at.tzinfo is None:
         die(f"'{text}' needs a time zone (Z or +10:00): the issue tracker gives one")
-    return at.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return at.astimezone(dt.timezone.utc).strftime(TIME_FORMAT)
 
 
 def cmd_synced(args):
@@ -891,14 +889,14 @@ def cmd_step(args):
         updates["next"] = args.next
         done.append("next set")
     if args.done:
-        updates.update(status="done", summary=args.done, next="")
+        updates.update(t.status_update("done"), summary=args.done, next="")
         done.append("done")
     for fact in args.carry or []:
         append_to_section(t, "Carry forward", fact if BULLET.match(fact) else f"- {fact}")
     if args.carry:
         done.append(f"{len(args.carry)} carry forward")
     if updates or args.carry:
-        t.save({**updates, "updated": today()})
+        t.change(updates)
     if args.message:
         append_log(tr, args.message, [t.id])
         done.append("logged")
@@ -1161,7 +1159,7 @@ def build_parser():
                     help=f"show the last N log lines for it (default {CONTEXT_LOG}; 0 for none)")
     sp = add("decisions", cmd_decisions, "the open decisions and the tickets they touch, and a count of the settled "
                                          "ones; --all adds those, with their answers")
-    sp.add_argument("--status", choices=DECISION_STATUSES)
+    sp.add_argument("--status", choices=STATUSES["decision"].values)
     sp.add_argument("--all", action="store_true", help="every decision, settled ones with their answers")
     sp = add("actions", cmd_actions, "the user's open actions: tasks the agent cannot or should not do; --all adds "
                                      "the closed ones")
@@ -1225,8 +1223,10 @@ def build_parser():
     sp.add_argument("--repo", help="the ticket's repo, when the tracker spans several")
     sp.add_argument("--depends", **IDS, help="ticket or decision ids it waits on")
     sp.add_argument("--next")
-    sp.add_argument("--priority", help="0 (most urgent) to 4 (least); with an Issue link, the issue's own")
-    sp.add_argument("--size", help="1 (XS) to 5 (XL); with an issue that has an estimate, the issue's own")
+    for key, scale in SCALES.items():
+        sp.add_argument(f"--{key}", help=f"{scale.span} ({scale.ends}); with an Issue link, the issue's own")
+    sp.add_argument("--due", metavar="YYYY-MM-DD", help="the day it should be done by, only one the user or its "
+                                                       "issue tracker gave")
     sp = add("decide", cmd_decide, "open a direction decision (by title), or update / resolve one (by D-id)")
     sp.add_argument("target", nargs="?", help="a new decision's title, or an existing D-id")
     sp.add_argument("--question", help="what must be decided and why it matters (new: defaults to the title)")
@@ -1271,14 +1271,14 @@ def build_parser():
     add("sync", cmd_sync, "pull PR number/state/merge from GitHub into tickets, and the open PRs' reviews, checks and "
                           "merge state, from which each ticket's move is computed")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
-                                 "when the issue was created), or with --due list the tickets whose fields are due")
+                                 "due day, when the issue was created), or with no id list the tickets whose fields "
+                                 "are to read")
     sp.add_argument("id", nargs="?", help="ticket id, or an id its Issue link names")
-    sp.add_argument("--priority", help="the issue's priority mapped onto 0 (most urgent) to 4 (least); empty: it "
-                                       "has none")
-    sp.add_argument("--size", help="the issue's estimate mapped onto 1 (XS) to 5 (XL); empty: it has none")
+    for key, scale in SCALES.items():
+        sp.add_argument(f"--{key}", help=f"the issue's {key} mapped onto {scale.span} ({scale.ends}); empty: it "
+                                         f"has none")
+    sp.add_argument("--due", metavar="YYYY-MM-DD", help="the issue's due day; empty: it has none")
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
-    sp.add_argument("--due", action="store_true", help="list the tickets whose issue fields are due, with their "
-                                                      "issue links")
     add("synced", cmd_synced, "log the current branch's commits that the hooks have not logged (they log each "
                               "commit on a branch with a ticket under way), mark it at HEAD, and clear its handoff")
     sp = add("pause", cmd_pause, "stopping mid-work: leave the state of the branch's unfinished work for the next "
