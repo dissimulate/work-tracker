@@ -2050,6 +2050,22 @@ class Actions(unittest.TestCase):
         self.assertIn("nothing blocks T-1, T-2 now", run(*self.t, "act", "A-01", "--done"))
         self.assertEqual(self.tr().blockers(self.tr().lookup("T-1")), [])
 
+    def test_an_actions_id_works_as_any_records(self):
+        run(*self.t, "act", "Ask Sam whether v1 stays", "--refs", "T-1")
+        self.assertIn(f"[A-01 T-1] {model.ACTION_ADDED} Ask Sam", run(*self.t, "history", "--ref", "a-1"))
+        run(*self.t, "log", "Sam is away until Monday", "--ref", "A-01")
+        self.assertIn("[A-01] Sam is away until Monday", run(*self.t, "history", "--ref", "A-01"))
+        context = run(*self.t, "context", "A-01")
+        self.assertIn("A-01 · open · Ask Sam whether v1 stays\ntouches: T-1", context)
+        self.assertIn("== A-01 · Ask Sam whether v1 stays · open", run(*self.t, "show", "A-01"))
+        self.assertIn("due: use `tracker act`", run(*self.t, "set", "A-01", "due=2099-01-01", code=2))
+        self.assertIn("--ref takes ticket or decision ids; A-01 is an action",
+                      run(*self.t, "attach", "x.txt", "--ref", "A-01", code=2))
+        self.assertIn("A-<n> ids are actions", run(*self.t, "new", "A-2", "--title", "Two", code=2))
+        ticket(self.root, "A-02")  # a ticket made before actions, whose id has an action's form
+        self.assertIn("A-03 added", run(*self.t, "act", "Book the review room"))  # A-02 is taken
+        self.assertEqual(cli.check(self.tr())[0], [])
+
     def test_the_brief_prints_the_readmes_instructions(self):
         work = repo("feat/T-1")
         run(*self.t, "set", "T-1", "branch=feat/T-1")

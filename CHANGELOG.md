@@ -11,7 +11,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - `tracker delete <slug>` moves a tracker to the system's trash from a terminal. It refuses in an agent session.
 - `tracker archive <slug>` puts a tracker away: no list, lookup, hook or sync reads it, and the viewer still opens it. `tracker unarchive <slug>` brings it back, and `tracker list --archived` lists them. The viewer's tracker menu lists the archived trackers in a closed section at its bottom.
 - Viewer: a page whose tracker was deleted says so instead of reloading.
-- Actions: tasks for you that the agent cannot or should not do, such as a follow-up with a coworker. The agent asks before it adds one (`tracker act`), and closes it when you say it is done. `tracker actions` lists the open ones, and `tracker show A-<n>` prints one with its notes, one line per fact.
+- Actions: tasks for you that the agent cannot or should not do, such as a follow-up with a coworker. The agent asks before it adds one (`tracker act`), and closes it when you say it is done. `tracker actions` lists the open ones, and `tracker show A-<n>` prints one with its notes, one line per fact. An action's id works wherever a record's id does: `tracker context A-<n>`, `tracker history --ref A-<n>`, `tracker open A-<n>`.
 - An action can have a due day (`tracker act --due`); the open actions list the soonest due first.
 - Viewer: a Your actions section above Now lists the open actions, one line each with its due day and Done and Drop buttons, opening to its notes. Reference lists the closed ones beside the closed decisions.
 - `tracker watch` marks a new action as one that needs you.

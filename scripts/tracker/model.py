@@ -508,8 +508,52 @@ ISOLATION_RULE = (
 # hooks' request after commits (next_request). The model writes the message right after reading one of them.
 STEP_MESSAGE = ("a message only for what the commits do not say (a result, a measurement, why), never what they or "
                 "the PR hold: the work a commit names, a push, a merge, a review round, a test run")
-TICKET_SECTIONS = ["Plan", "Carry forward", "Links"]  # required, in this order, and no others
-DECISION_SECTIONS = ["Question", "Options", "Resolution"]  # Question required; Resolution required once closed
+
+
+@dataclass(frozen=True)
+class Kind:
+    """A kind of record: one file per record in its folder, made from templates/<kind>.md. Its keys are KEYS[kind]
+    and its status words STATUSES[kind]; code that serves every kind reads this table, so a new kind is one entry
+    here, in KEYS and in STATUSES, and its command."""
+    folder: str
+    prefix: str  # the letter of its numbered ids (`D`: D-01, D-02); "" for a ticket, whose id is given
+    command: str  # the command that adds one and closes it
+    sections: tuple[str, ...] = ()  # its ## sections, in this order and no others; none: its body is notes
+    required: tuple[str, ...] = ()  # the sections it must have
+    closing: str = ""  # the section a closed one must have: its answer
+    refs: frozenset[str] = frozenset()  # the kinds its `refs` may name
+    rule: str = ""  # what `tracker rules` says of its file beyond its sections
+
+
+KINDS = {
+    "ticket": Kind("tickets", "", "new", ("Plan", "Carry forward", "Links"), ("Plan", "Carry forward", "Links"),
+                   rule=f"Carry forward ≤ {MERGED_CARRY_FORWARD_MAX} bullets once merged or done. Ids: letters, "
+                        "digits, `.`, `_`, `-`."),
+    "decision": Kind("decisions", "D", "decide", ("Question", "Options", "Resolution"), ("Question",), "Resolution",
+                     frozenset({"ticket"}), "## Resolution holds one dated line per answer, `YYYY-MM-DD (who): "
+                                            "answer`; the latest holds."),
+    "action": Kind("actions", "A", "act", refs=frozenset({"ticket", "decision"}),
+                   rule="A task for the user; its body holds note lines, one fact each (`tracker act A-<n> --note`)."),
+}
+
+
+def kind_names(kinds=KINDS) -> str:
+    """`ticket, decision or action`: the kinds named, in KINDS order."""
+    names = [k for k in KINDS if k in kinds]
+    return " or ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names)
+
+
+def a_kind(kind: str) -> str:
+    """`a ticket`, `an action`."""
+    return f"{'an' if kind[:1] in 'aeiou' else 'a'} {kind}"
+
+
+def id_kind(ident: str) -> str:
+    """The kind whose numbered ids have this form (`D-4`: decision); "" for an id of any other form."""
+    return next((k for k, v in KINDS.items() if v.prefix and re.fullmatch(rf"{v.prefix}-\d+", ident.strip(), re.I)),
+                "")
+
+
 # Link labels every tracker accepts; a tracker adds its own in README frontmatter `labels`.
 ISSUE, BLOCKER, EVIDENCE = "Issue", "Blocker", "Evidence"
 DEFAULT_LABELS = ["Spec", "Design", "Doc", ISSUE, "PR", "Commit", BLOCKER, EVIDENCE, "Related"]
@@ -570,7 +614,7 @@ def cut(text: str, width: int) -> str:
 @dataclass
 class Record:
     path: Path
-    kind: str  # "ticket" | "decision" | "action"
+    kind: str  # a KINDS key, or "tracker" for the README
     meta: dict
     body: str
     problems: list[str] = field(default_factory=list)  # frontmatter lines that did not parse; `check` reports them
@@ -779,32 +823,53 @@ class Tracker:
         lines, self.readme_body = split_frontmatter(text)
         self.meta, problems = parse_meta(lines)
         self.readme_problems = frontmatter_problems(text) + problems
+        self._kinds: dict[str, list[Record]] = {}
 
-    # Loaded on first use: a hook that only matches a branch never reads the decisions.
-    @cached_property
+    def records_of(self, kind: str) -> list[Record]:
+        """The records of one kind, by id. Each kind is read on first use: a hook that only matches a branch never
+        reads the decisions. A record a command adds joins the list."""
+        if kind not in self._kinds:
+            self._kinds[kind] = sorted((load_record(p, kind) for p in (self.root / KINDS[kind].folder).glob("*.md")),
+                                       key=lambda r: sort_key(r.id))
+        return self._kinds[kind]
+
+    @property
     def tickets(self) -> list[Record]:
-        return sorted((load_record(p, "ticket") for p in (self.root / "tickets").glob("*.md")),
-                      key=lambda r: sort_key(r.id))
+        return self.records_of("ticket")
 
-    @cached_property
+    @property
     def decisions(self) -> list[Record]:
-        return sorted((load_record(p, "decision") for p in (self.root / "decisions").glob("*.md")),
-                      key=lambda r: sort_key(r.id))
+        return self.records_of("decision")
 
-    @cached_property
+    @property
     def actions(self) -> list[Record]:
-        """The user's actions (ACTION_BAR): apart from `records`, so only a ticket's wait (`dep_record`) finds one by
-        id."""
-        return sorted((load_record(p, "action") for p in (self.root / "actions").glob("*.md")),
-                      key=lambda r: sort_key(r.id))
+        """The user's actions (ACTION_BAR)."""
+        return self.records_of("action")
+
+    @property
+    def records(self) -> list[Record]:
+        """Every record, of every kind (KINDS)."""
+        return [r for kind in KINDS for r in self.records_of(kind)]
 
     def open_actions(self) -> list[Record]:
         """The open ones, the soonest due first, then those with no due date."""
         return sorted((a for a in self.actions if not a.closed),
                       key=lambda a: (due_date(a) or dt.date.max, sort_key(a.id)))
 
+    def one_of(self, kind: str, ident: str) -> Record | None:
+        """The record of this kind with this id; case and leading zeros do not count."""
+        return next((r for r in self.records_of(kind) if norm_id(r.id) == norm_id(ident)), None)
+
     def action(self, ident: str) -> Record | None:
-        return next((a for a in self.actions if norm_id(a.id) == norm_id(ident)), None)
+        return self.one_of("action", ident)
+
+    def next_id(self, kind: str) -> str:
+        """A new numbered id of the kind (`D-07`): one past its highest, and the id of no other record."""
+        prefix = KINDS[kind].prefix
+        n = max((int(m[1]) for r in self.records_of(kind) if (m := re.fullmatch(rf"{prefix}-(\d+)", r.id))), default=0)
+        while self.lookup(ident := f"{prefix}-{n + 1:02d}"):
+            n += 1
+        return ident
 
     @property
     def title(self) -> str:
@@ -843,10 +908,6 @@ class Tracker:
         """`title · status · owner`, the one line that names the work everywhere."""
         return " · ".join(str(x) for x in [self.title, self.meta.get("status"), self.meta.get("owner")] if x)
 
-    @property
-    def records(self) -> list[Record]:
-        return self.tickets + self.decisions
-
     def readme(self) -> Record:
         """The README as a record, which `set tracker`, the body edits and `migrate` change as they change a ticket."""
         return load_record(self.root / "README.md", "tracker")
@@ -854,7 +915,7 @@ class Tracker:
     def index(self) -> dict:
         """Ids and Issue ids, then (as asked for) each ticket's dependencies and each record's waiting tickets. Built
         once per state of the files: any write through this module, or a record added to the lists, rebuilds it."""
-        key = (_writes, len(self.tickets), len(self.decisions))
+        key = (_writes, *(len(self.records_of(kind)) for kind in KINDS))
         if self.__dict__.get("_index_key") != key:
             ids, aliases = {}, {}
             for r in self.records:
@@ -866,8 +927,8 @@ class Tracker:
         return self._index
 
     def lookup(self, ident: str) -> Record | None:
-        """The ticket or decision with this id, or the ticket whose Issue link names it. Case and leading zeros do
-        not count: `d-4` finds D-04."""
+        """The record of any kind with this id (a ticket first), or the ticket whose Issue link names it. Case and
+        leading zeros do not count: `d-4` finds D-04."""
         index, want = self.index(), norm_id(ident)
         return index["ids"].get(want) or index["aliases"].get(want)
 
@@ -882,20 +943,15 @@ class Tracker:
             return hits[0] if hits else None
         return next((t for t in self.tickets if t.get("branch") == ident), None)
 
-    def dep_record(self, ident: str) -> Record | None:
-        """The record an item of a ticket's depends_on names: a ticket or decision (`lookup`), else a user's action;
-        None for an external blocker."""
-        return self.lookup(ident) or self.action(ident)
-
     def canonical(self, ident: str) -> str:
         """The id of the record a depends_on item names, else the item as written (an external blocker)."""
-        rec = self.dep_record(ident)
+        rec = self.lookup(ident)
         return rec.id if rec else ident
 
     def find(self, ident: str) -> Record:
         """A record by id or Issue id; for a command's argument, also by PR (`#123`) or branch."""
         return (self.lookup(ident) or self.by_pr_or_branch(ident)
-                or die(f"no ticket or decision '{ident}' in {self.slug}"))
+                or die(f"no {kind_names()} '{ident}' in {self.slug}"))
 
     def tickets_on(self, branch: str) -> list[Record]:
         return [t for t in self.tickets if branch and t.get("branch") == branch]
@@ -918,7 +974,7 @@ class Tracker:
         if id(t) not in cache:  # keyed by the record itself; it is kept alive with its deps
             out = []
             for ident in t.list("depends_on"):
-                rec = self.dep_record(ident)
+                rec = self.lookup(ident)
                 out.append(Dep(rec.id, rec) if rec else Dep(ident, link=blocker_link(t, ident)))
             have = {d.ident for d in out}
             cache[id(t)] = (t, out + [Dep(o.id, o) for o in self.stacked_on(t) if o.id not in have])
@@ -1035,8 +1091,7 @@ class Tracker:
     def data_files(self) -> list[Path]:
         """Every file that holds the tracker's facts: a change to one is a change the viewer and the watcher show."""
         return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
-                *sorted((self.root / "tickets").glob("*.md")), *sorted((self.root / "decisions").glob("*.md")),
-                *sorted((self.root / "actions").glob("*.md"))]
+                *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
 
 
 def files_hash(files: list[Path], extra: str = "") -> str:
@@ -1094,9 +1149,9 @@ RESOLUTION_LINE = re.compile(r"^(?:- )?\d{4}-\d{2}-\d{2}\b")
 
 
 def resolution(d: Record) -> str:
-    """A closed decision's answer: the latest dated `YYYY-MM-DD (who): answer` line of its ## Resolution, or, when a
-    person wrote it without one, its first line (detail lines follow the answer)."""
-    lines = [ln.strip() for ln in strip_comments(section(d.body, "Resolution")).splitlines() if ln.strip()]
+    """A closed record's answer (a decision's): the latest dated `YYYY-MM-DD (who): answer` line of its kind's closing
+    section (## Resolution), or, when a person wrote it without one, its first line (detail lines follow the answer)."""
+    lines = [ln.strip() for ln in strip_comments(section(d.body, KINDS[d.kind].closing)).splitlines() if ln.strip()]
     dated = [ln for ln in lines if RESOLUTION_LINE.match(ln)]
     return (dated or lines or [""])[-1 if dated else 0].removeprefix("- ")
 
@@ -1109,8 +1164,6 @@ def resolution(d: Record) -> str:
 # waits on that ticket: that comes from the PR's `base`, not depends_on. Blockers, "unblocks", steps, the critical
 # path and the ready list are all computed.
 
-DECISION_ID = re.compile(r"D-\d+", re.I)
-ACTION_ID = re.compile(r"A-\d+", re.I)
 STARTED = {"in-progress", "in-review", "merged", "done"}  # stages
 IN_FLIGHT = {"in-progress", "in-review"}  # stages: started, not yet closed
 
@@ -1159,8 +1212,8 @@ def names(link: Link, ident: str) -> bool:
 
 def unknown_dep(tr: Tracker, ident: str) -> str:
     """Why an item of a ticket's depends_on names no record of the tracker."""
-    kind = "decision" if DECISION_ID.fullmatch(ident) else "action" if ACTION_ID.fullmatch(ident) else ""
-    return f"no {kind} {ident}" if kind else f"{ident} is not a ticket, decision or action in {tr.slug}"
+    kind = id_kind(ident)
+    return f"no {kind} {ident}" if kind else f"{ident} is not a {kind_names()} in {tr.slug}"
 
 
 def blocker_link(t: Record, ident: str) -> Link | None:

@@ -11,13 +11,13 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (ACTION_ADDED, ACTION_ID, BLOCKER, CLOSED_TICKET, DECISION_ID, DECISION_SECTIONS, DEFAULT_LABELS,
-    EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT, ISSUE, ISSUE_FIELDS, KEYS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT,
-    ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, TICKET_SECTIONS, TIME_FORMAT, all_trackers, append_log,
-    append_notes, append_to_section, archived_at, archived_trackers, atomic_file, atomic_write, blocker_link,
-    close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit, id_list, link_url, load_record,
-    locked, names, norm_id, parse_day, put_section, relabel, replace_in_section, resolution, same_repo, sequence,
-    set_branch, short, sort_key, spawn, today, unblocked, unknown_dep, utc_now, value_form, Busy, Record, Tracker)
+from .model import (ACTION_ADDED, BLOCKER, CLOSED_TICKET, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT,
+    ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA,
+    STAGES, STATUSES, TIME_FORMAT, a_kind, all_trackers, append_log, append_notes, append_to_section, archived_at,
+    archived_trackers, atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since,
+    die, drop_from_section, fit, id_kind, id_list, kind_names, link_url, load_record, locked, names, parse_day,
+    put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, spawn,
+    today, unblocked, unknown_dep, utc_now, value_form, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
@@ -40,6 +40,19 @@ def from_template(name: str, meta: dict, labels: list[str]) -> str:
     lines, body = split_frontmatter(text)
     lines = render_frontmatter(lines, meta)
     return "---\n" + "\n".join(lines) + "\n---\n" + body.replace("{{labels}}", ", ".join(labels))
+
+
+def new_record(tr: Tracker, kind: str, ident: str, title: str, **meta) -> Record:
+    """Write a new record of the kind from its template: its id, title, first status and creation times, then
+    `meta`. It joins the tracker's records."""
+    now = utc_now()
+    path = tr.root / KINDS[kind].folder / f"{ident}.md"
+    path.parent.mkdir(exist_ok=True)
+    create(path, from_template(kind, {"id": ident, "title": title, "status": STATUSES[kind].values[0], **meta,
+                                      "created_at": now, "updated_at": now}, tr.labels))
+    rec = load_record(path, kind)
+    tr.records_of(kind).append(rec)
+    return rec
 
 
 # ---------------------------------------------------------------- commands
@@ -135,7 +148,7 @@ def cmd_find(args):
     pat = re.compile(re.escape(args.text), re.I)
     hits = 0
     for tr in trackers:
-        files = [r.path for r in tr.records + tr.actions] + [tr.root / "README.md", tr.root / "log.md"]
+        files = [r.path for r in tr.records] + [tr.root / "README.md", tr.root / "log.md"]
         for p in files:
             if not p.exists():
                 continue
@@ -281,36 +294,29 @@ def cmd_new(args):
     tr = resolve(args)
     if not SAFE_NAME.fullmatch(args.id):
         die(f"'{args.id}' is not a ticket id: use letters, digits, `.`, `_` and `-`, starting with a letter or digit")
-    path = tr.root / "tickets" / f"{args.id}.md"
-    if path.exists() or tr.lookup(args.id):
+    if (tr.root / "tickets" / f"{args.id}.md").exists() or tr.lookup(args.id):
         die(f"{args.id} already exists")
-    if DECISION_ID.fullmatch(args.id):
-        die("D-<n> ids are decisions; open one with `tracker decide \"<title>\"`")
+    if kind := id_kind(args.id):
+        die(f"{KINDS[kind].prefix}-<n> ids are {kind}s: `tracker {KINDS[kind].command} \"<title>\"` adds one")
     deps = []
     for x in id_list(args.depends):
-        rec = tr.dep_record(x) or die(f"--depends {x}: {unknown_dep(tr, x)}; for an external blocker, `tracker wait "
-                                      f"{args.id} on {x} --link \"<url> — <why>\"` after creating the ticket")
+        rec = tr.lookup(x) or die(f"--depends {x}: {unknown_dep(tr, x)}; for an external blocker, `tracker wait "
+                                  f"{args.id} on {x} --link \"<url> — <why>\"` after creating the ticket")
         deps.append(rec.id)
     if args.repo and args.repo not in tr.repos:
         die(f"--repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
     if args.branch and len(tr.repos) > 1 and not args.repo:
         die(f"the tracker spans {len(tr.repos)} repos: pass --repo ({', '.join(tr.repos)})")
-    now = utc_now()
-    meta = {"id": args.id, "title": args.title, "group": args.group or "", "status": STATUSES["ticket"].values[0],
-            "branch": args.branch or "", "depends_on": [], "next": args.next or "", "created_at": now,
-            "updated_at": now}
+    meta = {"group": args.group or "", "branch": args.branch or "", "depends_on": [], "next": args.next or ""}
     for key in [*SCALES, "due"]:
         if getattr(args, key):
             meta[key] = value_arg(key, getattr(args, key))
     if args.repo:
         meta["repo"] = args.repo
-    path.parent.mkdir(exist_ok=True)
-    create(path, from_template("ticket", meta, tr.labels))
-    t = load_record(path, "ticket")
-    tr.tickets.append(t)
+    t = new_record(tr, "ticket", args.id, args.title, **meta)
     add_waits(tr, t, deps)
     append_log(tr, f"Added {args.id} {args.title}" + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
-    print(f"created {args.id}: {path}")
+    print(f"created {args.id}: {t.path}")
 
 
 def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
@@ -340,7 +346,7 @@ def cmd_wait(args):
     args.items = id_list(args.items)
     tr, t = locate(args, args.id)
     if t.kind != "ticket":
-        die(f"{t.id} is a decision; a ticket waits on it: `tracker wait <ticket> on {t.id}`")
+        die(f"{t.id} is {a_kind(t.kind)}; a ticket waits on it: `tracker wait <ticket> on {t.id}`")
     if args.mode == "off":
         drop = {tr.canonical(x).lower() for x in args.items}
         keep = [x for x in t.list("depends_on") if tr.canonical(x).lower() not in drop]
@@ -351,15 +357,15 @@ def cmd_wait(args):
                 f"{t.id} does not wait on {', '.join(args.items)}")
         t.change({"depends_on": keep})
         for x in args.items:  # a Blocker line for something no longer waited on becomes a plain link
-            link = None if tr.dep_record(x) else blocker_link(t, x)
+            link = None if tr.lookup(x) else blocker_link(t, x)
             if link:
                 relabel(t, link, "Related")
         append_log(tr, f"{t.id} no longer waits on {', '.join(args.items)}", [t.id])
     else:
         items = []
-        external = [x for x in args.items if not tr.dep_record(x) and not blocker_link(t, x)]
+        external = [x for x in args.items if not tr.lookup(x) and not blocker_link(t, x)]
         for x in args.items:
-            rec = tr.dep_record(x)
+            rec = tr.lookup(x)
             if rec and rec.id == t.id:
                 die("a ticket cannot wait on itself")
             if not rec and not blocker_link(t, x):
@@ -378,7 +384,7 @@ def cmd_wait(args):
         added = add_waits(tr, t, items)
         if not added:
             die(f"{t.id} already waits on {', '.join(items)}")
-        for d in (tr.dep_record(x) for x in added):
+        for d in (tr.lookup(x) for x in added):
             if d and t.id in d.list("refs"):  # a decision's or action's: depends_on now says so
                 d.change({"refs": [r for r in d.list("refs") if r != t.id]})
         append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
@@ -427,16 +433,8 @@ LINK_SECTIONS = {"Links", "Context"}
 OWNED_SECTIONS = {"Resolution": "`tracker decide D-<n> --resolve`"}
 
 
-def action_for(args, ident: str) -> Record | None:
-    """The user's action an A-id names, when no ticket or decision of the tracker has that id."""
-    if not ACTION_ID.fullmatch(ident):
-        return None
-    tr = resolve(args)
-    return None if tr.lookup(ident) else tr.action(ident)
-
-
 def record_for(args, ident: str) -> tuple[Tracker, Record]:
-    """A ticket or decision, or the README for `tracker` / `readme`."""
+    """A record of any kind, or the README for `tracker` / `readme`."""
     if ident.lower() in ("readme", "tracker"):
         tr = resolve(args)
         return tr, tr.readme()
@@ -447,7 +445,7 @@ def section_named(rec: Record, word: str, new: bool = False) -> str:
     """The section a word names: a case-free prefix of one of the record's sections (`carry` → Carry forward), else a
     part of one (`order` → Why this order). `new`: a README section that none matches is a new one, by that name (any
     sections may follow the required ones)."""
-    known = {"ticket": TICKET_SECTIONS, "decision": DECISION_SECTIONS}.get(rec.kind) or headings(rec.body)
+    known = (KINDS[rec.kind].sections if rec.kind in KINDS else ()) or headings(rec.body)
     w = " ".join(word.lower().split())
     hits = [h for h in known if h.lower().startswith(w)] or [h for h in known if w in h.lower()]
     if not hits and new and rec.kind == "tracker" and w:
@@ -537,7 +535,7 @@ def cmd_show(args):
         if ident.lower() == "log":  # the log holds no sections: its last lines, as `history` gives them
             out += ["== log (`tracker history` filters it)", *history_lines(resolve(args), [], "", HISTORY_LAST), ""]
             continue
-        rec = action_for(args, ident) or record_for(args, ident)[1]
+        rec = record_for(args, ident)[1]
         state = rec.stage if rec.kind == "ticket" else rec.get("status")
         out.append("== " + " · ".join(str(x) for x in (rec.id, rec.get("title"), state) if x))
         if not words:
@@ -571,6 +569,7 @@ def cmd_attach(args):
     folder = (tr.root / EVIDENCE_DIR).resolve()
     if not folder.is_relative_to(tr.root.resolve()):
         die(f"{EVIDENCE_DIR}/ must stay inside the tracker directory")
+    recs = [tr.find(ident) for ident in ids_of(tr, args.ref, {"ticket", "decision"}, "--ref")]
     if args.append is not None:
         if args.name or args.force:
             die("--append adds to the file named: no --name or --force with it")
@@ -580,8 +579,7 @@ def cmd_attach(args):
         name, attached = keep_evidence(args, folder), "Attached"
     link = f"[{name}]({EVIDENCE_DIR}/{name})" + (f" — {args.note.strip()}" if args.note else "")
     refs = []
-    for ident in id_list(args.ref):
-        rec = tr.find(ident)
+    for rec in recs:
         if rec.kind == "ticket":
             if not any(f"({EVIDENCE_DIR}/{name})" in x.text for x in rec.links):
                 append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
@@ -621,14 +619,40 @@ def similar(a: str, b: str) -> float:
     return len(wa & wb) / max(1, len(wa | wb))
 
 
-def ticket_ids(tr: Tracker, raw: list[str] | None, flag: str) -> list[str]:
+def ids_of(tr: Tracker, raw: list[str] | None, kinds, flag: str) -> list[str]:
+    """The ids a flag names, each a record of one of `kinds`."""
     out = []
     for r in id_list(raw):
         rec = tr.find(r)
-        if rec.kind != "ticket":
-            die(f"{flag} takes ticket ids; {r} is not a ticket")
+        if rec.kind not in kinds:
+            die(f"{flag} takes {kind_names(kinds)} ids; {r} is {a_kind(rec.kind)}")
         out.append(rec.id)
     return out
+
+
+def link_args(tr: Tracker, kind: str, args) -> tuple[list[str], set[str], list[str]]:
+    """A decision's or action's --refs, --unref and --blocks: the ids of the records it touches (KINDS refs) and of
+    the tickets it blocks. A ticket it blocks is no ref: depends_on records the block."""
+    blocks = ids_of(tr, args.blocks, {"ticket"}, "--blocks")
+    refs = [r for r in ids_of(tr, args.refs, KINDS[kind].refs, "--refs") if r not in blocks]
+    return refs, set(ids_of(tr, args.unref, KINDS[kind].refs, "--unref")), blocks
+
+
+def existing(tr: Tracker, kind: str, target: str) -> Record | None:
+    """The record a command's target names by its numbered id (`D-3`); None for a new one's title."""
+    if id_kind(target) != kind:
+        return None
+    return tr.one_of(kind, target) or die(f"no {kind} {target}; to add one, pass its title instead")
+
+
+def refuse_similar(tr: Tracker, kind: str, title: str, force: bool) -> None:
+    """A new record titled like an open one of its kind is likely that one: name it, and exit 3 unless --force."""
+    clash = [r for r in tr.records_of(kind) if not r.closed and similar(str(r.get("title")), title) >= 0.5]
+    if clash and not force:
+        print("\n".join(f"similar open {kind}: {r.id} {r.get('title')}" for r in clash))
+        k = KINDS[kind]
+        die(f"add to that one with `tracker {k.command} {k.prefix}-<n> --note ...`, or pass --force if this is a "
+            f"different {kind}", 3)
 
 
 def block_tickets(tr: Tracker, ident: str, blocks: list[str]) -> list[str]:
@@ -655,71 +679,44 @@ def refs_after(tr: Tracker, rec: Record, refs: list[str], unrefs: set[str], bloc
 
 def cmd_decide(args):
     tr = resolve(args)
-    blocks = ticket_ids(tr, args.blocks, "--blocks")
-    refs = [r for r in ticket_ids(tr, args.refs, "--refs") if r not in blocks]  # depends_on already records a block
-    unrefs = set(ticket_ids(tr, args.unref, "--unref"))
+    refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
-    existing = next((d for d in tr.decisions if norm_id(d.id) == norm_id(args.target)), None)
-    if existing:
+    d = existing(tr, "decision", args.target)
+    if d:
         if not (args.note or args.resolve or refs or unrefs or blocks or args.owner or args.question):
             die("nothing to change: pass --note, --resolve, --refs, --unref, --blocks, --owner or --question")
-        upd = {}
-        if refs or unrefs or blocks:
-            upd["refs"] = refs_after(tr, existing, refs, unrefs, blocks)
-        if args.owner:
-            upd["owner"] = args.owner
-        existing.change(upd)
+        upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
+        d.change({**upd, **({"owner": args.owner} if args.owner else {})})
         if args.question:
-            append_to_section(existing, "Question", dated(args.question))
+            append_to_section(d, "Question", dated(args.question))
         if args.note:
-            append_to_section(existing, "Options", f"- {dated(args.note)}")
-            append_log(tr, f"Updated {existing.id}: {short(args.note)}", [existing.id, *tr.touched_by(existing)])
-        if msg := blocks_line(tr, existing, blocks):
+            append_to_section(d, "Options", f"- {dated(args.note)}")
+            append_log(tr, f"Updated {d.id}: {short(args.note)}", [d.id, *tr.touched_by(d)])
+        if msg := blocks_line(tr, d, blocks):
             print(msg)
-        if args.resolve:
-            print(resolve_decision(tr, existing, args.resolve, args.by))
-        else:
-            print(f"{existing.id} updated")
+        print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
         return
-    if DECISION_ID.fullmatch(args.target):
-        die(f"no decision {args.target}; to open one, pass its title instead")
     if unrefs:
         die("--unref changes an existing decision; pass its D-id")
-    clash = [d for d in tr.open_decisions() if similar(str(d.get("title")), args.target) >= 0.5]
-    if clash and not args.force:
-        for d in clash:
-            print(f"similar open decision: {d.id} {d.get('title')}")
-        die("update that one with `tracker decide D-<n> --note ...`, or pass --force if this is a different "
-            "decision", 3)
-    nums = [int(m[1]) for d in tr.decisions if (m := re.fullmatch(r"D-(\d+)", d.id))]
-    ident = f"D-{max(nums, default=0) + 1:02d}"
-    now = utc_now()
-    meta = {"id": ident, "title": args.target, "status": STATUSES["decision"].values[0], "refs": refs,
-            "owner": args.owner or "", "created_at": now, "updated_at": now}
-    path = tr.root / "decisions" / f"{ident}.md"
-    path.parent.mkdir(exist_ok=True)
-    create(path, from_template("decision", meta, tr.labels))
-    rec = load_record(path, "decision")
-    append_to_section(rec, "Question", args.question or args.target)
+    refuse_similar(tr, "decision", args.target, args.force)
+    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
+    append_to_section(d, "Question", args.question or args.target)
     if args.note:
-        append_to_section(rec, "Options", f"- {args.note}")
-    tr.decisions.append(rec)
+        append_to_section(d, "Options", f"- {args.note}")
     if args.resolve:
-        resolve_decision(tr, rec, args.resolve, args.by)
-        print(f"{ident} recorded as settled: {path}")
+        resolve_decision(tr, d, args.resolve, args.by)
+        print(f"{d.id} recorded as settled: {d.path}")
     else:
-        newly = block_tickets(tr, ident, blocks)
-        append_log(tr, f"Opened {ident} {args.target}" + (f"; blocks {', '.join(newly)}" if newly else ""),
-                   [ident, *refs, *newly])
-        print(f"{ident} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {path}")
+        newly = block_tickets(tr, d.id, blocks)
+        append_log(tr, f"Opened {d.id} {args.target}" + (f"; blocks {', '.join(newly)}" if newly else ""),
+                   [d.id, *refs, *newly])
+        print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
 def cmd_act(args):
     tr = resolve(args)
-    blocks = ticket_ids(tr, args.blocks, "--blocks")
-    refs = [r for r in (tr.find(r).id for r in id_list(args.refs)) if r not in blocks]  # depends_on records a block
-    unrefs = {tr.find(r).id for r in id_list(args.unref)}
+    refs, unrefs, blocks = link_args(tr, "action", args)
     if args.done and args.drop:
         die("--done or --drop, not both")
     if blocks and (args.done or args.drop):
@@ -728,58 +725,41 @@ def cmd_act(args):
     for n in notes:
         fit("note", n)
     due = None if args.due is None else value_arg("due", args.due)
-    existing = tr.action(args.target) if ACTION_ID.fullmatch(args.target) else None
-    if existing:
+    a = existing(tr, "action", args.target)
+    if a:
         if not (args.done or args.drop or args.note or refs or unrefs or blocks or due is not None or args.title):
             die("nothing to change: pass --done, --drop, --note, --refs, --unref, --blocks, --due or --title")
         if args.title:
             fit("action", args.title)
-            old = existing.get("title")
-            existing.change({"title": " ".join(args.title.split())})
-            append_log(tr, f"{existing.id} renamed: {old} → {existing.get('title')}",
-                       [existing.id, *existing.list("refs")])
+            old = a.get("title")
+            a.change({"title": " ".join(args.title.split())})
+            append_log(tr, f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")])
         if refs or unrefs or blocks:
-            existing.change({"refs": refs_after(tr, existing, refs, unrefs, blocks)})
-        if msg := blocks_line(tr, existing, blocks):
+            a.change({"refs": refs_after(tr, a, refs, unrefs, blocks)})
+        if msg := blocks_line(tr, a, blocks):
             print(msg)
         if due is not None:
-            existing.change({"due": due})
-            append_log(tr, f"{existing.id} due {due}" if due else f"{existing.id} has no due date now",
-                       [existing.id, *existing.list("refs")])
+            a.change({"due": due})
+            append_log(tr, f"{a.id} due {due}" if due else f"{a.id} has no due date now", [a.id, *a.list("refs")])
         if args.done or args.drop:
-            print(close_action(tr, existing, "done" if args.done else "dropped", notes))
+            print(close_action(tr, a, "done" if args.done else "dropped", notes))
             return
         if notes:
-            append_notes(existing, notes)
-            existing.change()
-            append_log(tr, f"Updated {existing.id}: {short('; '.join(notes))}", [existing.id, *existing.list("refs")])
-        print(f"{existing.id} updated")
+            append_notes(a, notes)
+            a.change()
+            append_log(tr, f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")])
+        print(f"{a.id} updated")
         return
-    if ACTION_ID.fullmatch(args.target):
-        die(f"no action {args.target}; to add one, pass what the user must do instead")
     if args.done or args.drop or args.title or unrefs:
         die("--done, --drop, --title and --unref change an action: pass its A-id")
     fit("action", args.target)
-    clash = [a for a in tr.open_actions() if similar(str(a.get("title")), args.target) >= 0.5]
-    if clash and not args.force:
-        for a in clash:
-            print(f"similar open action: {a.id} {a.get('title')}")
-        die("add to that one with `tracker act A-<n> --note ...`, or pass --force if this is a different action", 3)
-    nums = [int(m[1]) for a in tr.actions if (m := re.fullmatch(r"A-(\d+)", a.id))]
-    ident = f"A-{max(nums, default=0) + 1:02d}"
-    now = utc_now()
-    meta = {"id": ident, "title": args.target, "status": STATUSES["action"].values[0], "refs": refs, "due": due or "",
-            "created_at": now, "updated_at": now}
-    path = tr.root / "actions" / f"{ident}.md"
-    path.parent.mkdir(exist_ok=True)
-    create(path, from_template("action", meta, tr.labels))
-    rec = load_record(path, "action")
-    append_notes(rec, notes)
-    tr.actions.append(rec)
-    newly = block_tickets(tr, ident, blocks)
+    refuse_similar(tr, "action", args.target, args.force)
+    a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
+    append_notes(a, notes)
+    newly = block_tickets(tr, a.id, blocks)
     append_log(tr, f"{ACTION_ADDED} {args.target}" + (f" (due {due})" if due else "")
-               + (f"; blocks {', '.join(newly)}" if newly else ""), [ident, *refs, *newly])
-    print(f"{ident} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {path}")
+               + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly])
+    print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
 
 
 def cmd_actions(args):
@@ -831,7 +811,7 @@ def problem_lines(tr: Tracker) -> list[str]:
 def cmd_check(args):
     tr = resolve(args)
     lines = problem_lines(tr)
-    print("\n".join(lines) or f"ok · {len(tr.tickets)} tickets · {len(tr.decisions)} decisions")
+    print("\n".join(lines) or " · ".join(["ok", *(f"{len(tr.records_of(k))} {KINDS[k].folder}" for k in KINDS)]))
     sys.exit(1 if any(x.startswith("✗") for x in lines) else 0)
 
 
@@ -916,7 +896,7 @@ def cmd_step(args):
         fit(kind, text)
     tr, t = named_or_own(args)
     if t.kind != "ticket":
-        die(f"{t.id} is a decision: `tracker decide {t.id} --note \"...\"`")
+        die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")
     if args.done and (args.next or args.pause):
         die("--done closes the ticket: a closed ticket has no next action, and its branch keeps no handoff. Pass "
             "--next or --pause without --done")
@@ -1021,7 +1001,7 @@ def cmd_start(args):
                 f"branch '{branch_of(cwd) or '?'}' is on no open ticket in any tracker; trackers:")
     tr = one_tracker(hits, sure, head, "start")
     picks = [tr.find(i) for i in focus]
-    closed = [f"{r.id} is {r.stage if r.kind == 'ticket' else 'a decision'}" for r in picks
+    closed = [f"{r.id} is {r.stage if r.kind == 'ticket' else a_kind(r.kind)}" for r in picks
               if r.kind != "ticket" or r.stage in CLOSED_TICKET]
     if closed:
         die(f"--on takes open tickets: {'; '.join(closed)}")

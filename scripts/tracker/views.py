@@ -9,9 +9,9 @@ from pathlib import Path
 from statistics import median
 
 from .markdown import section, strip_comments
-from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS,
-    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence,
-    short, span, utc_seconds, whose_move, Record, Start, Tracker)
+from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES,
+    SPANS, STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution,
+    sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -161,7 +161,7 @@ def dep_lines(tr: Tracker, rec: Record) -> list[str]:
     if later:
         verb = "unblocks" if rec.kind == "ticket" else "blocks"
         out.append(f"{verb}: " + ", ".join(f"{t.id} {t.stage}" for t in later))
-    if rec.kind == "decision" and rec.list("refs"):
+    if rec.list("refs"):
         out.append("touches: " + ", ".join(rec.list("refs")))
     return out
 
@@ -283,14 +283,14 @@ def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[s
 
 
 def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log: int = CONTEXT_LOG) -> list[str]:
-    if rec.kind == "decision":
-        out = [f"{rec.id} · {rec.get('status', 'open')} · {rec.get('title')}", *dep_lines(tr, rec)]
-        if rec.closed:
-            out.append(f"resolution: {resolution(rec)}")
-        elif rec.get("due"):
-            out.append(f"due: {rec.get('due')}")
-    else:
+    if rec.kind == "ticket":
         out = ticket_lines(tr, rec) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
+    else:
+        out = [f"{rec.id} · {rec.get('status')} · {rec.get('title')}", *dep_lines(tr, rec)]
+        if rec.closed and KINDS[rec.kind].closing:
+            out.append(f"{KINDS[rec.kind].closing.lower()}: {resolution(rec)}")
+        elif rec.get("due") and not rec.closed:
+            out.append(f"due: {rec.get('due')}")
     shown = {d.id for d in tr.decisions_for(rec)} if rec.kind == "ticket" else {rec.id}
     out += recent_log(tr, rec, log, shown=shown)
     out += ["", f"file: {rec.path}"]
