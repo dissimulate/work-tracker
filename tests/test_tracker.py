@@ -75,7 +75,7 @@ def run(*args: str, cwd: Path | None = None, code: int = 0) -> str:
     return out.getvalue()
 
 
-SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
+SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("status", "Status"), ("group", "Group"),
             ("priority", "Priority"), ("size", "Size"), ("waits", "← Waits on"),
             ("unblocks", "→ Unblocks")]  # the viewer's sequence heading buttons, as (sort key, label)
 

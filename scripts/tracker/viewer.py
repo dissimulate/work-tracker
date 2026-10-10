@@ -411,10 +411,10 @@ HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest
 COLUMNS = (
     Column((("step", "Step", "dependency order", lambda r: r.order),), step_cell, "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
-    Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
-           text_cell("group"), "fit-content(var(--meta-max))", "mid"),
     Column((("status", "Status", "status",
              lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
+    Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
+           text_cell("group"), "fit-content(var(--meta-max))", "mid"),
     Column((("priority", "Priority", "priority", lambda r: level(r.t, "priority")),), priority_cell, "max-content",
            "narrow"),
     Column((("size", "Size", "size", lambda r: level(r.t, "size")),), size_cell, "max-content", "narrow"),
