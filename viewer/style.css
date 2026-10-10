@@ -590,7 +590,7 @@ tr:last-child > td { border-bottom: 0; }
    sequence's status colours, so the rows keep plain text: a dot, and its ticket's id, take the ticket's status class
    (its row's s-<state>), and a link that of the ticket waited on. A closed or dropped ticket's dot is a ring of the
    same size. Every dot sits on a halo in the panel colour that sets the lines behind it. */
-.seq { position: relative; --graph-w: 8px; }
+.seq { position: relative; --graph-w: 8px; --fade: .35; } /* --fade: a closed row's cells, and the graph's lines */
 .seq summary > .graph { width: var(--graph-w); }
 .seq > details > div { padding-left: calc(var(--pad) + var(--graph-w) + var(--gap)); }
 .graph-svg {
@@ -601,7 +601,8 @@ tr:last-child > td { border-bottom: 0; }
   overflow: visible;
   pointer-events: none;
 }
-.graph-svg .lines { opacity: .3; } /* the lines under full dots */
+.graph-svg .lines { opacity: calc(var(--fade) * .6); } /* the lines under full dots, always: a coloured line reads
+   stronger than text at the same opacity, so it takes less to look as faded as a closed row */
 .graph-svg path { fill: none; stroke: var(--tone); stroke-width: 1.5; stroke-linecap: round; }
 .graph-svg circle { fill: var(--tone, var(--tag-neutral)); }
 .graph-svg circle:is(.s-closed, .s-dropped) { fill: var(--surface); stroke: var(--tone); stroke-width: 1.5; }
@@ -609,7 +610,7 @@ tr:last-child > td { border-bottom: 0; }
 .graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered (app.js) */
 .seq .tk .id { color: var(--tone, var(--tag-neutral)); }
 /* A closed ticket's row, unless opened: every cell dimmed but the step, so the graph keeps its colours. */
-.seq details.closed:not([open]) > summary > :not(.graph) { opacity: .35; }
+.seq details.closed:not([open]) > summary > :not(.graph) { opacity: var(--fade); }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
    ticket has the rest. */

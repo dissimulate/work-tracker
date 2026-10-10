@@ -40,6 +40,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Every time the tracker writes is UTC to the second, in a key that ends `_at`: `updated` is now `updated_at`, `opened` and the README's `created` are now `created_at`, and `issue_created` is now `issue_created_at`. Run `tracker migrate` to rename them (format 3). The views show each time as its day.
 - `tracker issue` with no id lists the tickets whose issue fields are to read (before: `tracker issue --due`). `--due` now records the issue's due day.
 - The agent maps an issue's priority and estimate by what they mean on that issue tracker's scale, not by a raw number from its API. A value that means none ("No priority") leaves the ticket's value empty. A size is an amount of work (XS an hour or two to XL more than a week), so a time estimate maps too.
+- Viewer: the dependency graph's lines are always as faded as a closed ticket's row.
 
 ## 0.30.0 - 2026-10-08
 
