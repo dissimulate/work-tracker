@@ -595,6 +595,7 @@ tr:last-child > td { border-bottom: 0; }
   overflow: visible;
   pointer-events: none;
 }
+.graph-svg .lines { opacity: .3; } /* the lines under full dots */
 .graph-svg path { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; }
 .graph-svg path.met { stroke: var(--done); }
 .graph-svg path.going { stroke: var(--active); }
@@ -606,6 +607,12 @@ tr:last-child > td { border-bottom: 0; }
 .graph-svg circle.blocked { fill: var(--blocked); }
 .graph-svg circle:is(.closed, .dropped) { fill: var(--surface); stroke: var(--done); stroke-width: 1.5; }
 .graph-svg circle.dropped { stroke: var(--muted); }
+/* A ticket's id takes its dot's colour (data-dot, ticket_row in viewer.py). */
+.seq details[data-dot] .tk .id { color: var(--muted); }
+.seq details[data-dot="ready"] .tk .id { color: var(--ready); }
+.seq details:is([data-dot="going"], [data-dot="stack"]) .tk .id { color: var(--active); }
+.seq details[data-dot="blocked"] .tk .id { color: var(--blocked); }
+.seq details[data-dot="closed"] .tk .id { color: var(--done); }
 /* A hovered row (app.js): the rest of the graph greys. */
 .graph-svg path.dim { stroke: var(--line); }
 .graph-svg circle.dim { fill: var(--line); }

@@ -171,11 +171,13 @@ function drawGraph() {
     walk(focus, 1, 0);
     walk(focus, 0, 1);
   }
-  const going = i => ['in-progress', 'in-review'].includes(rows[i].dataset.s);
-  const wait = i => (rows[i].dataset.c === '1' ? 'met' : going(i) ? 'going' : 'blocks');
+  const dot = i => rows[i].dataset.dot ?? ''; // the ticket's state (ticket_row in viewer.py)
+  const wait = i => ({ closed: 'met', dropped: 'met', going: 'going' })[dot(i)] ?? 'blocks';
   const linkClass = ([from], k) => (focus === undefined || nearLinks.has(k) ? wait(from) : 'dim');
 
   // The focused chains go last, over the grey.
+  const lines = svgEl('g', { class: 'lines' }); // one layer, so overlapping lines keep one opacity
+  svg.append(lines);
   const drawOrder = links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b));
   drawOrder.forEach(([link, k]) => {
     const [from, to] = link;
@@ -185,15 +187,14 @@ function drawGraph() {
     const run = runs.get(`${from} ${step(to)}`);
     const tx = own.has(from) ? x1 : left + gapX[run.gap] + run.track * GRAPH.track;
     const out = own.has(from) ? '' : `H${tx - r}Q${tx} ${y1} ${tx} ${y1 + dy}`; // a gap run leaves level
-    svg.append(svgEl('path', {
+    lines.append(svgEl('path', {
       class: linkClass(link, k),
       d: `M${x1} ${y1}${out}V${y2 - dy}Q${tx} ${y2} ${tx + r} ${y2}H${x2}`,
     }));
   });
   // Every dot has the same size and halo; a closed one's ring is drawn inside that size.
   rows.forEach((d, i) => {
-    const state = d.dataset.s === 'dropped' ? 'dropped' : d.dataset.c === '1' ? 'closed' : going(i) ? 'going'
-      : d.classList.contains('s-stack') ? 'stack' : d.dataset.b; // data-b: ready or blocked
+    const state = dot(i);
     svg.append(svgEl('circle', { class: 'halo', cx: x(i), cy: y[i], r: GRAPH.node + GRAPH.halo }));
     const dim = focus !== undefined && !near.has(i) ? 'dim' : '';
     const hollow = state === 'closed' || state === 'dropped';

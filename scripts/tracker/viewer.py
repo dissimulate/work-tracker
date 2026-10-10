@@ -444,12 +444,16 @@ def hide_class(c: Column, cls: object = None) -> str | None:
 
 def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
     """A row of the sequence, which opens to the whole ticket. Its data-* carry its status (data-s), whether the server
-    counts it closed (data-c), ready or blocked (data-b), the tickets it waits on and unblocks (data-waits,
+    counts it closed (data-c), ready or blocked (data-b), its state in the graph (data-dot), the tickets it waits on
+    and unblocks (data-waits,
     data-unblocks), its step (data-step) and the links the graph draws (data-links), from which viewer/app.js draws
     the graph and marks a hovered row's links, and its sort values (Column)."""
     t = r.t
     closed = t.stage in CLOSED_TICKET
     cls = " closed" if closed else " s-stack" if tr.stackable(t) else " s-blocked" if r.gate[0] == "blocked" else ""
+    # Its state in the graph's dot and its id's colour: under way, stackable, ready or blocked; closed or dropped.
+    dot = ("dropped" if t.stage == "dropped" else "closed" if closed else "going" if t.stage in IN_FLIGHT
+           else "stack" if tr.stackable(t) else r.gate[0] or None)
     word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
     summary = NONE.join(Html("<span{}>{}</span>").format(attributes(
         {"class": hide_class(c, x.attrs.get("class")), **{k: v for k, v in x.attrs.items() if k != "class"}}), x.body)
@@ -458,7 +462,7 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
              for c in COLUMNS for key, _, _, value in c.sorts}
     waits = " ".join(d.ident for d in tr.deps(t) if d.kind == "ticket")
     unblocks = " ".join(o.id for o in tr.waiting_on(t.id) if o.kind == "ticket")
-    attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0],
+    attrs = {"class": f"t{cls}", "data-s": t.stage, "data-c": int(closed), "data-b": r.gate[0], "data-dot": dot,
              "data-waits": waits or None, "data-unblocks": unblocks or None, "data-step": r.step,
              "data-links": " ".join(r.links) or None, **sorts}
     return panel(t.id, summary, body_html(tr, t, (word, md_inline(str(line))) if line else None), attrs=attrs)
