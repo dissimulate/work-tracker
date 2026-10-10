@@ -34,9 +34,9 @@ Record each fact at the moment it forms, in its home:
 |---|---|
 | you start a ticket's work | `tracker context <id>` (a `start:` line names the branch to start from), then `tracker set <id> status=in-progress` (records the branch, and says when it does not contain that base) |
 | a step ends, or only the next action changes | `tracker step <id> --next "<one concrete action>"`, with `--carry "<fact>"` for each fact a later ticket must know (a contract, a shared module, a changed rule, a trap). Add a message (`step <id> "<text>" --next ...`) only for what the commit subjects do not say: a result, a measurement, why. Log no push, merge, review round or test run: the PR, its checks and `sync` hold those |
-| a ticket ends | `tracker step <id> "..." --done "<what it delivered>"`; `drop` Carry forward to ≤ 5 bullets. Dropped: `tracker set <id> status=dropped summary="<why>"` |
+| a ticket ends | `tracker step <id> --done "<what it delivered>"`; `drop` Carry forward to ≤ 5 bullets. Dropped: `tracker set <id> status=dropped summary="<why>"` |
 | you stop with the work unfinished: a pause, a compaction, the session's end | `tracker step <id> "..." --pause "<what is done, what is half-done and uncommitted, the next step>"` |
-| the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>"`, or the whole Plan with `tracker put <id> plan -` and a heredoc; and a log line saying why |
+| the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>" --why "<why>"`, or the whole Plan with `tracker put <id> plan - --why "<why>"` and a heredoc |
 | a section changes as a whole (Carry forward kept short, Links sorted), or the README needs a section of its own (`put tracker "Why this order" -` makes it) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
 | you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
@@ -49,7 +49,7 @@ Record each fact at the moment it forms, in its home:
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker: put what one needs in its prompt (`tracker context <id> --brief`, or the part that matters), and record what it reports as your own work.
-- **Each write** ends with a line that says whether it wrote its own log line (`new`, `decide`, `wait`, `step` and `attach` do) and what `check` found new: run no `tracker check` or `tracker log` after it.
+- **Each write** logs what the history needs and ends with what `check` found new: run no `tracker check` or `tracker log` after it.
 - **The id** of `step` and `set` can be left out when the session has one ticket (its `--on` choice, or the one ticket under way on the branch): `tracker step "<what and why>" --next "..."`.
 - **Carry forward** holds only what a *later* ticket needs; this ticket's build detail goes in the PR and commits. `tracker drop <id> carry "<text>"` removes a bullet that no longer holds.
 - **Decisions** are *direction* choices only (`tracker rules` gives the bar); a choice inside one ticket's build goes in its Plan or `next`. Record each one when it is raised or settled, in chat, in an answered question or in review:

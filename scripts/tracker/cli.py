@@ -197,19 +197,30 @@ def cmd_set(args):
         # gets none, not a guess.
         if not rec.get("started_at") and rec.get("status") == "todo":
             updates["started_at"] = utc_now()
+    moved = "status" in updates and updates["status"] != rec.get("status")
     if "status" in updates:
         updates.update(rec.status_update(updates["status"]))
-    blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     was = rec.stage if rec.kind == "ticket" else ""
     rec.change(updates)
+    if moved:
+        append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if was == "todo" and updates.get("status") == "in-progress":
         notes += base_notes(tr, rec)
-    if rec.kind == "ticket" and "status" in updates:
-        notes += unblocked(tr, blocked)
     if notes:
         print("\n".join(notes))
+
+
+def status_line(rec: Record) -> str:
+    """The log line of a status change: a ticket's start, close or reopening (a closed one with what its summary
+    says), or the work's status."""
+    status = str(rec.get("status"))
+    if rec.kind == "tracker":
+        return f"The work is {status} now"
+    where = f" on {rec.get('branch')}" if status == "in-progress" and rec.get("branch") else ""
+    what = rec.get("summary") if rec.closed and rec.get("summary") else rec.get("title")
+    return f"{rec.id} {status}{where}: {short(str(what))}"
 
 
 def start_here(tr: Tracker, t: Record, updates: dict) -> list[str]:
@@ -304,11 +315,10 @@ def cmd_new(args):
 
 def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
     who = f" ({by})" if by else ""
-    blocked = {t.id for t in tr.waiting_on(rec.id) if tr.blockers(t)}
     rec.change(rec.status_update("closed"))
     append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
     append_log(tr, f"Decided {rec.id} {rec.get('title')}{who}: {short(answer)}", [rec.id, *tr.touched_by(rec)])
-    return "\n".join([f"{rec.id} closed", *unblocked(tr, blocked)])
+    return f"{rec.id} closed"
 
 
 def add_waits(tr: Tracker, t: Record, idents: list[str]) -> list[str]:
@@ -462,30 +472,46 @@ def require_links(tr: Tracker, text: str) -> None:
             die(f"label '{x.label}' is not one of {', '.join(tr.labels)} (`tracker set tracker labels=...` adds one)")
 
 
-def cmd_add(args):
+def section_edit(args, new: bool = True) -> tuple[Tracker, Record, str]:
+    """The record and section an `add`, `put` or `drop` changes. A started ticket's Plan is the agreed plan: it
+    changes only with a reason (--why), which the log keeps."""
     tr, rec = record_for(args, args.id)
-    heading = section_named(rec, args.section, new=True)
+    heading = section_named(rec, args.section, new=new)
+    if heading == "Plan" and rec.kind == "ticket" and rec.get("status", "todo") != "todo" and not args.why:
+        die(f"{rec.id} has started, so its Plan is the agreed plan: pass why it changes, for the log: "
+            f"--why \"<why the plan changes>\"")
+    fit("log", args.why)
+    return tr, rec, heading
+
+
+def section_done(tr: Tracker, rec: Record, heading: str, why: str | None, did: str) -> None:
+    rec.change()
+    if why:
+        readme = rec.kind == "tracker"
+        append_log(tr, f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id])
+    print(f"{rec.id} {heading}: {did}")
+
+
+def cmd_add(args):
+    tr, rec, heading = section_edit(args)
     text = args.text.strip()
     if heading == "Carry forward":
         fit("carry", text)
     if args.replace:
         replace_in_section(rec, heading, args.replace, text)
-        rec.change()
-        print(f"{rec.id} {heading}: replaced")
+        section_done(tr, rec, heading, args.why, "replaced")
         return
     if heading in LIST_SECTIONS and not BULLET.match(text):
         text = "- " + text
     if heading in LINK_SECTIONS:
         require_links(tr, text)
     append_to_section(rec, heading, text)
-    rec.change()
-    print(f"{rec.id} {heading}: added")
+    section_done(tr, rec, heading, args.why, "added")
 
 
 def cmd_put(args):
     """Replace a whole section: a rewritten Plan, a Carry forward kept short, a new set of Links."""
-    tr, rec = record_for(args, args.id)
-    heading = section_named(rec, args.section, new=True)
+    tr, rec, heading = section_edit(args)
     text = args.text.strip("\n")
     if not text.strip():
         die("put takes the section's whole new text: pass it, or `-` and pipe it (a heredoc: <<'EOF')")
@@ -495,16 +521,13 @@ def cmd_put(args):
         for b in bullets(text):
             fit("carry", b)
     put_section(rec, heading, text)
-    rec.change()
-    print(f"{rec.id} {heading}: replaced")
+    section_done(tr, rec, heading, args.why, "replaced")
 
 
 def cmd_drop(args):
-    rec = record_for(args, args.id)[1]
-    heading = section_named(rec, args.section)
+    tr, rec, heading = section_edit(args, new=False)
     n = drop_from_section(rec, heading, args.text)
-    rec.change()
-    print(f"{rec.id} {heading}: dropped {n} line(s)")
+    section_done(tr, rec, heading, args.why, f"dropped {n} line(s)")
 
 
 def cmd_show(args):
@@ -883,7 +906,6 @@ def cmd_step(args):
     here = m if m and t.id in {x.id for x in m.tickets} else None
     if args.pause and not here:
         die(f"--pause leaves a handoff on {t.id}'s branch: run it there (here: {m.branch if m else 'no git branch'})")
-    blocked = {x.id for x in tr.tickets if tr.blockers(x)}
     updates, done = {}, []
     if args.next:
         updates["next"] = args.next
@@ -900,13 +922,14 @@ def cmd_step(args):
     if args.message:
         append_log(tr, args.message, [t.id])
         done.append("logged")
+    if args.done:
+        append_log(tr, status_line(t), [t.id])
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
     elif m:
         parts.append(f"{m.branch} not marked: {t.id} is not on it")
-    notes = unblocked(tr, blocked) if args.done else []  # `check` after the write names a long Carry forward
-    print("\n".join(["; ".join(parts), *notes]))
+    print("; ".join(parts))
 
 
 def tracker_matches(words: list[str]) -> tuple[list[Tracker], bool]:
@@ -1183,17 +1206,20 @@ def build_parser():
                                     "options, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
+    sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`), with the text "
                              "from stdin: put T-8 carry - <<'EOF' … EOF")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
                                     "options, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", nargs="?", default="-", help="the section's whole new text; `-` or left out: from stdin")
+    sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("drop", cmd_drop, "remove the one line of a section that holds this text (a bullet goes with its "
                                "nested lines): drop T-8 carry \"old fact\"")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section")
     sp.add_argument("text")
+    sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("show", cmd_show, "records' own text by id, whole or only some sections, without the template's "
                                "comments: show T-8 --section carry / show D-01 D-02 --section resolution")
     sp.add_argument("ids", nargs="+", metavar="ID", help="ticket, decision or action ids (a comma list works "
@@ -1343,30 +1369,22 @@ WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate
                   "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 
-def log_size(tr: Tracker) -> int:
-    try:
-        return (tr.root / "log.md").stat().st_size
-    except OSError:
-        return 0
-
-
 def with_check(run, args) -> None:
-    """Run a write command, then print the `check` problems it added to the tracker, and end with a line that says
-    whether it wrote its own log line and whether `check` found new problems: no `tracker check` or `tracker log`
-    needs to follow a write. `init` and `migrate` check for themselves."""
+    """Run a write command, then print the tickets it left unblocked and the `check` problems it added to the
+    tracker, and end with whether `check` found new problems: no `tracker check` needs to follow a write. Each write
+    logs what the history needs, so no `tracker log` follows one either. `init` and `migrate` check for themselves."""
     tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
     before = set(problem_lines(tr)) if tr else set()
-    size = log_size(tr) if tr else 0
+    blocked = {t.id for t in tr.tickets if tr.blockers(t)} if tr else set()
     run()
     if not tr:
         return
     tr = Tracker(tr.root)
     added = [x for x in problem_lines(tr) if x not in before]
-    logged = args.cmd != "log" and log_size(tr) > size
+    lines = unblocked(tr, blocked)
     if added:
-        print("\n".join(["This change added `tracker check` problems:", *added]))
-    print(" · ".join(["log line written"] * logged + ["`check`: " + ("fix the problems above" if added
-                                                                     else "no new problems")]))
+        lines += ["This change added `tracker check` problems:", *added]
+    print("\n".join([*lines, "`check`: " + ("fix the problems above" if added else "no new problems")]))
 
 
 def own_changes(run) -> None:
@@ -1396,7 +1414,7 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
 TEXT_DESTS = ("message", "text", "next", "done", "pause", "carry", "question", "note", "resolve", "replace", "append",
-              "pairs")
+              "why", "pairs")
 
 
 def no_id(args) -> None:

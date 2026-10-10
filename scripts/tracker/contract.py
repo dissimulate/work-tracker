@@ -219,14 +219,16 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "  actions/A-<n>.md: a task for the user; its body holds note lines, one fact each "
         "(`tracker act A-<n> --note`). Frontmatter:",
         *keys("action"),
-        "  log.md: one dated line per change, append-only (`tracker log`); the hooks add the branch's new commits "
-        "(`Commits on <branch>: ...`), `pause` the handoff's first words.",
+        "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
+        "a note no other write holds. The hooks add the branch's new commits (`Commits on <branch>: ...`), `pause` the "
+        "handoff's first words.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
         "Body edits: `tracker add <id> <section> \"...\" [--replace OLD]` and `tracker drop <id> <section> \"...\"` "
         "change one line of a section of a ticket, a decision or the README (`tracker`), by a prefix of its name, and "
         "`tracker put <id> <section> -` the whole section, from stdin; edit the file only for what they do not cover. "
+        "`--why \"...\"` logs why a section changes; a started ticket's Plan changes only with it. "
         "Any text argument can be `-`: the text then comes from stdin (a heredoc, <<'EOF'). Never edit frontmatter by "
         "hand. `tracker show <ids> --section <name>` prints sections as they are.",
         "Text limits in characters, refused when written: "

@@ -41,6 +41,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - `tracker issue` with no id lists the tickets whose issue fields are to read (before: `tracker issue --due`). `--due` now records the issue's due day.
 - The agent maps an issue's priority and estimate by what they mean on that issue tracker's scale, not by a raw number from its API. A value that means none ("No priority") leaves the ticket's value empty. A size is an amount of work (XS an hour or two to XL more than a week), so a time estimate maps too.
 - Viewer: the dependency graph's lines are always as faded as a closed ticket's row.
+- Each write logs what the history needs, so the agent runs no `tracker log` after one. A status change through `tracker set` or `tracker step --done` writes its own log line. `tracker add`, `put` and `drop` take `--why`, which logs why a section changes; a started ticket's Plan changes only with it.
+- Any write that leaves a ticket with nothing to wait on says so, `tracker wait <id> off` too. A write no longer ends with "log line written".
 
 ## 0.30.0 - 2026-10-08
 

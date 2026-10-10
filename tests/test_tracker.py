@@ -675,10 +675,8 @@ class Writes(unittest.TestCase):
         done = run(*t, "step", "L-1", "--done", "all of it")
         self.assertIn("added `tracker check` problems:\n⚠ L-1: done but Carry forward has 6 bullets", done)
         self.assertEqual(done.count("Carry forward has 6"), 1)
-        # The problem was there before. Each write ends by saying what it did, so no `check` or `log` follows it.
+        # The problem was there before. Each write ends by saying what `check` found, so no `check` follows it.
         self.assertTrue(run(*t, "set", "L-1", "title=One thing").endswith("\n`check`: no new problems\n"))
-        self.assertIn("log line written · `check`: no new problems", run(*t, "new", "L-9", "--title", "Nine"))
-        self.assertNotIn("log line written", run(*t, "log", "a note"))  # it says `logged`
 
         run(*t, "new", "L-2", "--title", "Two")
         run(*t, "log", "about two", "--ref", "l-2")
@@ -703,7 +701,7 @@ class Writes(unittest.TestCase):
         made.write_text("other\n")
         self.assertIn("`--append -`", run(*t, "attach", str(made), code=2))
         with piped("## Run 2\n\nIt `works`."):
-            self.assertIn("log line written", run(*t, "attach", "run.md", "--ref", "L-1", "--append", "-"))
+            self.assertIn("`check`: no new problems", run(*t, "attach", "run.md", "--ref", "L-1", "--append", "-"))
         self.assertEqual((model.HOME / s / "evidence/run.md").read_text(), "run 1\n\n## Run 2\n\nIt `works`.\n")
         self.assertEqual(run(*t, "show", "L-1", "--section", "links").count("evidence/run.md"), 1)
         self.assertIn("no file evidence/../README.md", run(*t, "attach", "../README.md", "--append", "x", code=2))
@@ -747,6 +745,46 @@ class Writes(unittest.TestCase):
             self.assertIn("no tracker", run("context", f"{name}:L-1", code=2))
 
 
+
+    def test_writes_log_what_history_needs(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Logs", "--owner", "me")
+        run(*t, "new", "G-1", "--title", "One")
+        run(*t, "new", "G-2", "--title", "Two", "--depends", "G-1")
+        run(*t, "new", "G-3", "--title", "Three", "--depends", "G-2")
+        log = model.HOME / s / "log.md"
+        def last() -> str:
+            return log.read_text().splitlines()[-1].removeprefix(f"- {model.today()} ")
+
+        # A todo ticket's Plan is a draft: it changes freely, and a change with no reason logs nothing.
+        before = log.read_text()
+        run(*t, "put", "G-1", "plan", "- build it")
+        run(*t, "set", "G-1", "next=build it")
+        self.assertEqual(log.read_text(), before)
+        # A status change logs itself.
+        run(*t, "set", "G-1", "status=in-progress")
+        self.assertEqual(last(), "[G-1] G-1 in-progress: One")
+        # A started ticket's Plan is the agreed plan: it changes only with a reason, which the log keeps.
+        self.assertIn("--why", run(*t, "put", "G-1", "plan", "- build it twice", code=2))
+        self.assertIn("--why", run(*t, "drop", "G-1", "plan", "build it", code=2))
+        run(*t, "add", "G-1", "plan", "- build it twice", "--replace", "- build it", "--why", "the first build failed")
+        self.assertEqual(last(), "[G-1] Plan changed: the first build failed")
+        self.assertIn("- build it twice", run(*t, "show", "G-1", "--section", "plan"))
+        run(*t, "add", "tracker", "context", "- Spec: [The spec](https://example.com/spec) — the rules",
+            "--why", "the spec governs it")
+        self.assertEqual(last(), "README Context changed: the spec governs it")
+
+        # Any write that leaves a ticket unblocked says so.
+        self.assertIn("nothing blocks G-3 now", run(*t, "wait", "G-3", "off", "G-2"))
+        out = run(*t, "set", "G-1", "status=done", "summary=shipped")
+        self.assertIn("nothing blocks G-2 now", out)
+        self.assertEqual(last(), "[G-1] G-1 done: shipped")
+        run(*t, "step", "G-2", "Tested by hand", "--done", "two delivered")
+        self.assertEqual(log.read_text().splitlines()[-2:], [f"- {model.today()} [G-2] Tested by hand",
+                                                             f"- {model.today()} [G-2] G-2 done: two delivered"])
+        run(*t, "set", "tracker", "status=active")
+        self.assertEqual(last(), "The work is active now")
     def test_put_stdin_and_the_tracker_folder(self):
         s, sid, work = slug(), f"sid{time.monotonic_ns()}", repo("feat/P-1")
         t = ("--tracker", s)
