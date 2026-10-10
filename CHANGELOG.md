@@ -28,6 +28,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Viewer: the graph shows the status that row colours showed before: a dot is blue when ready, amber when under way or stackable, red when blocked, and a ring when closed; a line is red while it blocks, amber while the ticket waited on is under way and green once it is closed. Ticket titles are plain text, and a ticket's id takes its dot's colour. Hover a row to see only the chains it waits on and unblocks.
 - Viewer: the sequence starts in a depth-first dependency order, so a chain of tickets stays together; Step puts it back.
 - Viewer: the sequence has no Time column. An opened ticket gives its wait and cycle time on its first line.
+- Viewer: a hovered sequence row takes a fainter fill.
+- Viewer: the toolbar (tracker menu, Refresh, theme) stays at the top as the page scrolls.
 - Viewer: the Status column comes before Group.
 - Viewer: a closed ticket's row is dimmed in every column but Step, not only its title.
 - Viewer: a status has one colour everywhere, its tag's: in its tag, as text (a dependency, a decision), as a ticket's id and in the graph.
