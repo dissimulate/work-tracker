@@ -1017,10 +1017,12 @@ class Sequence:
     step: dict[str, int]  # per ticket: 1 + the longest chain of tickets it waits on
     critical: list[str]  # the longest chain of unfinished tickets, first to last
     cycles: list[list[str]]
+    waits: dict[str, list[str]]  # per ticket: the tickets it waits on, its depends_on and those its open PR stacks on
 
 
 def sequence(tr: Tracker) -> Sequence:
-    edges = {t.id: [d.ident for d in tr.deps(t) if d.kind == "ticket" and d.ident != t.id] for t in tr.tickets}
+    edges = {t.id: list(dict.fromkeys(d.ident for d in tr.deps(t) if d.kind == "ticket" and d.ident != t.id))
+             for t in tr.tickets}
     step, cycles, path = {}, [], []
 
     def visit(i: str) -> int:
@@ -1039,7 +1041,7 @@ def sequence(tr: Tracker) -> Sequence:
 
     for i in edges:
         visit(i)
-    return Sequence(step, [] if cycles else longest_open_chain(tr, edges), cycles)
+    return Sequence(step, [] if cycles else longest_open_chain(tr, edges), cycles, edges)
 
 
 def longest_open_chain(tr: Tracker, edges: dict[str, list[str]]) -> list[str]:

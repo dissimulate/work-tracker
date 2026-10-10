@@ -70,21 +70,29 @@ function applyFilter() {
 }
 
 // The dependency graph in the Step column, drawn for the rows as they are shown, in any sort and filter. A ticket's
-// dot sits in the column of its step (data-step). A ticket's links leave its dot up or down its own column, as a
-// branch does in a git graph, and turn into each waiting ticket's dot level, when that column is free over their
-// rows: no other dot there, and no other ticket's run. Otherwise they leave level and run in tracks in the gap just
-// left of each waiting ticket's column, a track per step they link to, so a link never passes through another dot.
-// Only the links no longer chain implies are drawn (data-links, drawn_links() in viewer.py). Links to hidden rows are left out. The
-// graph carries the sequence's status colours: a dot takes its ticket's state (ready, stackable, blocked, under way,
-// closed), and a link the state of the ticket waited on (met when closed, under way when started, else blocking).
-// While a row is hovered or focused, the graph keeps only what its ticket waits on and unblocks, through any chain,
-// and greys the rest.
-const GRAPH = { dot: 8, space: 4, pad: 3, track: 4, node: 3.5, halo: 1, ring: 1.5, turn: 4 };
+// dot sits in the column of its step (data-step); a step with no row shown takes no column. A ticket's links leave its
+// dot up or down its own column, as a branch does in a git graph, and turn level into each waiting ticket's dot, when
+// that column is free over their rows: no other dot there, and no other ticket's run. Otherwise they leave level and
+// run in a track in the gap just left of each waiting ticket's column, so a link never passes through another dot.
+// Only the links no chain implies are drawn (data-links, drawn_links in viewer.py), and none to a hidden row. A dot
+// takes its ticket's state (data-dot), and a link the state of the ticket waited on: met once closed, under way, or
+// blocking; each as its status class (s-<state>, style.css). While a row is hovered or focused, the graph keeps only
+// what its ticket waits on and unblocks, through any chain, and greys the rest.
+const GRAPH = {
+  width: 8, // a column's
+  space: 4, // between two columns with no tracks between them
+  pad: 3, // between a column and its gap's tracks
+  track: 4, // between two tracks
+  radius: 3.5, // a dot's
+  halo: 1, // round a dot, in the panel colour, over the lines behind it
+  ring: 1.5, // a hollow dot's stroke (style.css)
+  turn: 4, // a corner's radius
+};
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svgEl(name, attrs) {
   const el = document.createElementNS(SVG, name);
-  Object.entries(attrs).forEach(([k, v]) => { if (v !== '' && v != null) el.setAttribute(k, v); }); // none: left out
+  Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
   return el;
 }
 
@@ -95,42 +103,37 @@ function drawGraph() {
   const rows = [...seq.querySelectorAll(':scope > details.t:not([hidden])')];
   if (!rows.length) return;
   const at = new Map(rows.map((d, i) => [d.dataset.id, i]));
-  // A column per step that has a shown row, in step order: a step the filter hides takes no room.
-  const stepOf = i => Number(rows[i].dataset.step) || 1;
-  const shown = [...new Set(rows.map((_, i) => stepOf(i)))].sort((a, b) => a - b);
-  const column = new Map(shown.map((s, k) => [s, k + 1]));
-  const step = i => column.get(stepOf(i)); // its column
-  const steps = shown.length;
+  const steps = [...new Set(rows.map(d => Number(d.dataset.step)))].sort((a, b) => a - b);
+  const column = new Map(steps.map((s, k) => [s, k + 1]));
+  const col = i => column.get(Number(rows[i].dataset.step)); // a row's column, from 1
+  const cols = steps.length;
   const links = rows.flatMap((d, to) => (d.dataset.links || '').split(' ')
     .filter(id => at.has(id)).map(id => [at.get(id), to])); // [the row waited on, the waiting row]
+  const widen = ([first, last], to) => [Math.min(first, to), Math.max(last, to)]; // rows, first to last
 
   // Column runs: a ticket's links down (or up) its own column, over the rows from it to its farthest link, taken in
   // row order while the column is free over them.
-  const reach = new Map(); // per ticket waited on: its links' rows, first to last
-  links.forEach(([from, to]) => {
-    const [first, last] = reach.get(from) ?? [from, from];
-    reach.set(from, [Math.min(first, to), Math.max(last, to)]);
-  });
+  const reach = new Map(); // per ticket waited on: the rows of its links
+  links.forEach(([from, to]) => reach.set(from, widen(reach.get(from) ?? [from, from], to)));
   const own = new Set(); // the tickets whose links run in their column
   const taken = []; // per column: the rows its runs hold
   [...reach].sort((a, b) => a[0] - b[0]).forEach(([from, [first, last]]) => {
-    const c = step(from);
-    const crowded = rows.some((_, i) => i !== from && i >= first && i <= last && step(i) === c);
+    const c = col(from);
+    const crowded = rows.some((_, i) => i !== from && i >= first && i <= last && col(i) === c);
     if (crowded || (taken[c] ?? []).some(([a, b]) => a <= last && first <= b)) return;
     (taken[c] ??= []).push([first, last]);
     own.add(from);
   });
 
-  // Gap runs, for the rest: one per ticket and step it links to, over the rows from the ticket to its last link
-  // there. Each gap, left of a step's column, gives its runs tracks: a run takes the first track free by its first
-  // row.
+  // Gap runs, for the rest: one per ticket and column it links to, over the rows from the ticket to its last link
+  // there. Each gap, left of its column, gives its runs tracks: a run takes the first track free by its first row.
   const runs = new Map();
+  const runKey = (from, to) => `${from} ${col(to)}`;
   links.filter(([from]) => !own.has(from)).forEach(([from, to]) => {
-    const key = `${from} ${step(to)}`;
-    const [first, last] = runs.get(key)?.rows ?? [from, from];
-    runs.set(key, { gap: step(to), rows: [Math.min(first, to), Math.max(last, to)] });
+    const key = runKey(from, to);
+    runs.set(key, { gap: col(to), rows: widen(runs.get(key)?.rows ?? [from, from], to) });
   });
-  const tracks = Array.from({ length: steps + 1 }, () => []); // per gap: each track's last row
+  const tracks = Array.from({ length: cols + 1 }, () => []); // per gap: each track's last row
   [...runs.values()].sort((a, b) => a.rows[0] - b.rows[0]).forEach(run => {
     const ends = tracks[run.gap];
     run.track = ends.findIndex(end => end < run.rows[0]);
@@ -138,24 +141,23 @@ function drawGraph() {
     ends[run.track] = run.rows[1];
   });
   // Columns and gaps, left to right: a gap is as wide as its tracks need, or only spaces the dots.
-  const colX = [0, GRAPH.dot / 2];
-  const gapX = [0, 0];
-  for (let s = 2; s <= steps; s++) {
-    const n = tracks[s].length;
-    gapX[s] = colX[s - 1] + GRAPH.dot / 2 + GRAPH.pad;
-    colX[s] = colX[s - 1] + GRAPH.dot + (n ? 2 * GRAPH.pad + (n - 1) * GRAPH.track : GRAPH.space);
+  const colX = [0, GRAPH.width / 2];
+  const trackX = [0, 0]; // per gap: its first track
+  for (let c = 2; c <= cols; c++) {
+    const n = tracks[c].length;
+    trackX[c] = colX[c - 1] + GRAPH.width / 2 + GRAPH.pad;
+    colX[c] = colX[c - 1] + GRAPH.width + (n ? 2 * GRAPH.pad + (n - 1) * GRAPH.track : GRAPH.space);
   }
-  seq.style.setProperty('--graph-w', `${colX[steps] + GRAPH.dot / 2}px`);
+  seq.style.setProperty('--graph-w', `${colX[cols] + GRAPH.width / 2}px`);
 
   // Positions, measured once the column has its width: a dot sits at the middle of its row's head.
   const box = seq.getBoundingClientRect();
-  const left = rows[0].querySelector('summary > :first-child').getBoundingClientRect().left - box.left;
-  const x = i => left + colX[step(i)];
+  const left = rows[0].querySelector('summary > .graph').getBoundingClientRect().left - box.left;
+  const x = i => left + colX[col(i)];
   const y = rows.map(d => {
     const r = d.querySelector('summary').getBoundingClientRect();
     return r.top - box.top + r.height / 2;
   });
-  const svg = svgEl('svg', { class: 'graph-svg', 'aria-hidden': 'true' });
 
   // The focused ticket's chains: the links up to what it waits on and down to what it unblocks, and their tickets.
   const focus = at.get(focusId);
@@ -171,35 +173,33 @@ function drawGraph() {
     walk(focus, 1, 0);
     walk(focus, 0, 1);
   }
-  const dot = i => rows[i].dataset.dot ?? ''; // the ticket's state (ticket_row in viewer.py)
-  const wait = i => ({ closed: 'met', dropped: 'met', going: 'going' })[dot(i)] ?? 'blocks';
-  const linkClass = ([from], k) => (focus === undefined || nearLinks.has(k) ? wait(from) : 'dim');
+  const dot = i => rows[i].dataset.dot; // the ticket's state (ticket_row in viewer.py)
+  const hollow = i => dot(i) === 'closed' || dot(i) === 'dropped';
+  const tone = from => (hollow(from) ? 's-closed' : dot(from) === 'going' ? 's-going' : 's-blocked'); // a link's
 
-  // The focused chains go last, over the grey.
+  const svg = svgEl('svg', { class: 'graph-svg', 'aria-hidden': 'true' });
   const lines = svgEl('g', { class: 'lines' }); // one layer, so overlapping lines keep one opacity
   svg.append(lines);
-  const drawOrder = links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b));
-  drawOrder.forEach(([link, k]) => {
+  // The focused chains go last, over the grey.
+  links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b)).forEach(([link, k]) => {
     const [from, to] = link;
     const [x1, y1, x2, y2] = [x(from), y[from], x(to), y[to]];
     const r = Math.min(GRAPH.turn, Math.abs(y2 - y1) / 2);
     const dy = Math.sign(y2 - y1) * r;
-    const run = runs.get(`${from} ${step(to)}`);
-    const tx = own.has(from) ? x1 : left + gapX[run.gap] + run.track * GRAPH.track;
-    const out = own.has(from) ? '' : `H${tx - r}Q${tx} ${y1} ${tx} ${y1 + dy}`; // a gap run leaves level
+    const run = runs.get(runKey(from, to));
+    const tx = run ? left + trackX[run.gap] + run.track * GRAPH.track : x1;
+    const out = run ? `H${tx - r}Q${tx} ${y1} ${tx} ${y1 + dy}` : ''; // a gap run leaves level
     lines.append(svgEl('path', {
-      class: linkClass(link, k),
+      class: focus === undefined || nearLinks.has(k) ? tone(from) : 'dim',
       d: `M${x1} ${y1}${out}V${y2 - dy}Q${tx} ${y2} ${tx + r} ${y2}H${x2}`,
     }));
   });
-  // Every dot has the same size and halo; a closed one's ring is drawn inside that size.
-  rows.forEach((d, i) => {
-    const state = dot(i);
-    svg.append(svgEl('circle', { class: 'halo', cx: x(i), cy: y[i], r: GRAPH.node + GRAPH.halo }));
-    const dim = focus !== undefined && !near.has(i) ? 'dim' : '';
-    const hollow = state === 'closed' || state === 'dropped';
-    svg.append(svgEl('circle', { class: [state, dim].filter(Boolean).join(' '), cx: x(i), cy: y[i],
-                                 r: hollow ? GRAPH.node - GRAPH.ring / 2 : GRAPH.node }));
+  // Every dot has the same size and halo; a hollow one's ring is drawn inside that size.
+  rows.forEach((_, i) => {
+    const dim = focus === undefined || near.has(i) ? '' : ' dim';
+    svg.append(svgEl('circle', { class: 'halo', cx: x(i), cy: y[i], r: GRAPH.radius + GRAPH.halo }));
+    svg.append(svgEl('circle', { class: `s-${dot(i)}${dim}`, cx: x(i), cy: y[i],
+                                 r: hollow(i) ? GRAPH.radius - GRAPH.ring / 2 : GRAPH.radius }));
   });
   seq.append(svg);
 }

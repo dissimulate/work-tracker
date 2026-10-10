@@ -1197,8 +1197,8 @@ class SequenceSort(unittest.TestCase):
         self.assertIn('title="unblocks: T-3"><span><span class=meta>→</span> <a class=id href="#T-3">', deps("T-2"))
 
     def test_rows_carry_the_graph(self):
-        """viewer/app.js draws the dependency graph from each row's data: its step (its dot's column and colour) and
-        its links."""
+        """viewer/app.js draws the dependency graph from each row's data: its step (its dot's column), its links and
+        its state (its dot's colour, and its id's, by its status class)."""
         s = slug()
         t = ("--tracker", s)
         run("init", s, "--title", "Work", "--owner", "me")
@@ -1211,15 +1211,22 @@ class SequenceSort(unittest.TestCase):
 
         def row(ident: str) -> dict[str, str]:
             attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
-            return dict(re.findall(r'data-(waits|unblocks|step|links)="([^"]*)"', attrs))
-        self.assertEqual(row("T-1"), {"unblocks": "T-2 T-3", "step": "1"})
-        self.assertEqual(row("T-5"), {"step": "1"})
-        self.assertEqual(row("T-2"), {"waits": "T-1", "unblocks": "T-4", "step": "2", "links": "T-1"})
-        self.assertEqual(row("T-3"), {"waits": "T-1", "unblocks": "T-4", "step": "2", "links": "T-1"})
-        self.assertEqual(row("T-4"), {"waits": "T-3 T-2", "step": "3", "links": "T-3 T-2"})
+            return dict(re.findall(r'(class|data-step|data-links|data-dot)="([^"]*)"', attrs))
+        self.assertEqual(row("T-1"), {"class": "t s-ready", "data-step": "1", "data-dot": "ready"})
+        self.assertEqual(row("T-5"), {"class": "t s-ready", "data-step": "1", "data-dot": "ready"})
+        for ident in ("T-2", "T-3"):
+            self.assertEqual(row(ident),
+                             {"class": "t s-blocked", "data-step": "2", "data-links": "T-1", "data-dot": "blocked"})
+        self.assertEqual(row("T-4"),
+                         {"class": "t s-blocked", "data-step": "3", "data-links": "T-3 T-2", "data-dot": "blocked"})
         self.assertRegex(page, r'<details data-id="T-4"[^>]*><summary><span class="graph" title="step 3"></span>')
+        run(*t, "set", "T-1", "status=done")
+        run(*t, "set", "T-2", "status=in-progress")
+        run(*t, "set", "T-5", "status=dropped")
+        page = viewer.main_html(model.Tracker(model.HOME / s))
         dots = dict(re.findall(r'<details data-id="(T-\d)"[^>]* data-dot="(\w+)"', page))
-        self.assertEqual(dots, {"T-1": "ready", "T-5": "ready", "T-2": "blocked", "T-3": "blocked", "T-4": "blocked"})
+        self.assertEqual(dots, {"T-1": "closed", "T-2": "going", "T-3": "ready", "T-4": "blocked", "T-5": "dropped"})
+        self.assertEqual(row("T-1")["class"], "t closed s-closed")
 
     def test_the_graph_draws_only_the_links_no_chain_implies(self):
         edges = {"A": [], "B": ["A"], "C": ["B", "A"], "D": ["C", "A", "B"], "E": ["E2"], "E2": ["E"]}  # E: a cycle

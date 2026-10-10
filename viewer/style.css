@@ -60,19 +60,20 @@
 /* ---------- status colours ----------
    The one place a status gets its colour. A status class sets --tone for itself and what is in it. The classes are
    s-<stage> and s-<decision status>, from the dependencies s-ready, s-stack (waits only on work under way, so it
-   can stack on it) and s-blocked, and from a ticket's move s-you (your move) and s-them (another's). */
+   can stack on it) and s-blocked, from the graph s-going (under way), and from a ticket's move s-you (your move) and
+   s-them (another's). */
 
 .s-todo, .s-dropped, .s-them { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
 .s-ready { --tone: var(--ready); --tag-tone: var(--tag-ready); }
-.s-in-progress, .s-in-review, .s-open, .s-stack { --tone: var(--active); --tag-tone: var(--tag-active); }
+.s-in-progress, .s-in-review, .s-open, .s-stack, .s-going { --tone: var(--active); --tag-tone: var(--tag-active); }
 .s-merged, .s-done, .s-closed { --tone: var(--done); --tag-tone: var(--tag-done); }
 .s-blocked, .s-you { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
 #live { --tone: var(--done); }
 #live.off { --tone: var(--blocked); }
 .filters [aria-pressed="true"] { --tone: var(--accent); }
 
-/* Text in its status colour: dependencies, decisions, a waiting row's ticket. With no --tone it keeps its parent's
-   colour. Links and ids in it take the same colour. */
+/* Text in its status colour: dependencies, decisions. With no --tone it keeps its parent's colour. Links and ids in
+   it take the same colour. */
 .tone { color: var(--tone); }
 .tone :is(a, .id) { color: inherit; }
 .tone:is(.s-stack, .s-blocked) { font-weight: 600; }
@@ -577,16 +578,14 @@ tr:last-child > td { border-bottom: 0; }
 .seq-head [data-dir="desc"]::after { content: " ↓"; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .seq summary > span:has(> .chip) { display: flex; align-items: center; }
-.seq summary > :first-child { color: var(--muted); font-variant-numeric: tabular-nums; }
-/* The dependency graph (drawGraph in app.js): an SVG over the sequence, in the Step column, a column per step, whose
-   width app.js sets in --graph-w. An opened ticket's body starts right of it, so the lines pass beside its text. The
-   graph carries the sequence's status colours, so the rows keep plain text. A dot: ready, stackable (it waits only
-   on work under way), blocked, under way; a closed ticket's is hollow, a dropped one's grey. A link takes the state
-   of the ticket waited on: met, under way, or blocking. Every dot is the same size, on a halo in the panel
-   colour that sets the lines behind it. */
-.seq { position: relative; }
-.seq summary > .graph { width: var(--graph-w, 8px); }
-.seq > details > div { padding-left: calc(var(--pad) + var(--graph-w, 8px) + var(--gap)); }
+/* The dependency graph (drawGraph in app.js): an SVG over the sequence, in the Step column, whose width app.js sets
+   in --graph-w. An opened ticket's body starts right of it, so the lines pass beside its text. The graph carries the
+   sequence's status colours, so the rows keep plain text: a dot, and its ticket's id, take the ticket's status class
+   (its row's s-<state>), and a link that of the ticket waited on. A closed or dropped ticket's dot is a ring of the
+   same size. Every dot sits on a halo in the panel colour that sets the lines behind it. */
+.seq { position: relative; --graph-w: 8px; }
+.seq summary > .graph { width: var(--graph-w); }
+.seq > details > div { padding-left: calc(var(--pad) + var(--graph-w) + var(--gap)); }
 .graph-svg {
   position: absolute;
   inset: 0;
@@ -596,27 +595,12 @@ tr:last-child > td { border-bottom: 0; }
   pointer-events: none;
 }
 .graph-svg .lines { opacity: .3; } /* the lines under full dots */
-.graph-svg path { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; }
-.graph-svg path.met { stroke: var(--done); }
-.graph-svg path.going { stroke: var(--active); }
-.graph-svg path.blocks { stroke: var(--blocked); }
-.graph-svg circle { fill: var(--muted); }
-.graph-svg circle.halo { fill: var(--surface); }
-.graph-svg circle.ready { fill: var(--ready); }
-.graph-svg circle:is(.going, .stack) { fill: var(--active); }
-.graph-svg circle.blocked { fill: var(--blocked); }
-.graph-svg circle:is(.closed, .dropped) { fill: var(--surface); stroke: var(--done); stroke-width: 1.5; }
-.graph-svg circle.dropped { stroke: var(--muted); }
-/* A ticket's id takes its dot's colour (data-dot, ticket_row in viewer.py). */
-.seq details[data-dot] .tk .id { color: var(--muted); }
-.seq details[data-dot="ready"] .tk .id { color: var(--ready); }
-.seq details:is([data-dot="going"], [data-dot="stack"]) .tk .id { color: var(--active); }
-.seq details[data-dot="blocked"] .tk .id { color: var(--blocked); }
-.seq details[data-dot="closed"] .tk .id { color: var(--done); }
-/* A hovered row (app.js): the rest of the graph greys. */
-.graph-svg path.dim { stroke: var(--line); }
-.graph-svg circle.dim { fill: var(--line); }
-.graph-svg circle.dim:is(.closed, .dropped) { fill: var(--surface); stroke: var(--line); }
+.graph-svg path { fill: none; stroke: var(--tone); stroke-width: 1.5; stroke-linecap: round; }
+.graph-svg circle { fill: var(--tone, var(--muted)); }
+.graph-svg circle:is(.s-closed, .s-dropped) { fill: var(--surface); stroke: var(--tone); stroke-width: 1.5; }
+.graph-svg .halo { fill: var(--surface); }
+.graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered (app.js) */
+.seq .tk .id { color: var(--tone, var(--muted)); }
 .seq details.closed:not([open]) > summary { color: var(--muted); }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
