@@ -172,7 +172,7 @@ Environment variables. All are optional.
 4. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
 5. `contract`: `check`, `rules`, `migrate`
 6. `views`: text views and the brief
-7. `github`: `sync`
+7. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`); `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
 8. `watcher`: `tracker watch` and the user's grant; archiving and deleting a tracker
 9. `viewer`: the page and its server (look: `viewer/page.html`, `style.css`, `app.js`). Markup is `Html`, which escapes the text put into it; the sequence's columns are its `Column` table
 10. `hooks`

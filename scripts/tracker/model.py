@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
-from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta,
+from .markdown import (BULLET, bullets, format_value, frontmatter_problems, link_ident, parse_links, parse_meta,
     render_frontmatter, section, section_span, split_frontmatter, strip_comments, Link)
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
@@ -234,8 +234,8 @@ STATE_RULES = {
                "session; the brief shows it first; the next `step` or `synced` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
-    "reviews": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state; each sync "
-               "replaces them. A ticket's move is computed from them",
+    "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
+           "tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
               "viewer's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
@@ -1204,16 +1204,16 @@ class Tracker:
         return [t for t in self.tickets if t.todo and not self.blockers(t)]
 
     @cached_property
-    def reviews(self) -> dict[str, dict]:
-        """The review facts `sync` keeps per open PR (STATE_RULES `reviews`)."""
-        reviews = self.raw_state().get("reviews", {})
-        return reviews if isinstance(reviews, dict) else {}
+    def prs(self) -> dict[str, dict]:
+        """The PR_FACTS `sync` keeps per open PR (STATE_RULES `prs`)."""
+        prs = self.raw_state().get("prs", {})
+        return prs if isinstance(prs, dict) else {}
 
-    def review(self, t: Record) -> dict | None:
-        """The review facts of a ticket's open PR; None without an open PR, or before `sync` read them."""
+    def pr_facts(self, t: Record) -> dict | None:
+        """The PR_FACTS of a ticket's open PR; None without an open PR, or before `sync` read them."""
         if not t.get("pr") or t.get("pr_state") not in OPEN_PR:
             return None
-        return self.reviews.get(pr_key(self.repo_of(t), t.get("pr")))
+        return self.prs.get(pr_key(self.repo_of(t), t.get("pr")))
 
     # -- machine state (.state.json): see STATE_RULES. state() drops what no longer applies, so a write of what it
     # read keeps the file current; raw_state() is the file as it is.
@@ -1462,6 +1462,21 @@ def pr_key(repo: str, pr) -> str:
 # the review facts `sync` reads from the PR, and the ticket's open decisions, actions and external blockers; nothing
 # writes it.
 
+# What a move reads of an open PR, in the tracker's own words: a forge's adapter (github.py) maps its own words onto
+# these, so the model and the views know no forge. `sync` keeps them per open PR in .state.json `prs`, without the
+# empty ones.
+PR_FACTS = {
+    "review": "the review decision: approved, or changes (requested); none while no review decides",
+    "requested": "who is asked to review",
+    "changes": "who requested changes",
+    "approved": "who approved",
+    "reviewed": "when changes were last requested (epoch s)",
+    "pushed": "when the PR's head was committed (epoch s)",
+    "checks": "failing, running or passing",
+    "merge": "what stops the merge: conflict, behind (its base) or blocked (by the repo's rules); none when it can",
+    "threads": "how many review threads are unresolved",
+    "draft": "the PR is a draft",
+}
 YOU = "you"
 MOVE_RULE = (
     "A ticket under way has a move: whose turn it waits on, computed, never written. In order: merge conflicts, "
@@ -1490,20 +1505,21 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     `sync` has not read."""
     if not t.in_flight:
         return None
-    r = tr.review(t)
-    if r is None and t.get("pr_state") in OPEN_PR:
+    is_open = t.get("pr_state") in OPEN_PR
+    r = tr.pr_facts(t)
+    if r is None and is_open:
         return None
     r = r or {}
     threads = r.get("threads", 0)
     open_threads = f"{threads} unresolved review thread{'s' * (threads != 1)}"
     requested = r.get("requested", [])
     approved = "approved" + (f" by {', '.join(r['approved'])}" if r.get("approved") else "") \
-        if r.get("decision") == "approved" else ""
-    if r.get("merge") == "dirty":
+        if r.get("review") == "approved" else ""
+    if r.get("merge") == "conflict":
         return Move(YOU, "merge conflicts", 1)
-    if r.get("checks") in ("failure", "error"):
+    if r.get("checks") == "failing":
         return Move(YOU, "checks failing", 2)
-    if r.get("decision") == "changes_requested" and not requested:
+    if r.get("review") == "changes" and not requested:
         by = ", ".join(r.get("changes", [])) or "a reviewer"
         if r.get("reviewed") and r.get("pushed", 0) > r["reviewed"]:
             return Move(YOU, f"pushed since {by} requested changes; review not re-requested", 3)
@@ -1522,14 +1538,14 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     if threads:
         return Move(YOU, f"{approved}; {open_threads}" if approved else open_threads, 7)
     if approved:
-        if r.get("checks") in ("pending", "expected"):
+        if r.get("checks") == "running":
             return Move("CI", "checks running", 8)
-        state = {"behind": "branch behind its base", "blocked": "GitHub blocks the merge"}.get(r.get("merge", ""),
-                                                                                             "ready to merge")
+        state = {"behind": "branch behind its base", "blocked": "merge blocked by the repo's rules"}.get(
+            r.get("merge", ""), "ready to merge")
         return Move(YOU, f"{approved}; {state}", 8)
     if r.get("draft"):
         return Move(YOU, "draft", 9)
-    if r:
+    if is_open:
         return Move(YOU, "no review requested", 9)
     return Move(YOU, "PR closed" if t.get("pr_state") == "closed" else "no PR yet", 10)
 
@@ -1602,6 +1618,42 @@ def logged_decision(text: str) -> str | None:
     """The decision a log text opened or settled; None for any other text."""
     m = LOG["opened"].read(text) or LOG["decided"].read(text)
     return m[1] if m else None
+
+
+PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}
+
+
+def apply_prs(tr: Tracker, found: dict[str, tuple[str, dict]], facts: dict[str, dict] | None) -> list[str]:
+    """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PR (`number`; `state`: one
+    of PR_EVENT; `base`; `merged_at`, UTC), each PR event a log line; and the open PRs' PR_FACTS by pr_key (None: the
+    forge did not answer, so the last ones stay). Returns the change lines."""
+    changes, events = [], {}
+    blocked = {t.id for t in tr.tickets if tr.blockers(t)}
+    for t in tr.tickets:
+        if t.id not in found:
+            continue
+        repo, pr = found[t.id]
+        upd = {"pr": str(pr["number"]), "pr_state": pr["state"], "base": pr["base"]}
+        if pr["state"] == "merged":
+            upd["merged_at"] = pr["merged_at"]
+        # A base that is another ticket's branch makes this ticket wait on it (Tracker.stacked_on).
+        diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
+        if diff:
+            t.change(diff)
+            changes.append(f"{t.id}: " + ", ".join(f"{k}={format_value(v)}" for k, v in diff.items()))
+            if "pr_state" in diff:
+                name = f"{repo}#{upd['pr']}" if len(tr.repos) > 1 else f"#{upd['pr']}"
+                events.setdefault((name, pr["state"]), []).append(t.id)
+    for (name, pr_state), ids in events.items():
+        append_log(tr, f"PR {name} {PR_EVENT[pr_state]}", ids)
+    changes += unblocked(tr, blocked)
+    state = tr.state()
+    state["last_sync"] = time.time()
+    if facts is not None:
+        state["prs"] = facts
+    state.pop("reviews", None)  # an older version's, in GitHub's own words
+    tr.save_state(state)
+    return changes
 
 
 def due_date(r: Record) -> dt.date | None:

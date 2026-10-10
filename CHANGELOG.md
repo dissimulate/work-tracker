@@ -51,6 +51,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 ### Fixed
 
 - Viewer: a tracker that spans repos lists them under its title as `a/x, b/y`, not as a Python list.
+- A repo in a nested group (GitLab's `group/sub/name`) matches the tracker that names it; only its last two parts did.
 
 ## 0.30.0 - 2026-10-08
 

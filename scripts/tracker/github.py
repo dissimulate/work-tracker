@@ -1,17 +1,19 @@
-"""PR state from GitHub (`gh`): `sync` writes it into tickets; `match_pr` finds a branch's ticket from its PR."""
+"""The GitHub adapter: PR state from GitHub (`gh`), in the tracker's words. `sync` reads each ticket's PR and the open
+PRs' PR_FACTS, mapping GitHub's words onto the tracker's, and `model.apply_prs` writes them; `match_pr` finds a branch's
+ticket from its PR. Only this module knows GitHub's words; another forge's adapter would give the same."""
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .markdown import format_value
-from .model import (OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, append_log, branch_entry, locked, pr_key,
-    put_entry, set_branch, unblocked, Record, Tracker)
+from .model import (OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, locked, pr_key, put_entry,
+    set_branch, Record, Tracker)
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
@@ -20,6 +22,8 @@ GH_LIST_LIMIT = 300  # newest PRs per repo in one call
 GH_LOOKUPS_MAX = 5  # single-PR calls per sync, for tickets whose PR is older than that list
 GH_TIMEOUT_S = 8  # one call
 _deadline: float | None = None  # no gh call runs past this (time.monotonic()); None: no limit
+# A command that changes a PR on GitHub: the hooks sync after it (and after a `git push`).
+PR_COMMAND = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b")
 
 
 def budget(seconds: float | None) -> None:
@@ -83,8 +87,8 @@ REVIEW_FIELDS = """fragment F on PullRequest {
 }"""
 
 
-def gh_reviews(prs: set[tuple[str, int]]) -> dict[str, dict] | None:
-    """The review facts of open PRs, by `pr_key`, from one call; None when gh fails. A PR GitHub does not find is left
+def gh_facts(prs: set[tuple[str, int]]) -> dict[str, dict] | None:
+    """The PR_FACTS of open PRs, by `pr_key`, from one call; None when gh fails. A PR GitHub does not find is left
     out."""
     if not prs:
         return {}
@@ -106,10 +110,17 @@ def gh_reviews(prs: set[tuple[str, int]]) -> dict[str, dict] | None:
     return out
 
 
+# GitHub's words for a PR's review decision, checks rollup and merge state, as the tracker's (PR_FACTS). Any other word
+# says nothing that stops the work: no review decided, no checks, a PR that can merge.
+REVIEW = {"APPROVED": "approved", "CHANGES_REQUESTED": "changes"}
+CHECKS = {"FAILURE": "failing", "ERROR": "failing", "PENDING": "running", "EXPECTED": "running", "SUCCESS": "passing"}
+MERGE = {"DIRTY": "conflict", "BEHIND": "behind", "BLOCKED": "blocked"}
+
+
 def review_facts(pr: dict) -> dict:
-    """What a move needs from one PR: the review decision, who is asked and who asked for changes or approved (bots
-    left out), when the head was committed and when changes were last asked for, the checks and merge state, and
-    the unresolved threads. Empty facts are left out."""
+    """One PR's PR_FACTS: the review decision, who is asked and who asked for changes or approved (bots left out),
+    when the head was committed and when changes were last asked for, the checks and merge state, and the unresolved
+    threads. Empty facts are left out."""
     def nodes(key: str) -> list[dict]:
         return [x for x in ((pr.get(key) or {}).get("nodes") or []) if x]
 
@@ -125,22 +136,27 @@ def review_facts(pr: dict) -> dict:
     asked = [x.get("requestedReviewer") or {} for x in nodes("reviewRequests")]
     head = (nodes("commits") or [{}])[0].get("commit") or {}
     facts = {
-        "decision": (pr.get("reviewDecision") or "").lower(),
+        "review": REVIEW.get(pr.get("reviewDecision") or ""),
         "requested": sorted(filter(None, (x.get("login") or x.get("name") for x in asked))),
         "changes": by("CHANGES_REQUESTED"),
         "approved": by("APPROVED"),
         "reviewed": max((when(r.get("submittedAt")) for r in reviews if r.get("state") == "CHANGES_REQUESTED"),
                         default=0),
         "pushed": when(head.get("committedDate")),
-        "checks": ((head.get("statusCheckRollup") or {}).get("state") or "").lower(),
-        "merge": (pr.get("mergeStateStatus") or "").lower(),
+        "checks": CHECKS.get((head.get("statusCheckRollup") or {}).get("state") or ""),
+        "merge": MERGE.get(pr.get("mergeStateStatus") or ""),
         "threads": sum(not t.get("isResolved") for t in nodes("reviewThreads")),
         "draft": bool(pr.get("isDraft")),
     }
     return {k: v for k, v in facts.items() if v}
 
 
-PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}
+def pr_of(pr: dict) -> dict:
+    """A PR as `gh pr list` gives it, in the tracker's words (model.apply_prs)."""
+    state = "merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED" else \
+        "draft" if pr["isDraft"] else "open"
+    return {"number": pr["number"], "state": state, "base": pr["baseRefName"],
+            "merged_at": pr["mergedAt"][:19] + "Z" if pr.get("mergedAt") else ""}  # GitHub gives UTC to the second
 
 
 def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) -> list[str]:
@@ -154,9 +170,9 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
     known = {(tr.repo_of(t), int(t.get("pr"))) for t in tr.tickets
              if t.get("pr_state") in OPEN_PR and str(t.get("pr")).isdigit() and tr.repo_of(t)}
     with ThreadPoolExecutor(len(tr.repos) + 1) as pool:  # at once: a sync costs the time of its slowest call
-        asked = pool.submit(gh_reviews, known)
+        asked = pool.submit(gh_facts, known)
         prs_by_repo = dict(zip(tr.repos, pool.map(gh_prs, tr.repos)))
-        reviews = asked.result()
+        facts = asked.result()
     failed = [repo for repo, prs in prs_by_repo.items() if prs is None]
     if failed:
         return [f"sync skipped: gh failed or timed out for {', '.join(failed)}"]
@@ -174,47 +190,14 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
             lookups += 1
             pr = gh_pr_of(repo, t)
         if pr:
-            found[t.id] = (repo, pr)
-    opened = {(repo, int(pr["number"])) for repo, pr in found.values() if pr["state"] == "OPEN"}
-    if reviews is not None:
+            found[t.id] = (repo, pr_of(pr))
+    opened = {(repo, int(pr["number"])) for repo, pr in found.values() if pr["state"] in OPEN_PR}
+    if facts is not None:
         if opened - known:  # opened since the last sync
-            reviews |= gh_reviews(opened - known) or {}
-        reviews = {k: v for k, v in reviews.items() if k in {pr_key(repo, n) for repo, n in opened}}
+            facts |= gh_facts(opened - known) or {}
+        facts = {k: v for k, v in facts.items() if k in {pr_key(repo, n) for repo, n in opened}}
     with locked():
-        return apply_sync(Tracker(tr.root), found, reviews)
-
-
-def apply_sync(tr: Tracker, found: dict[str, tuple[str, dict]], reviews: dict[str, dict] | None = None) -> list[str]:
-    """Write what `sync` read: each ticket's PR keys (and a log line per PR event), and the open PRs' review facts
-    (None: the review call failed, so the last ones stay)."""
-    changes, events = [], {}
-    blocked = {t.id for t in tr.tickets if tr.blockers(t)}
-    for t in tr.tickets:
-        if t.id not in found:
-            continue
-        repo, pr = found[t.id]
-        pr_state = "merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED" else \
-            "draft" if pr["isDraft"] else "open"
-        upd = {"pr": str(pr["number"]), "pr_state": pr_state, "base": pr["baseRefName"]}
-        if pr_state == "merged":
-            upd["merged_at"] = pr["mergedAt"][:19] + "Z"  # GitHub gives UTC to the second
-        # A base that is another ticket's branch makes this ticket wait on it (Tracker.stacked_on).
-        diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
-        if diff:
-            t.change(diff)
-            changes.append(f"{t.id}: " + ", ".join(f"{k}={format_value(v)}" for k, v in diff.items()))
-            if "pr_state" in diff:
-                pr_name = f"{repo}#{upd['pr']}" if len(tr.repos) > 1 else f"#{upd['pr']}"
-                events.setdefault((pr_name, pr_state), []).append(t.id)
-    for (pr_name, pr_state), ids in events.items():
-        append_log(tr, f"PR {pr_name} {PR_EVENT[pr_state]}", ids)
-    changes += unblocked(tr, blocked)
-    state = tr.state()
-    state["last_sync"] = time.time()
-    if reviews is not None:
-        state["reviews"] = reviews
-    tr.save_state(state)
-    return changes
+        return apply_prs(Tracker(tr.root), found, facts)
 
 
 def match_pr(m: Match, cwd: str | Path) -> tuple[Match, str]:

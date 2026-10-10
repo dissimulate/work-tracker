@@ -95,8 +95,9 @@ def default_branches(cwd: str | Path) -> set[str]:
 
 
 def repo_slug(remote: str) -> str:
-    """`owner/name` from a git remote URL (ssh or https), lower-cased."""
-    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", remote)
+    """The repo's path on its host from a git remote URL (scp-like ssh, ssh:// or https), lower-cased: `owner/name`,
+    or a nested group's whole path (`group/sub/name`). "" for a local path."""
+    m = re.match(r"(?:[a-z+]+://)?(?:[^@/]+@)?[^/:]+(?::\d+)?[:/](.+?)(?:\.git)?/?$", remote.strip(), re.I)
     return m[1].lower() if m else ""
 
 

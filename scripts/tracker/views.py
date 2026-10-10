@@ -86,7 +86,7 @@ def move_lines(tr: Tracker) -> list[str]:
     if not moves and not unread:
         return []
     synced = tr.raw_state().get("last_sync")
-    out = ["Whose move" + (f" (GitHub read {ago(synced)})" if synced and tr.reviews else "") + ":"]
+    out = ["Whose move" + (f" (GitHub read {ago(synced)})" if synced and tr.prs else "") + ":"]
     out += [f"  {text} — {', '.join(ids)}" for text, (_, ids) in sorted(moves.items(), key=lambda m: m[1][0])]
     return out + ([f"  not read from GitHub yet (`tracker sync`) — {', '.join(unread)}"] if unread else [])
 

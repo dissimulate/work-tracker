@@ -16,10 +16,10 @@ from .session import (behind, branch_matches, changes_since, declined, drop_sess
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
 from .views import brief, issue_request
-from .github import budget, match_pr, sync
+from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
 
-PR_TRIGGER = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b|\bgit\s+push\b")
+PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's PR commands, or a push
 
 # ---------------------------------------------------------------- hooks
 # scripts/hook.sh filters each event before Python starts. A hook adds context only when it changes what the model

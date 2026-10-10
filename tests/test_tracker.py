@@ -173,6 +173,13 @@ class Format(unittest.TestCase):
         commits = [(f"c{i}", f"commit {i}") for i in range(model.COMMITS_LOGGED_MAX + 3)]
         self.assertEqual(model.commits_logged(model.commits_text("feat/x", commits)), len(commits))
 
+    def test_a_remote_names_its_repo(self):
+        for remote, slug_ in [("git@github.com:Acme/API.git", "acme/api"), ("https://github.com/acme/api", "acme/api"),
+                              ("https://user:token@github.com/acme/api.git/", "acme/api"),
+                              ("ssh://git@gitlab.example:2222/group/sub/name.git", "group/sub/name"),
+                              ("git@gitlab.com:group/sub/name.git", "group/sub/name"), ("/srv/git/api.git", "")]:
+            self.assertEqual(git.repo_slug(remote), slug_, remote)
+
     def test_fork_prs_are_not_the_tickets(self):
         t = model.Record(Path("T-1.md"), "ticket", {"id": "T-1", "branch": "fix"}, "")
         fork = {"number": 9, "headRefName": "fix", "state": "OPEN", "isCrossRepository": True}
@@ -264,8 +271,11 @@ class Moves(unittest.TestCase):
                "submittedAt": "2026-09-02T00:00:00Z"}
         facts = github.review_facts(pull(1, decision="CHANGES_REQUESTED", reviews=[bot, rev, {"author": None}],
                                          threads=2, pushed="2026-09-03T00:00:00Z"))
-        self.assertEqual(facts, {"decision": "changes_requested", "changes": ["rev"], "reviewed": 1788307200,
-                                 "pushed": 1788393600, "checks": "success", "merge": "clean", "threads": 2})
+        self.assertEqual(facts, {"review": "changes", "changes": ["rev"], "reviewed": 1788307200,
+                                 "pushed": 1788393600, "checks": "passing", "threads": 2})  # a clean merge: none
+        self.assertLessEqual(set(facts), set(model.PR_FACTS))  # the tracker's words, not GitHub's
+        merge = github.review_facts(pull(2, merge="DIRTY", checks="ERROR", decision="REVIEW_REQUIRED"))
+        self.assertEqual((merge["merge"], merge["checks"], merge.get("review")), ("conflict", "failing", None))
 
     def test_rules(self):
         root = model.HOME / slug()
@@ -273,14 +283,14 @@ class Moves(unittest.TestCase):
             (root / d).mkdir(parents=True)
         (root / "README.md").write_text("---\ntitle: T\nrepo: a/x\n---\n")
         (root / "decisions" / "D-01.md").write_text("---\nid: D-01\ntitle: Store\nstatus: open\nowner: Ryan\n---\n")
-        facts = {1: {"merge": "dirty", "checks": "failure"}, 2: {"checks": "failure"},
-                 3: {"decision": "changes_requested", "changes": ["rev"], "reviewed": 100, "pushed": 50, "threads": 2},
-                 4: {"decision": "changes_requested", "changes": ["rev"], "reviewed": 100, "pushed": 200},
-                 5: {"decision": "changes_requested", "requested": ["rev"]},
-                 7: {"decision": "approved", "approved": ["rev"], "threads": 1},
-                 8: {"decision": "approved", "checks": "pending"}, 9: {"decision": "approved", "merge": "behind"},
-                 10: {"draft": True}, 12: {"decision": "review_required"}}
-        (root / ".state.json").write_text(json.dumps({"reviews": {f"a/x#{n}": f for n, f in facts.items()}}))
+        facts = {1: {"merge": "conflict", "checks": "failing"}, 2: {"checks": "failing"},
+                 3: {"review": "changes", "changes": ["rev"], "reviewed": 100, "pushed": 50, "threads": 2},
+                 4: {"review": "changes", "changes": ["rev"], "reviewed": 100, "pushed": 200},
+                 5: {"review": "changes", "requested": ["rev"]},
+                 7: {"review": "approved", "approved": ["rev"], "threads": 1},
+                 8: {"review": "approved", "checks": "running"}, 9: {"review": "approved", "merge": "behind"},
+                 10: {"draft": True}, 12: {}}  # 12: read, and nothing stops it
+        (root / ".state.json").write_text(json.dumps({"prs": {f"a/x#{n}": f for n, f in facts.items()}}))
         for n in [*facts, 11]:
             ticket(root, f"M-{n}", status="in-progress", pr=str(n), pr_state="draft" if n == 10 else "open")
         ticket(root, "M-6", status="in-progress", depends_on=["D-01"])
@@ -326,7 +336,7 @@ class Moves(unittest.TestCase):
             run(*t, "sync")
             self.assertEqual(len(queries), 1)  # the PRs were new: asked for once the lists named them
             tr = model.Tracker(model.HOME / s)
-            self.assertEqual(set(tr.reviews), {"a/x#11", "a/x#12"})
+            self.assertEqual(set(tr.prs), {"a/x#11", "a/x#12"})
             index = run(*t, "index")
             self.assertIn("  you: draft — S-2\n  rev: review requested — S-1", index)
             self.assertIn("move: rev — review requested", run(*t, "context", "S-1"))
@@ -1652,7 +1662,7 @@ class Watch(unittest.TestCase):
         # A review comes back: the move is the user's.
         tr = model.Tracker(self.root)
         tr.lookup("W-1").save({"pr": "12", "pr_state": "open"})
-        tr.save_state({**tr.raw_state(), "reviews": {"#12": {"decision": "changes_requested", "changes": ["rev"]}}})
+        tr.save_state({**tr.raw_state(), "prs": {"#12": {"review": "changes", "changes": ["rev"]}}})
         lines = w.poll(now)
         self.assertRegex(lines[0], r"^\d\d:\d\d ! W-1: in-progress → in-review · move: you: changes requested by rev$")
         self.assertEqual(w.poll(now), [])  # said once
