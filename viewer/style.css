@@ -14,19 +14,20 @@
   --ink: #22272e;      /* text */
   --muted: #59636f;    /* secondary text and labels */
   /* Meaning colours share the tag palette; light-mode text uses darker shades for contrast. */
-  --tone-strength: 35%;
+  --tone-strength: 50%;
   --accent: var(--ready); /* links, ids, the chosen filter */
   --ready: color-mix(in srgb, var(--tag-ready) var(--tone-strength), var(--tag-ink));
   --active: color-mix(in srgb, var(--tag-active) var(--tone-strength), var(--tag-ink));
   --done: color-mix(in srgb, var(--tag-done) var(--tone-strength), var(--tag-ink));
   --blocked: color-mix(in srgb, var(--tag-blocked) var(--tone-strength), var(--tag-ink));
   --tint: 7%;          /* how much of a meaning a fill takes */
-  /* Solid pastel tags keep the same colours in both themes. */
-  --tag-ready: #9fc2ff;
-  --tag-active: #ffcc80;
-  --tag-done: #83e2ad;
-  --tag-blocked: #ff9b91;
-  --tag-neutral: #c5cdd8;
+  /* The status colours (tags, status text, the graph): a shade deeper than dark mode's pastels, to show on a light
+     panel. */
+  --tag-ready: #7aa4ef;
+  --tag-active: #f0b14a;
+  --tag-done: #52cc8e;
+  --tag-blocked: #ef7a70;
+  --tag-neutral: #aab2bc;
   --tag-ink: #192330;
 
   --border: 1px solid var(--line);
@@ -54,20 +55,26 @@
   --ink: #dfe3e9;
   --muted: #9da6b3;
   --tone-strength: 100%;
+  --tag-ready: #9fc2ff;
+  --tag-active: #ffcc80;
+  --tag-done: #83e2ad;
+  --tag-blocked: #ff9b91;
+  --tag-neutral: #c5cdd8;
   --tint: 10%;
 }
 
 /* ---------- status colours ----------
-   The one place a status gets its colour. A status class sets --tone for itself and what is in it. The classes are
+   The one place a status gets its colour: its tag's, in its tag, its text, a ticket's id and the graph alike. A status
+   class sets --tone for itself and what is in it. The classes are
    s-<stage> and s-<decision status>, from the dependencies s-ready, s-stack (waits only on work under way, so it
    can stack on it) and s-blocked, from the graph s-going (under way), and from a ticket's move s-you (your move) and
    s-them (another's). */
 
-.s-todo, .s-dropped, .s-them { --tone: var(--muted); --tag-tone: var(--tag-neutral); }
-.s-ready { --tone: var(--ready); --tag-tone: var(--tag-ready); }
-.s-in-progress, .s-in-review, .s-open, .s-stack, .s-going { --tone: var(--active); --tag-tone: var(--tag-active); }
-.s-merged, .s-done, .s-closed { --tone: var(--done); --tag-tone: var(--tag-done); }
-.s-blocked, .s-you { --tone: var(--blocked); --tag-tone: var(--tag-blocked); }
+.s-todo, .s-dropped, .s-them { --tone: var(--tag-neutral); }
+.s-ready { --tone: var(--tag-ready); }
+.s-in-progress, .s-in-review, .s-open, .s-stack, .s-going { --tone: var(--tag-active); }
+.s-merged, .s-done, .s-closed { --tone: var(--tag-done); }
+.s-blocked, .s-you { --tone: var(--tag-blocked); }
 #live { --tone: var(--done); }
 #live.off { --tone: var(--blocked); }
 .filters [aria-pressed="true"] { --tone: var(--accent); }
@@ -86,7 +93,7 @@
 
 .chip {
   color: var(--tag-ink);
-  background: var(--tag-tone, var(--tag-neutral));
+  background: var(--tone, var(--tag-neutral));
   display: inline-flex;
   align-items: center;
   font: 600 var(--fs-xs)/1.5 var(--sans);
@@ -596,11 +603,11 @@ tr:last-child > td { border-bottom: 0; }
 }
 .graph-svg .lines { opacity: .3; } /* the lines under full dots */
 .graph-svg path { fill: none; stroke: var(--tone); stroke-width: 1.5; stroke-linecap: round; }
-.graph-svg circle { fill: var(--tone, var(--muted)); }
+.graph-svg circle { fill: var(--tone, var(--tag-neutral)); }
 .graph-svg circle:is(.s-closed, .s-dropped) { fill: var(--surface); stroke: var(--tone); stroke-width: 1.5; }
 .graph-svg .halo { fill: var(--surface); }
 .graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered (app.js) */
-.seq .tk .id { color: var(--tone, var(--muted)); }
+.seq .tk .id { color: var(--tone, var(--tag-neutral)); }
 /* A closed ticket's row, unless opened: every cell dimmed but the step, so the graph keeps its colours. */
 .seq details.closed:not([open]) > summary > :not(.graph) { opacity: .35; }
 
