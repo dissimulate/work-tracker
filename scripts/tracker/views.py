@@ -10,8 +10,8 @@ from statistics import median
 
 from .markdown import section, strip_comments
 from .model import (BIN, ISOLATION_RULE, KINDS, NO_STAGE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS, STAGES,
-    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence, short, span,
-    utc_seconds, whose_move, Record, Start, Tracker)
+    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence, short,
+    show_value, span, utc_seconds, whose_move, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -214,7 +214,7 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
     closed = rec.closed
     for k in ("branch", "repo", "due", "summary" if closed else "next"):
         if rec.get(k):
-            out.append(f"{k}: {rec.get(k)}")
+            out.append(f"{k}: {show_value(k, rec.get(k))}")
     move = whose_move(tr, rec)
     if move:
         out.append(f"move: {move.text(' — ')}")

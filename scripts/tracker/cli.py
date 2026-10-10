@@ -12,12 +12,12 @@ from pathlib import Path
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
 from .model import (ACTION_ADDED, BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS,
-    KINDS, LIST_KEYS, LIST_OR_ONE, NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES,
-    TIME_FORMAT, a_kind, all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers,
-    atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since, die,
-    drop_from_section, fit, id_kind, id_list, kind_names, link_url, load_record, locked, names, parse_day, put_section,
-    relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, spawn, today, unblocked,
-    unknown_dep, utc_now, value_form, Busy, Record, Tracker)
+    KINDS, NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, a_kind, all_trackers,
+    append_log, append_notes, append_to_section, archived_at, archived_trackers, atomic_file, atomic_write,
+    blocker_link, close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit, id_kind, id_list,
+    kind_names, link_url, load_record, locked, names, put_section, read_value, relabel, replace_in_section, resolution,
+    same_repo, sequence, set_branch, short, sort_key, spawn, today, unblocked, unknown_dep, utc_now, Busy, Record,
+    Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
@@ -192,11 +192,10 @@ def cmd_set(args):
                 die(f"status must be one of {'|'.join(allowed)}{hint}")
         if k in ("next", "summary") and rec.kind == "ticket":
             fit(k, v)
-        v = value_arg(k, v)
+        v = read_value(k, v)
         if k == "repo" and rec.kind == "ticket" and v and v not in tr.repos:
             die(f"repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
-        items = csv(v)
-        updates[k] = items if k in LIST_KEYS or (k in LIST_OR_ONE and len(items) > 1) else v
+        updates[k] = v
     notes = []
     to = STAGES.get(updates.get("status", ""), NO_STAGE) if rec.kind == "ticket" else NO_STAGE
     if to.closed and not (updates.get("summary") or rec.get("summary")):
@@ -303,7 +302,7 @@ def cmd_new(args):
     meta = {"group": args.group or "", "branch": args.branch or "", "depends_on": [], "next": args.next or ""}
     for key in [*SCALES, "due"]:
         if getattr(args, key):
-            meta[key] = value_arg(key, getattr(args, key))
+            meta[key] = read_value(key, getattr(args, key))
     if args.repo:
         meta["repo"] = args.repo
     t = new_record(tr, "ticket", args.id, args.title, **meta)
@@ -717,7 +716,7 @@ def cmd_act(args):
     notes = args.note or []
     for n in notes:
         fit("note", n)
-    due = None if args.due is None else value_arg("due", args.due)
+    due = None if args.due is None else read_value("due", args.due)
     a = existing(tr, "action", args.target)
     if a:
         if not (args.done or args.drop or args.note or refs or unrefs or blocks or due is not None or args.title):
@@ -830,43 +829,13 @@ def cmd_issue(args):
     for flag, key in ISSUE_FIELDS.items():
         given = getattr(args, flag)
         if given is not None:
-            value = given.strip() and (utc_time(given) if value_form(key) == "time" else value_arg(key, given))
-            updates[key] = value or None  # empty: the issue has none now
+            updates[key] = read_value(key, given) or None  # empty: the issue has none now
     if updates:
         t.save(updates)  # not `updated_at`: reading the issue is no change to the work
     state = tr.raw_state()
     state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
     tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
-
-
-def value_arg(key: str, text: str) -> str:
-    """A value given for a key, held to its form (value_form) and written as stored: a level as its number, a day as
-    YYYY-MM-DD. An empty one (for a day, also `none`) clears the key. Any other key's value as given."""
-    text, form = text.strip(), value_form(key)
-    if form == "level":
-        scale = SCALES[key]
-        if text and scale.parse(text) is None:
-            die(f"{key} '{text}' is not {scale.span}: {scale.ends} (`tracker rules` says how an issue tracker's values "
-                f"map onto it)")
-        return str(int(text)) if text else ""
-    if form == "day" and text.lower() in ("", "none"):
-        return ""
-    if form == "day":
-        day = parse_day(text) or die(f"{key} '{text}' is not a day: YYYY-MM-DD (or `none` to remove it)")
-        return day.isoformat()
-    return text
-
-
-def utc_time(text: str) -> str:
-    """An ISO 8601 time with its zone, as UTC to the second; refused without a zone, which would be a guess."""
-    try:
-        at = dt.datetime.fromisoformat(text.strip())
-    except ValueError:
-        die(f"'{text}' is not an ISO 8601 time (2026-10-01T09:30:00Z)")
-    if at.tzinfo is None:
-        die(f"'{text}' needs a time zone (Z or +10:00): the issue tracker gives one")
-    return at.astimezone(dt.timezone.utc).strftime(TIME_FORMAT)
 
 
 def cmd_synced(args):

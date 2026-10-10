@@ -19,10 +19,10 @@ import time
 from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
-from .model import (CLI, EVIDENCE_DIR, HOME, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, SCALES, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
-    close_action, day_text, due_date, files_hash, level, level_name, locked, sequence, sort_key, span, spawn,
-    tracker_at, value_form, whose_move, Busy, Dep, Move, Record, Tracker)
+from .model import (CLI, EVIDENCE_DIR, HOME, PACKAGE, PYTHON, README_SECTIONS, ROOT, SCALES, SPANS, STAGES, WINDOWS,
+    all_trackers, archived_at, archived_trackers, atomic_write, branch_entry, close_action, day_text, due_date,
+    files_hash, level, level_name, locked, sequence, show_value, sort_key, span, spawn, tracker_at, whose_move, Busy,
+    Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .views import duration, pr_label, span_lines, stage_counts, start_text
@@ -294,8 +294,7 @@ def body_html(tr: Tracker, r: Record, lead: list[tuple[str, Html]] | None = None
     for k in ("branch", "base", "repo", "group", "refs", "owner", "due", "created_at", "started_at", "merged_at",
               "closed_at", "updated_at"):
         if r.get(k):
-            value = (comma(ref(x) for x in r.list(k)) if k == "refs" else ", ".join(r.list(k)) if k in LIST_KEYS
-                     else day_text(r.get(k)) if value_form(k) == "time" else str(r.get(k)))
+            value = comma(ref(x) for x in r.list(k)) if k == "refs" else show_value(k, r.get(k))
             facts.append((k.removesuffix("_at"),
                           Html("<code>{}</code>").format(value) if k in ("branch", "base") else value))
     move = whose_move(tr, r) if r.kind == "ticket" else None
@@ -686,7 +685,7 @@ def main_html(tr: Tracker) -> Html:
     problems = NONE.join([*(Html("<li>✗ {}</li>").format(x) for x in errors),
                           *(Html("<li>⚠ {}</li>").format(x) for x in warnings)])
     open_ds = tr.open_decisions()
-    facts = " · ".join(f"{k.removesuffix('_at')}: {day_text(tr.meta[k])}"
+    facts = " · ".join(f"{k.removesuffix('_at')}: {show_value(k, tr.meta[k])}"
                        for k in ("status", "owner", "repo", "created_at") if tr.meta.get(k))
     goal = section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")
     labels = ", ".join(dict.fromkeys(x.label.lower() for x in tr.context))

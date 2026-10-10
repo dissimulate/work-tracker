@@ -10,7 +10,7 @@ from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS,
     ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN,
     OWN_VALUE_RULE, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
     RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS,
-    START_RULE, STATE_RULES, STATUSES, TEXT_MAX, VALUE_FORMS, WAIT_RULE,
+    START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, FORMS,
     append_to_section, blocker_link, days_since, kind_names, level, names, norm_id, relabel, resolution, sequence,
     unknown_dep, valid_value, value_form, Record, Tracker)
 
@@ -110,8 +110,7 @@ def check_meta(tr: Tracker, where: str, kind: str, meta: dict, errors: list[str]
         errors.append(f"{where}: status '{status}' not one of {'|'.join(statuses)}{stage}")
     for k, v in meta.items():
         if not valid_value(k, v):
-            form = SCALES[k].span if value_form(k) == "level" else VALUE_FORMS[value_form(k)]
-            errors.append(f"{where}: {k} '{v}' is not {form}{hint}")
+            errors.append(f"{where}: {k} '{v}' is not {FORMS[value_form(k)].describe(k)}{hint}")
 
 
 def check_deps(tr: Tracker, t: Record, errors: list[str], warnings: list[str]) -> None:
@@ -230,8 +229,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         *(f"{kind.capitalize()} status: {'|'.join(STATUSES[kind].values)}, changed only by `tracker {owner}`."
           for kind in KINDS if (owner := KEYS[kind]["status"][0]) != "set"),
         f"Work status: {'|'.join(STATUSES['tracker'].values)} (`tracker set tracker status=...`).",
-        f"Times and days: a key ending `_at` holds {VALUE_FORMS['time']}; {', '.join(sorted(DAY_KEYS))} holds "
-        f"{VALUE_FORMS['day']}.",
+        f"Times and days: a key ending `_at` holds {FORMS['time'].describe('')}; {', '.join(sorted(DAY_KEYS))} holds "
+        f"{FORMS['day'].describe('')}.",
         "Issue tracker values: " + SCALE_RULE + ".",
         "Your own values: " + OWN_VALUE_RULE + ".",
         *(f"{key.capitalize()}: {scale.rule}." for key, scale in SCALES.items()),

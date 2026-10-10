@@ -47,6 +47,10 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Each write logs what the history needs, so the agent runs no `tracker log` after one. A status change through `tracker set` or `tracker step --done` writes its own log line. `tracker add`, `put` and `drop` take `--why`, which logs why a section changes; a started ticket's Plan changes only with it.
 - Any write that leaves a ticket with nothing to wait on says so, `tracker wait <id> off` too. A write no longer ends with "log line written".
 
+### Fixed
+
+- Viewer: a tracker that spans repos lists them under its title as `a/x, b/y`, not as a Python list.
+
 ## 0.30.0 - 2026-10-08
 
 ### Added

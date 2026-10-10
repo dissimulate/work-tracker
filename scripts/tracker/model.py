@@ -73,11 +73,81 @@ STATUSES = {
     "action": Statuses(("open", "done", "dropped"), frozenset({"done", "dropped"})),
     "tracker": Statuses(("planning", "active", "paused", "done"), frozenset({"done"})),  # the work's
 }
-LIST_KEYS = {"depends_on", "refs", "labels"}
-LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
+
+
+# ---------------------------------------------------------------- scales
+# A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
+# it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
+# amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
+
+@dataclass(frozen=True)
+class Scale:
+    meaning: str  # what the key says of a ticket; `tracker rules` gives it with the key
+    levels: range
+    names: tuple[str, ...]  # each level's name in the views, in order
+    weights: tuple[float, ...]  # each level's amount in `unit`, in order: what a sum adds
+    unit: str  # what a weight counts
+    ends: str  # what its ends mean
+    rule: str  # how a level is chosen; `tracker rules` prints it
+
+    @property
+    def span(self) -> str:
+        return f"{self.levels[0]}-{self.levels[-1]}"
+
+    def parse(self, value) -> int | None:
+        """A stored value as a level; None for none, or a value `check` refuses."""
+        text = "" if value is None else str(value).strip()
+        return int(text) if text.isdigit() and int(text) in self.levels else None
+
+    def name(self, n: int) -> str:
+        return self.names[self.levels.index(n)]
+
+    def weight(self, n: int) -> float:
+        return self.weights[self.levels.index(n)]
+
+
+SCALES = {
+    "priority": Scale("how urgent the ticket is", range(5), ("P0", "P1", "P2", "P3", "P4"), (8, 5, 3, 2, 1),
+                      "urgency points", "0 is the most urgent, 4 the least",
+                      "0 (most urgent) to 4 (least): Urgent, Highest or Blocker 0, High 1, Medium or Normal 2, Low 3, "
+                      "Lowest or Trivial 4, and P0-P4 their digit. Yours: from how urgent the work is"),
+    # The weights are the amounts the rule names, in days of work: XS a quarter day, an XL 8 days at least.
+    "size": Scale("how much work the ticket is", range(1, 6), ("XS", "S", "M", "L", "XL"), (0.25, 1, 3, 5, 8),
+                  "days of work", "1 is XS, 5 XL",
+                  "1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a "
+                  "week, XL more. A T-shirt size is its letter; points take their place on the issue tracker's "
+                  "sequence (Fibonacci 1, 2, 3, 5, 8+; powers of two 1, 2, 4, 8, 16+); a time estimate goes by its "
+                  "amount. Yours: from how much work its Plan is"),
+}
+SCALE_RULE = (
+    "a ticket with an Issue link takes its issue's value, mapped by what it means on that issue tracker's own scale, "
+    "never by a raw number its API gives. A value that means none (No priority, unestimated) leaves the key empty; "
+    "one past an end takes that end. Record it with `tracker issue <id> --priority <n> --size <n>`. A ticket with "
+    "no issue value (no Issue link, or an issue tracker without the field) gets yours: `tracker new --priority <n> "
+    "--size <n>` or `tracker set <id> priority=<n> size=<n>`")
+OWN_VALUE_RULE = (
+    "a value you set by your own judgement (priority, size) is your best estimate; leave it empty when you do not "
+    "know it or cannot estimate it reliably. A value from an issue tracker or the user is never a guess")
+
+
+def level(t: Record, key: str) -> int | None:
+    """A ticket's level on SCALES[key]; None when it has none, or a value `check` refuses."""
+    return SCALES[key].parse(t.get(key))
+
+
+def level_name(t: Record, key: str) -> str:
+    """A ticket's level by its name (P1, XS); a value `check` refuses as it is; "" for none."""
+    return show_value(key, t.get(key))
+
+
+def weight(t: Record, key: str) -> float | None:
+    """A ticket's level as its scale's amount (in the scale's unit), which adds up; None when it has no level."""
+    n = level(t, key)
+    return SCALES[key].weight(n) if n is not None else None
+
 
 # Every frontmatter key per file: what writes it ("set" = `tracker set`, or the command that owns it) and what it holds.
-# A key's name gives its value's form (value_form): `rules` adds the form to the meaning, `check` holds values to it.
+# A key's name gives its value's form (value_form): commands read values through it, `check` holds values to it.
 DUE = "the day it should be done by; optional: only a day the user or an issue tracker gave, never your own"
 UPDATED = "the last change through the CLI"
 KEYS = {
@@ -93,8 +163,7 @@ KEYS = {
                                "record of order and blockers"),
         "next": ("set", "one concrete next action, true as of now; cleared when the ticket closes"),
         "summary": ("set", "one line: what the ticket delivered or why it was dropped; shown once it is closed"),
-        "priority": ("set", "how urgent the ticket is; see Priority"),
-        "size": ("set", "how much work the ticket is; see Size"),
+        **{key: ("set", f"{scale.meaning}; see {key.capitalize()}") for key, scale in SCALES.items()},
         "due": ("set", DUE),
         "created_at": ("auto", "when `tracker new` added it"),
         "updated_at": ("auto", UPDATED),
@@ -148,7 +217,7 @@ RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_crea
 RETIRED_KEYS = {kind: removed | set(RENAMED_KEYS[kind]) for kind, removed in
                 {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
-ISSUE_FIELDS = {"priority": "priority", "size": "size", "due": "due", "created": "issue_created_at"}
+ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
               "act": "use `tracker act`", "sync": "`tracker sync` writes it from the PR",
               "auto": "the tracker writes it", "issue": "`tracker issue` writes it from the ticket's issue tracker"}
@@ -178,88 +247,140 @@ STATE_RULES = {
 }
 
 
-# ---------------------------------------------------------------- scales
-# A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
-# it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
-# amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
-
-@dataclass(frozen=True)
-class Scale:
-    levels: range
-    names: tuple[str, ...]  # each level's name in the views, in order
-    weights: tuple[int, ...]  # each level's amount, in order: what a sum adds
-    ends: str  # what its ends mean
-    rule: str  # how a level is chosen; `tracker rules` prints it
-
-    @property
-    def span(self) -> str:
-        return f"{self.levels[0]}-{self.levels[-1]}"
-
-    def parse(self, value) -> int | None:
-        """A stored value as a level; None for none, or a value `check` refuses."""
-        text = "" if value is None else str(value).strip()
-        return int(text) if text.isdigit() and int(text) in self.levels else None
-
-    def name(self, n: int) -> str:
-        return self.names[self.levels.index(n)]
-
-    def weight(self, n: int) -> int:
-        return self.weights[self.levels.index(n)]
-
-
-SCALES = {
-    "priority": Scale(range(5), ("P0", "P1", "P2", "P3", "P4"), (8, 5, 3, 2, 1), "0 is the most urgent, 4 the least",
-                      "0 (most urgent) to 4 (least): Urgent, Highest or Blocker 0, High 1, Medium or Normal 2, Low 3, "
-                      "Lowest or Trivial 4, and P0-P4 their digit. Yours: from how urgent the work is"),
-    "size": Scale(range(1, 6), ("XS", "S", "M", "L", "XL"), (1, 2, 3, 5, 8), "1 is XS, 5 XL",
-                  "1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a "
-                  "week, XL more. A T-shirt size is its letter; points take their place on the issue tracker's "
-                  "sequence (Fibonacci 1, 2, 3, 5, 8+; powers of two 1, 2, 4, 8, 16+); a time estimate goes by its "
-                  "amount. Yours: from how much work its Plan is"),
-}
-SCALE_RULE = (
-    "a ticket with an Issue link takes its issue's value, mapped by what it means on that issue tracker's own scale, "
-    "never by a raw number its API gives. A value that means none (No priority, unestimated) leaves the key empty; "
-    "one past an end takes that end. Record it with `tracker issue <id> --priority <n> --size <n>`. A ticket with "
-    "no issue value (no Issue link, or an issue tracker without the field) gets yours: `tracker new --priority <n> "
-    "--size <n>` or `tracker set <id> priority=<n> size=<n>`")
-OWN_VALUE_RULE = (
-    "a value you set by your own judgement (priority, size) is your best estimate; leave it empty when you do not "
-    "know it or cannot estimate it reliably. A value from an issue tracker or the user is never a guess")
-
-
-def level(t: Record, key: str) -> int | None:
-    """A ticket's level on SCALES[key]; None when it has none, or a value `check` refuses."""
-    return SCALES[key].parse(t.get(key))
-
-
-def level_name(t: Record, key: str) -> str:
-    """A ticket's level by its name (P1, XS); a value `check` refuses as it is; "" for none."""
-    n = level(t, key)
-    return SCALES[key].name(n) if n is not None else str(t.get(key, ""))
-
-
-def weight(t: Record, key: str) -> int | None:
-    """A ticket's level as its scale's amount, which adds up; None when it has no level."""
-    n = level(t, key)
-    return SCALES[key].weight(n) if n is not None else None
-
-
-# ---------------------------------------------------------------- times and days
-# A time the tracker writes is UTC to the second, in a key whose name ends `_at`; a day that a person or an issue
-# tracker gives is a date, in a DAY_KEYS key. A `_at` key may hold a date alone, written before the tracker kept the
-# time: it gives no span. The views show a time as its local day (day_text).
+# ---------------------------------------------------------------- values
+# A key's name gives its value's form (value_form): a time in a key that ends `_at`, a day in a DAY_KEYS key, a level
+# in a SCALES key, a list in a list key, and text in any other. A time the tracker writes is UTC to the second; a `_at`
+# key may hold a date alone, written before the tracker kept the time: it gives no span. A day is one that a person
+# or an issue tracker gave. Every command reads a value it is given through its form (`read_value`), `check` holds
+# each stored value to it (`valid_value`), and the views show a value by it (`show_value`): a time as its local day.
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
-VALUE_FORMS = {"time": "a time, UTC to the second (YYYY-MM-DDTHH:MM:SSZ), or a date alone when written before the "
-                       "time was kept",
-               "day": "a day (YYYY-MM-DD)"}
+LIST_KEYS = {"depends_on", "refs", "labels"}
+LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
+
+
+class Form:
+    """Text: any value, as given. Each other form overrides what differs."""
+
+    def describe(self, key: str) -> str:
+        """What its values are, for `check` and `tracker rules`."""
+        return "text"
+
+    def fits(self, key: str, value) -> bool:
+        """A stored value, not empty, is of this form."""
+        return True
+
+    def read(self, key: str, text: str):
+        """A value a command is given, not empty, as it is stored; ValueError, saying why, when it does not fit."""
+        return text
+
+    def show(self, key: str, value) -> str:
+        return str(value)
+
+
+class TimeForm(Form):
+    def describe(self, key: str) -> str:
+        return "a time, UTC to the second (YYYY-MM-DDTHH:MM:SSZ), or a date alone when written before the time was kept"
+
+    def fits(self, key: str, value) -> bool:
+        return utc_seconds(value) is not None or parse_day(value) is not None
+
+    def read(self, key: str, text: str) -> str:
+        """An ISO 8601 time with its zone, as UTC to the second; refused without a zone, which would be a guess."""
+        try:
+            at = dt.datetime.fromisoformat(text)
+        except ValueError:
+            raise ValueError(f"'{text}' is not an ISO 8601 time (2026-10-01T09:30:00Z)") from None
+        if at.tzinfo is None:
+            raise ValueError(f"'{text}' needs a time zone (Z or +10:00): the issue tracker gives one")
+        return at.astimezone(dt.timezone.utc).strftime(TIME_FORMAT)
+
+    def show(self, key: str, value) -> str:
+        return day_text(value)
+
+
+class DayForm(Form):
+    def describe(self, key: str) -> str:
+        return "a day (YYYY-MM-DD)"
+
+    def fits(self, key: str, value) -> bool:
+        return parse_day(value) is not None
+
+    def read(self, key: str, text: str) -> str:
+        """`none` clears it."""
+        if text.lower() == "none":
+            return ""
+        day = parse_day(text)
+        if not day:
+            raise ValueError(f"{key} '{text}' is not a day: YYYY-MM-DD (or `none` to remove it)")
+        return day.isoformat()
+
+
+class LevelForm(Form):
+    """A level on the key's scale (SCALES), stored as its number and shown by its name."""
+
+    def describe(self, key: str) -> str:
+        return SCALES[key].span
+
+    def fits(self, key: str, value) -> bool:
+        return SCALES[key].parse(value) is not None
+
+    def read(self, key: str, text: str) -> str:
+        scale = SCALES[key]
+        if scale.parse(text) is None:
+            raise ValueError(f"{key} '{text}' is not {scale.span}: {scale.ends} (`tracker rules` says how an issue "
+                             f"tracker's values map onto it)")
+        return str(int(text))
+
+    def show(self, key: str, value) -> str:
+        n = SCALES[key].parse(value)
+        return SCALES[key].name(n) if n is not None else str(value)
+
+
+class ListForm(Form):
+    """A comma list given; a LIST_OR_ONE key keeps one value as it is."""
+
+    def describe(self, key: str) -> str:
+        return "a list: [a, b]"
+
+    def read(self, key: str, text: str):
+        items = csv(text)
+        return text if key in LIST_OR_ONE and len(items) == 1 else items
+
+    def show(self, key: str, value) -> str:
+        return ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+
+
+FORMS = {"time": TimeForm(), "day": DayForm(), "level": LevelForm(), "list": ListForm(), "": Form()}
 
 
 def value_form(key: str) -> str:
-    """The form of a key's value: "time", "day", "level" (a SCALES key), or "" for text."""
-    return "time" if key.endswith("_at") else "day" if key in DAY_KEYS else "level" if key in SCALES else ""
+    """The form of a key's value (FORMS): "time", "day", "level" (a SCALES key), "list", or "" for text."""
+    return ("time" if key.endswith("_at") else "day" if key in DAY_KEYS else "level" if key in SCALES
+            else "list" if key in LIST_KEYS | LIST_OR_ONE else "")
+
+
+def read_value(key: str, text: str):
+    """A value a command is given for a key, as its form stores it: a level as its number, a day as YYYY-MM-DD, a time
+    as UTC. Empty clears the key (a list key's is an empty list). Refused, saying why, when it does not fit."""
+    text, form = text.strip(), FORMS[value_form(key)]
+    if not text:
+        return [] if key in LIST_KEYS else ""
+    try:
+        return form.read(key, text)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def valid_value(key: str, value) -> bool:
+    """A stored value fits its key's form; an empty one always does."""
+    return value in ("", None) or FORMS[value_form(key)].fits(key, value)
+
+
+def show_value(key: str, value) -> str:
+    """A stored value as the views show it: a time as its local day, a level by its name, a list joined."""
+    return FORMS[value_form(key)].show(key, value) if value not in ("", None) else ""
 
 
 def utc_now() -> str:
@@ -299,16 +420,6 @@ def days_since(text) -> int:
     """Whole days from a time's or a date's day to today; 0 for anything else."""
     day = day_of(text)
     return (dt.date.today() - day).days if day else 0
-
-
-def valid_value(key: str, value) -> bool:
-    """A value fits its key's form (value_form); an empty one always does."""
-    form = value_form(key)
-    if value in ("", None) or not form:
-        return True
-    if form == "time":
-        return utc_seconds(value) is not None or parse_day(value) is not None
-    return (parse_day(value) if form == "day" else SCALES[key].parse(value)) is not None
 
 
 # A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to

@@ -2106,10 +2106,13 @@ class Values(unittest.TestCase):
         for key, scale in model.SCALES.items():
             self.assertEqual(len(scale.names), len(scale.levels))
             self.assertEqual(len(scale.weights), len(scale.levels))
+            self.assertEqual(model.KEYS["ticket"][key][0], "set")  # `tracker set` takes it, from the entry alone
+            self.assertEqual(model.ISSUE_FIELDS[key], key)  # so does `tracker issue --<key>`
         run(*self.t, "set", "T-1", "priority=0", "size=4")
         t = self.tr().lookup("T-1")
         self.assertEqual([model.level_name(t, k) for k in ("priority", "size")], ["P0", "L"])
         self.assertEqual([model.weight(t, k) for k in ("priority", "size")], [8, 5])  # amounts that add up
+        self.assertEqual((model.SCALES["size"].unit, model.SCALES["size"].weight(1)), ("days of work", 0.25))  # XS
         run(*self.t, "set", "T-1", "size=")
         self.assertIsNone(model.weight(self.tr().lookup("T-1"), "size"))
 
