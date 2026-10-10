@@ -16,6 +16,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Viewer: a Your actions section above Now lists the open actions, one line each with its due day and Done and Drop buttons, opening to its notes. Reference lists the closed ones beside the closed decisions.
 - `tracker watch` marks a new action as one that needs you.
 - `tracker act A-<n> --title` gives an action a new text.
+- A ticket can have a size from 1 (XS) to 5 (XL): `tracker new --size` and `tracker set <id> size=<n>`. The agent takes it from the issue's estimate when it has one (`tracker issue --size`), or else gives its best estimate, and leaves it empty when it cannot estimate it reliably. The viewer shows it in a Size column.
 - A tracker's README can hold `## Instructions`: standing rules for the agent on this work, such as an action to add when a kind of ticket's PR opens. Every session's brief prints it.
 
 ### Changed

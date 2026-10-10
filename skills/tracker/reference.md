@@ -24,7 +24,9 @@ The `tracker` skill points here. `tracker rules` is the full contract: every key
 - **A decision's answer**: its Resolution. Tickets show it through `context`.
 - **Issue-tracker id**: the ticket's `- Issue: [PROJ-12 Title](url)` line; the id also finds the ticket.
 - **Priority**: 0 (most urgent) to 4 (least), the same for every issue tracker. With an Issue link it is the issue's: put its tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, Low 3, Lowest 4). Without one, set your own when you add the ticket. `tracker rules` gives the rule.
-- **Issue fields** (`priority`, `issue_created`): the issue tracker holds them; `tracker issue` records what you read there. The tracker cannot read an issue tracker, so the brief, or a prompt after the viewer's Refresh, names the tickets whose fields are due.
+- **Size**: 1 (XS) to 5 (XL), the same for every issue tracker. When the issue has an estimate it is the issue's: put its tracker's scale in order onto 1-5 (Fibonacci points 1 or less, 2, 3, 5, 8 or more; powers of two 1, 2, 4, 8, 16 or more; T-shirt XS to XL). Otherwise set your own from the Plan when you add the ticket.
+- **Your own values** (priority, size): your best estimate. Leave the value empty when you do not know it or cannot estimate it reliably. A value from an issue tracker or the user is never a guess.
+- **Issue fields** (`priority`, `size`, `issue_created`): the issue tracker holds them; `tracker issue` records what you read there. The tracker cannot read an issue tracker, so the brief, or a prompt after the viewer's Refresh, names the tickets whose fields are due.
 - **Wait and cycle time**: computed from each ticket's times. Wait: issue created → started (`started_at`, which `set status=in-progress` records). Cycle: started → PR merged. `tracker index` (the lines under its headline) and the viewer show them: quote them, do not work them out from the files.
 - **Unfinished work between sessions**: the branch's handoff, until the next `step`.
 - **Build detail**: the PR and commits. The hooks log each commit on the branch of a ticket under way: do not log a commit again.
@@ -37,6 +39,6 @@ Link lines (README Context, ticket Links) read `- Label: [title](url) — why it
 
 ## New tracker or migration
 
-- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill `README.md`: Context first (every document linked from the parent issue or brief), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>] [--priority <0-4>]`; a group is only a label.
+- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill `README.md`: Context first (every document linked from the parent issue or brief), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>] [--priority <0-4>] [--size <1-5>]`; a group is only a label.
 - **Older tracker**: when `tracker check` says so, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up first).
 - **A plan from elsewhere**: plan text → Plan; facts later tickets rely on → Carry forward; open questions and blockers → decisions; dated notes → one log line each, with a link to the detail; measurement files → `attach`.

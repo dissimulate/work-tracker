@@ -76,7 +76,7 @@ def run(*args: str, cwd: Path | None = None, code: int = 0) -> str:
 
 
 SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("group", "Group"), ("status", "Status"),
-            ("priority", "Priority"), ("wait", "Wait"), ("cycle", "→ Cycle"), ("waits", "← Waits on"),
+            ("priority", "Priority"), ("size", "Size"), ("wait", "Wait"), ("cycle", "→ Cycle"), ("waits", "← Waits on"),
             ("unblocks", "→ Unblocks")]  # the viewer's sequence heading buttons, as (sort key, label)
 
 
@@ -1264,14 +1264,33 @@ class IssueFields(unittest.TestCase):
         run(*t, "new", "T-5", "--title", "Urgent, no issue", "--priority", "0")
         run(*t, "set", "T-2", "priority=4")  # no Issue link: the model's own call
         tr = model.Tracker(model.HOME / s)
-        self.assertEqual([model.priority(tr.lookup(x)) for x in ("T-5", "T-2", "T-1")], [0, 4, None])
+        self.assertEqual([model.level(tr.lookup(x), "priority") for x in ("T-5", "T-2", "T-1")], [0, 4, None])
         for bad in ("High", "5", "-1", "P1", "1.5"):
             self.assertIn("is not 0-4", run(*t, "set", "T-2", f"priority={bad}", code=2))
         self.assertIn("is not 0-4", run(*t, "new", "T-6", "--title", "Six", "--priority", "High", code=2))
         self.assertIn("is not 0-4", run(*t, "issue", "T-1", "--priority", "High", code=2))
         run(*t, "set", "T-2", "priority=")
-        self.assertIsNone(model.priority(model.Tracker(model.HOME / s).lookup("T-2")))
+        self.assertIsNone(model.level(model.Tracker(model.HOME / s).lookup("T-2"), "priority"))
         self.assertIn("Priority: a number from 0 (most urgent) to 4", run(*t, "rules"))
+
+    def test_size_is_a_number_any_ticket_can_have(self):
+        s, t = self.tracker()
+        run(*t, "new", "T-5", "--title", "Small, no issue", "--size", "2")
+        run(*t, "set", "T-2", "size=5")  # no Issue link: the model's own estimate
+        run(*t, "issue", "T-1", "--size", "3")
+        tr = model.Tracker(model.HOME / s)
+        self.assertEqual([model.level(tr.lookup(x), "size") for x in ("T-5", "T-2", "T-1", "T-3")], [2, 5, 3, None])
+        for bad in ("M", "0", "6", "1.5"):
+            self.assertIn("is not 1-5", run(*t, "set", "T-2", f"size={bad}", code=2))
+        self.assertIn("is not 1-5", run(*t, "new", "T-6", "--title", "Six", "--size", "XL", code=2))
+        self.assertIn("is not 1-5", run(*t, "issue", "T-1", "--size", "8", code=2))
+        run(*t, "issue", "T-1", "--size", "")
+        self.assertNotIn("size", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its estimate
+        model.Tracker(model.HOME / s).lookup("T-2").save({"size": "Large"})
+        self.assertIn("T-2: size 'Large' is not 1-5", run(*t, "check", code=1))
+        rules = run(*t, "rules")
+        self.assertIn("Size: a number from 1 (XS) to 5 (XL)", rules)
+        self.assertIn("leave it empty when you do not know it or cannot estimate it reliably", rules)
 
     def test_the_brief_and_a_refresh_ask_for_due_fields(self):
         s, t = self.tracker()
@@ -1304,6 +1323,10 @@ class IssueFields(unittest.TestCase):
             return re.search(rf'<details data-id="{ident}"[^>]* data-sort-priority="([^"]*)"', page).group(1)
         self.assertEqual((p("T-1"), p("T-2"), p("T-4")), ("1", "", "4"))
         self.assertRegex(page, r'data-id="T-1".*?<summary>.*?<span class="hide-narrow">P1</span>')
+        run(*t, "set", "T-4", "size=5")
+        page = viewer.main_html(model.Tracker(model.HOME / s))
+        self.assertRegex(page, r'<details data-id="T-4"[^>]* data-sort-size="5"')
+        self.assertRegex(page, r'data-id="T-4".*?<summary>.*?<span class="hide-narrow">XL</span>')
 
         self.assertRegex(page, r"<span hidden id=issue-state>issues read \d\d:\d\d</span>")
         viewer.request_refresh(model.Tracker(model.HOME / s))

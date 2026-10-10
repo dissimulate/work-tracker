@@ -20,8 +20,8 @@ from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
-    ROOT, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
-    close_action, due_date, files_hash, locked, priority, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy,
+    ROOT, SIZE_NAMES, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
+    close_action, due_date, files_hash, level, locked, sequence, sort_key, span, spawn, tracker_at, whose_move, Busy,
     Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
@@ -360,8 +360,14 @@ def text_cell(key: str) -> Callable[[Row], Cell]:
 
 def priority_cell(r: Row) -> Cell:
     """P0 (most urgent) to P4; a value `check` refuses shows as it is."""
-    n = priority(r.t)
+    n = level(r.t, "priority")
     return Cell(f"P{n}" if n is not None else str(r.t.get("priority", "")))
+
+
+def size_cell(r: Row) -> Cell:
+    """XS to XL; a value `check` refuses shows as it is."""
+    n = level(r.t, "size")
+    return Cell(SIZE_NAMES[n] if n is not None else str(r.t.get("size", "")))
 
 
 def status_cell(r: Row) -> Cell:
@@ -406,7 +412,7 @@ class Column(NamedTuple):
 HIDES = ("mid", "narrow")  # the sequence widths a column can leave from, widest first (viewer/style.css)
 
 # An unknown status sorts after STAGES, so the page still renders and shows the check's error; a priority most urgent
-# first; dependencies by count.
+# first; a size smallest first; dependencies by count.
 COLUMNS = (
     Column((("step", "Step", "dependency order", lambda r: r.order),), lambda r: Cell(r.step), "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
@@ -414,7 +420,9 @@ COLUMNS = (
            text_cell("group"), "fit-content(var(--meta-max))", "mid"),
     Column((("status", "Status", "status",
              lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
-    Column((("priority", "Priority", "priority", lambda r: priority(r.t)),), priority_cell, "max-content", "narrow"),
+    Column((("priority", "Priority", "priority", lambda r: level(r.t, "priority")),), priority_cell, "max-content",
+           "narrow"),
+    Column((("size", "Size", "size", lambda r: level(r.t, "size")),), size_cell, "max-content", "narrow"),
     Column((("wait", "Wait", "wait time", lambda r: r.spans["wait"]),
             ("cycle", "→ Cycle", "cycle time", lambda r: r.spans["cycle"])), time_cell, "max-content", "mid"),
     Column((("waits", "← Waits on", "waits on", lambda r: len(r.waits)),

@@ -68,6 +68,7 @@ KEYS = {
                          "this ticket wait on them (computed; depends_on does not change)"),
         "merged_at": ("sync", "when the PR merged, UTC (YYYY-MM-DDTHH:MM:SSZ); a date alone before 0.29"),
         "priority": ("set", "how urgent the ticket is, 0 (most) to 4 (least); see Priority"),
+        "size": ("set", "how much work the ticket is, 1 (XS) to 5 (XL); see Size"),
         "issue_created": ("issue", "when the ticket's issue was created in its issue tracker, UTC "
                                    "(YYYY-MM-DDTHH:MM:SSZ)"),
     },
@@ -132,12 +133,22 @@ STATE_RULES = {
 
 
 PRIORITIES = range(5)  # a ticket's priority: 0 most urgent, 4 least; the same whatever the issue tracker
+SIZES = range(1, 6)  # a ticket's size: 1 XS to 5 XL; the same whatever the issue tracker
+SIZE_NAMES = dict(zip(SIZES, ("XS", "S", "M", "L", "XL")))
+SCALES = {"priority": PRIORITIES, "size": SIZES}  # the ticket keys that hold a number on a scale
+OWN_VALUE_RULE = (
+    "a value you set by your own judgement (priority, size) is your best estimate; leave it empty when you do not "
+    "know it or cannot estimate it reliably. A value from an issue tracker or the user is never a guess")
 PRIORITY_RULE = (
     "a number from 0 (most urgent) to 4 (least), the same for every issue tracker. A ticket with an Issue link takes "
     "its issue's priority: put the issue tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, "
     "Low 3, Lowest 4; P0-P4 as their digit) and record it with `tracker issue <id> --priority <n>`. A ticket without "
-    "one gets yours, from how urgent its work is: `tracker new --priority <n>` or `tracker set <id> priority=<n>`. "
-    "Leave it empty when you cannot tell")
+    "one gets yours, from how urgent its work is: `tracker new --priority <n>` or `tracker set <id> priority=<n>`")
+SIZE_RULE = (
+    "a number from 1 (XS) to 5 (XL), the same for every issue tracker. A ticket whose issue has an estimate takes it: "
+    "put the issue tracker's scale in order onto 1-5 (Fibonacci points 1 or less, 2, 3, 5, 8 or more; powers of two "
+    "1, 2, 4, 8, 16 or more; T-shirt XS, S, M, L, XL) and record it with `tracker issue <id> --size <n>`. Any other "
+    "ticket gets yours, from how much work its Plan is: `tracker new --size <n>` or `tracker set <id> size=<n>`")
 
 # A ticket's spans: name -> (key it starts at, key it ends at, what it measures). Each needs both times exact (UTC to
 # the second) and in order. A dropped ticket has none.
@@ -161,10 +172,10 @@ def span(t: Record, name: str) -> int | None:
     return int(end - start) if start is not None and end is not None and end >= start else None
 
 
-def priority(t: Record) -> int | None:
-    """A ticket's priority (PRIORITIES); None when it has none, or a value `check` refuses."""
-    text = str(t.get("priority", "")).strip()
-    return int(text) if text.isdigit() and int(text) in PRIORITIES else None
+def level(t: Record, key: str) -> int | None:
+    """A ticket's value on SCALES[key]; None when it has none, or a value `check` refuses."""
+    text = str(t.get(key, "")).strip()
+    return int(text) if text.isdigit() and int(text) in SCALES[key] else None
 
 
 def state_key(repo: str, branch: str) -> str:

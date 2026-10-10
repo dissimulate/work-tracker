@@ -376,9 +376,10 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
 
 
 ISSUE_DUE_SHOWN = 5  # due tickets named in the request for their issue fields; the rest as a count
-ISSUE_HOW = ("Read each issue's priority and creation time with its issue tracker's tool and record them: `tracker "
-             "issue <id> --priority <0-4: its level's place on its tracker's scale, 0 most urgent> --created <ISO 8601 "
-             "time>`, or `tracker issue <id>` when it has neither. Never guess a value.")
+ISSUE_HOW = ("Read each issue's priority, estimate and creation time with its issue tracker's tool and record them: "
+             "`tracker issue <id> --priority <0-4: its level's place on its tracker's scale, 0 most urgent> --size "
+             "<1-5: its estimate's place on its tracker's scale, 1 XS> --created <ISO 8601 time>`; leave out a flag "
+             "whose field the issue lacks. Never guess a value.")
 
 
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
