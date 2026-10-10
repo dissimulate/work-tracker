@@ -23,8 +23,8 @@ from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_sess
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
     save_session, session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
 from .contract import check, days_since, migrate, rules_lines
-from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, brief, context_lines, dep_lines, history_lines,
-    index_lines, order_lines, span_lines, start_text)
+from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, brief, context_lines, dep_lines,
+    history_lines, index_lines, order_lines, span_lines, start_text)
 from .github import match_pr, sync
 from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
     unarchive_tracker, watching)
@@ -810,8 +810,8 @@ def cmd_issue(args):
     if args.due:
         tr = resolve(args)
         due = tr.issue_due()
-        print("\n".join(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due)
-              if due else "no ticket's issue fields are due")
+        print("\n".join([*(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due),
+                         "", ISSUE_HOW]) if due else "no ticket's issue fields are due")
         return
     if not args.id:
         die("give a ticket id, or --due for the tickets whose issue fields are due")

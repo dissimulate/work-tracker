@@ -300,7 +300,7 @@ def hook_prompt(data: dict) -> None:
     asked = m.tracker.raw_state().get("issues", {}).get("requested", 0)
     if asked and asked != entry.get("told_issues"):  # the viewer's Refresh: passed on once
         fields["told_issues"] = asked
-        lines += [x for x in [issue_request(m.tracker)] if x]
+        lines += [x for x in [issue_request(m.tracker, m.focus)] if x]
     idle = not m.active and bool(m.branch) and in_repos(m.tracker, cwd)
     work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle) else None
     new = work is not None and bool(work.commits or work.files)

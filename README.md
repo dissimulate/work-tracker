@@ -37,7 +37,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker open [id]` | the live page |
 | `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the viewer; `tracker unarchive <slug>` brings it back |
 | `tracker delete <slug>` | move a tracker's folder, archived or not, to the system's trash (only in a terminal; refused while a session or a watch is on it) |
-| `tracker issue --due` | the tickets whose issue fields (priority, when the issue was created) are due, with their issue links |
+| `tracker issue --due` | the tickets whose issue fields (priority, when the issue was created) are due, with their issue links and how to record them |
 | `tracker check` | problems in the tracker's files |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
 | `tracker <command> --help` | the syntax of a command |
@@ -76,7 +76,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - For history, run `git init` in the folder.
 - Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
 - **Priority.** A ticket's priority is a number from 0 (most urgent) to 4 (least), the same whatever the issue tracker. A ticket with an `Issue:` link takes its issue's priority: the agent puts that tracker's levels in order onto 0-4 (Highest or Urgent 0, High 1, Medium 2, Low 3, Lowest 4). A ticket without one gets the agent's call when it is added (`tracker new --priority`, `tracker set <id> priority=<n>`).
-- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to) and records what it read with `tracker issue`. The brief names the tickets whose fields are due: open and never read, read more than a day ago or read before the viewer's last Refresh; closed, only once and only with a recorded start, for its wait time. With no such tool the agent leaves them blank.
+- **Issue fields.** A ticket with an `Issue:` link can carry its issue's priority and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to) and records what it read with `tracker issue`. The brief names the tickets whose fields are due, this session's first: open and never read, or read before the viewer's last Refresh (press it to have open tickets read again); closed, only once and only with a recorded start, for its wait time. `tracker issue --due` gives their links and how to record them. With no such tool the agent leaves them blank.
 
 ### Tickets, branches and sessions
 

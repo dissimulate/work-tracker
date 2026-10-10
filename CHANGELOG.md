@@ -23,6 +23,8 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - A new session on a feature branch that a ticket of one tracker names links to that tracker by itself, without the question. On a default branch such as `main`, or when the match is less sure, the session still asks. To undo, tell the agent the session is not that work.
 - After `/clear`, the new session stays on the tracker of the session it replaces, with its `--on` ticket. No need to link again.
 - `tracker start --decline` also unlinks a session that linked by itself.
+- The brief is shorter. It lists more than 3 closed tickets of a branch as a count (`also 9 done`). It gives the README's Context documents without their URLs (`tracker show tracker --section context` has them). It shows `check` warnings only for this session's tickets and the README, and errors as a count; `tracker check` has the rest.
+- Issue fields: an open ticket's fields are read once, not again each day. The viewer's Refresh still has them read again. The request in the brief is one line, with this session's tickets first; `tracker issue --due` says how to record them.
 - Viewer: the server keeps one port (7316, `TRACKER_VIEWER_PORT`), so bookmarks and open pages keep working: `http://127.0.0.1:7316/` lists the trackers.
 - Viewer: a tracked agent session starts the server, and the server runs while an agent session is on a tracker; no need to ask the agent to open a page first. A page reloads itself when the server is back.
 

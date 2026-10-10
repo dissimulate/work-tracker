@@ -1119,6 +1119,43 @@ class Hooks(unittest.TestCase):
         self.assertIn("[B-2] Built part 2", (tr.root / "log.md").read_text())
 
 
+class BriefSize(unittest.TestCase):
+    """The brief goes into every session and comes back after each compaction: it says what this work needs, once and
+    short, and points to the command that has the rest."""
+
+    def test_the_brief_leaves_out_what_this_work_does_not_need(self):
+        s, work = slug(), repo("feat/B-9")
+        t = ("--tracker", s)
+        run("init", s, "--title", "Brief", "--owner", "me")
+        run(*t, "add", "tracker", "context", "Spec: [Build spec](https://docs.example/spec) — the rules it keeps")
+        for i in range(1, 10):
+            run(*t, "new", f"B-{i}", "--title", f"Work {i}", "--branch", "feat/B-9")
+        for i in range(1, 8):
+            run(*t, "set", f"B-{i}", "status=done", "summary=shipped")
+        run(*t, "set", "B-9", "status=in-progress", cwd=work)
+        tr = model.Tracker(model.HOME / s)
+        tr.lookup("B-1").save({"colour": "red"})  # a warning on a ticket this session does not work on
+        brief = run(*t, "here", cwd=work)
+        self.assertIn("B-9 in-progress; also B-8 todo, 7 done", brief)  # closed ones as a count
+        self.assertIn("Spec: Build spec — the rules it keeps", brief)
+        self.assertIn("`tracker show tracker --section context` gives the links", brief)
+        self.assertNotIn("https://docs.example/spec", brief)
+        self.assertNotIn("Tracker check", brief)  # `check` has it, and the write that made it said so
+        model.Tracker(model.HOME / s).lookup("B-9").save({"colour": "blue"})
+        brief = run(*t, "here", cwd=work)
+        self.assertIn("Tracker check, on this work:\n  ⚠ B-9: unknown frontmatter key 'colour'", brief)
+        self.assertNotIn("B-1: unknown", brief)
+        self.assertIn("https://docs.example/spec", run(*t, "show", "tracker", "--section", "context"))
+
+        for i in (8, 9):  # the session's own ticket named first
+            run(*t, "add", f"B-{i}", "link", f"Issue: [SC-{i} Story](https://issues.example/{i})")
+        tr = model.Tracker(model.HOME / s)
+        self.assertIn("Issue fields due for 2 ticket(s): B-9, B-8.", views.issue_request(tr, [tr.lookup("B-9")]))
+        due = run(*t, "issue", "--due")
+        self.assertIn("B-8  https://issues.example/8", due)
+        self.assertIn(views.ISSUE_HOW, due)
+
+
 class SequenceSort(unittest.TestCase):
     """The viewer's sequence sorts by any column in the page (viewer/app.js); the server gives each row the values it
     sorts on and each column a sort button."""
@@ -1210,17 +1247,8 @@ class IssueFields(unittest.TestCase):
         self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
         self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
 
-        day = 86400
-        self.read_at(s, "T-1", time.time() - day - 60)
-        self.read_at(s, "T-3", time.time() - 30 * day)
-        self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-1"])  # a day old; closed stays
-        self.read_at(s, "T-1", time.time() - day + 60)
+        self.read_at(s, "T-1", time.time() - 30 * 86400)  # read once is enough: no read again by age
         self.assertIn("no ticket's issue fields are due", run(*t, "issue", "--due"))
-        self.read_at(s, "T-1", 1000.0)  # due once more than a day has passed, not at the day itself
-        tr = model.Tracker(model.HOME / s)
-        self.assertEqual([x.id for x in tr.issue_due(now=1000.0 + day)], [])
-        self.assertEqual([x.id for x in tr.issue_due(now=1000.0 + day + 1)], ["T-1"])
-        self.read_at(s, "T-1", time.time() - day + 60)
 
         viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh asks again for every open one
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue", "--due"), re.M), ["T-1"])

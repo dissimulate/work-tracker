@@ -27,12 +27,13 @@ def pr_label(t: Record) -> str:
 
 
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,
-                titles: bool = False, width: int = 0) -> list[str]:
+                titles: bool = False, width: int = 0, urls: bool = True) -> list[str]:
     counts = stage_counts(tr)
     tally = " · ".join(f"{s} {counts[s]}" for s in STAGES if s in counts)
     out = [f"{tr.headline()} · {len(tr.tickets)} tickets · {tally}"]
     if tr.context:
-        out += ["Context:", *link_lines(tr.context, tr.root, titles=titles, width=width), ""]
+        out += ["Context" + ("" if urls else " (`tracker show tracker --section context` gives the links)") + ":",
+                *link_lines(tr.context, tr.root, titles=titles, width=width, urls=urls), ""]
     acts = action_lines(tr, width)
     out += acts + [""] * bool(acts)
     rows = [t for t in tr.tickets
@@ -374,22 +375,24 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
     return lines
 
 
-ISSUE_DUE_SHOWN = 10  # due tickets named in the request for their issue fields; the rest as a count
+ISSUE_DUE_SHOWN = 5  # due tickets named in the request for their issue fields; the rest as a count
+ISSUE_HOW = ("Read each issue's priority and creation time with its issue tracker's tool and record them: `tracker "
+             "issue <id> --priority <0-4: its level's place on its tracker's scale, 0 most urgent> --created <ISO 8601 "
+             "time>`, or `tracker issue <id>` when it has neither. Never guess a value.")
 
 
-def issue_request(tr: Tracker) -> str:
-    """The request for the issue fields that are due (STATE_RULES["issues"]), or "". The model reads them with the
-    issue tracker's tool; the tracker cannot."""
-    due = tr.issue_due()
+def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
+    """The request for the issue fields that are due (STATE_RULES["issues"]), or "": one line, the `first` tickets
+    (the session's own) named first. `tracker issue --due` gives the links and how to record them (ISSUE_HOW). The
+    model reads them with the issue tracker's tool; the tracker cannot."""
+    due = sorted(tr.issue_due(), key=lambda t: t not in first)
     if not due:
         return ""
     ids = ", ".join(t.id for t in due[:ISSUE_DUE_SHOWN]) + (f" +{len(due) - ISSUE_DUE_SHOWN}"
                                                              if len(due) > ISSUE_DUE_SHOWN else "")
-    return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids} (`tracker issue --due` gives their issue "
-            "links). If a tool for their issue tracker is available (such as an MCP server), "
-            "read each issue's priority and creation time and record them: `tracker issue <id> --priority <0-4: its "
-            "level's place on its tracker's scale, 0 most urgent> --created <ISO 8601 time>`, or `tracker issue <id>` "
-            "when it has neither. With no such tool, leave them and never guess a value.")
+    return (f"[work-tracker] Issue fields due for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
+            "(such as an MCP server), run `tracker issue --due` for their links and how to record them; with none, "
+            "leave them: never guess a value.")
 
 
 def instructions(tr: Tracker) -> str:
@@ -402,6 +405,18 @@ def instructions(tr: Tracker) -> str:
         text = (text[:BRIEF_INSTRUCTIONS_CHARS].rsplit("\n", 1)[0] + "\n… the rest: `tracker show tracker --section "
                 f"{README_INSTRUCTIONS.lower()}`")
     return f"This tracker's instructions (README ## {README_INSTRUCTIONS}; follow them):\n{text}"
+
+
+def check_lines(tr: Tracker, tickets: list[Record]) -> str:
+    """`check` for a brief: the errors as a count (each one is to fix), and the warnings on this session's tickets
+    and the README in full. The rest wait for `check`, and each write prints the problems it adds."""
+    errors, warnings = check(tr)
+    ids = {t.id for t in tickets} | {"README.md"}
+    mine = [w for w in warnings if w.split(":", 1)[0] in ids]
+    if not errors and not mine:
+        return ""
+    return "\n".join([f"Tracker check: {len(errors)} error(s) — run `check` and fix them." if errors
+                      else "Tracker check, on this work:", *(f"  ⚠ {short(w, BRIEF_LINE_CHARS)}" for w in mine)])
 
 
 def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,
@@ -436,9 +451,10 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
         parts.append(rules)
     if focus:
         if tr.context:
-            parts.append("\n".join(["Context (open the one that governs a choice before making it; `tracker index` "
-                                    "gives the detail):",
-                                    *link_lines(tr.context, tr.root, titles=compact, width=BRIEF_LINE_CHARS)]))
+            parts.append("\n".join(["Context (open the one that governs a choice before making it; `tracker show "
+                                    "tracker --section context` gives the links):",
+                                    *link_lines(tr.context, tr.root, titles=compact, width=BRIEF_LINE_CHARS,
+                                                urls=False)]))
         shown, rest = focus[:BRIEF_TICKETS_MAX], focus[BRIEF_TICKETS_MAX:]
         decided = {d.id for t in shown for d in tr.decisions_for(t)}  # shown below with their answers
         for t in shown:
@@ -460,15 +476,15 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
             ready = [t.id for t, _ in tr.startable()]
             parts.append(f"No open ticket on {m.branch}. To start one here: `tracker set <id> status=in-progress`"
                          + (f" (can start: {', '.join(ready)})" if ready else "") + ".")
-        parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS)))
+        parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS, urls=False)))
     if synced:
         parts.append("Synced from GitHub: " + "; ".join(synced))
-    ask = issue_request(tr)
+    ask = issue_request(tr, focus)
     if ask:
         parts.append(ask)
-    errors, warnings = check(tr)
-    if errors or warnings:
-        parts.append(f"Tracker check: {len(errors)} errors, {len(warnings)} warnings — run `check`.")
+    problems = check_lines(tr, focus)
+    if problems:
+        parts.append(problems)
     if with_protocol:
         parts.append(protocol(tr.slug))
     return "\n\n".join(parts)

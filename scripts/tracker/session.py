@@ -8,10 +8,11 @@ import json
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, WINDOWS, all_trackers, append_log, archived_at,
+from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at,
     atomic_write, branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
     Tracker)
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
@@ -20,6 +21,9 @@ from .git import branch_of, changed_files, cwd_repo, default_branches, git, head
 def named_in(branch: str, t: Record) -> bool:
     """The branch name holds the ticket's id or one of its Issue ids, as a whole token."""
     return any(re.search(rf"(?<![A-Za-z0-9]){re.escape(i)}(?![0-9])", branch, re.I) for i in [t.id, *t.aliases])
+
+
+SUMMARY_CLOSED_NAMED = 3  # closed tickets a branch's summary names; more go as a count
 
 
 @dataclass
@@ -48,10 +52,16 @@ class Match:
         return self.active or [t for t in self.mine if t.stage not in CLOSED_TICKET]
 
     def summary(self) -> str:
-        """`SS-2 in-progress; also SS-1 done`: every ticket on the branch in one line, the focus first."""
+        """`SS-2 in-progress; also SS-1 done`: every ticket on the branch in one line, the focus first. More than
+        SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 merged`."""
         rest = [t for t in self.tickets if t not in self.focus]
+        closed = [t for t in rest if t.stage in CLOSED_TICKET]
+        also = [f"{t.id} {t.stage}" for t in rest if t not in closed or len(closed) <= SUMMARY_CLOSED_NAMED]
+        if len(closed) > SUMMARY_CLOSED_NAMED:
+            counts = Counter(t.stage for t in closed)
+            also += [f"{counts[s]} {s}" for s in STAGES if counts[s]]
         line = ", ".join(f"{t.id} {t.stage}" for t in self.focus) or "no open ticket"
-        return line + (f"; also {', '.join(f'{t.id} {t.stage}' for t in rest)}" if rest else "")
+        return line + (f"; also {', '.join(also)}" if also else "")
 
 
 # ---------------------------------------------------------------- sessions

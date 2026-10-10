@@ -121,8 +121,8 @@ STATE_RULES = {
     "reviews": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state; each sync "
                "replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
-              "viewer's Refresh asked for them again. A ticket with an Issue link is due when open and never read, "
-              "read more than a day ago or read before the request; when closed, only when never read and it has a "
+              "viewer's Refresh asked for them again. A ticket with an Issue link is due when open and never read or "
+              "read before the request; when closed, only when never read and it has a "
               "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
               "due ones for the model, which reads them with the issue tracker's tool",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
@@ -130,8 +130,6 @@ STATE_RULES = {
                f"days after it was set. `use` keeps only unfinished tickets",
 }
 
-
-ISSUE_STALE_S = 86400  # an open ticket's issue fields are read again after this
 
 PRIORITIES = range(5)  # a ticket's priority: 0 most urgent, 4 least; the same whatever the issue tracker
 PRIORITY_RULE = (
@@ -411,11 +409,15 @@ def link_title(link: Link) -> str:
     return re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
 
 
-def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0) -> list[str]:
-    """Link lines for the AI's context. `titles` keeps only each line's label and title: the short form. `width` (a
-    brief) cuts each line to that many characters and leaves out the nested detail lines."""
+def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0,
+               urls: bool = True) -> list[str]:
+    """Link lines for the AI's context. `titles` keeps only each line's label and title: the short form. `urls` False
+    keeps the label, title and why, without the URL. `width` (a brief) cuts each line to that many characters and
+    leaves out the nested detail lines."""
     if titles:
         return [f"  {x.label}: {link_title(x).split(' — ')[0]}" for x in items]
+    if not urls:
+        return [f"  {cut(f'{x.label}: {link_title(x)}', width)}" for x in items]
     out = []
     for link in items:
         out.append(f"  {cut(f'{link.label}: {plain_link(link.text, root)}', width)}")
@@ -855,13 +857,12 @@ class Tracker:
         out["pr_match"] = {k: v for k, v in state.get("pr_match", {}).items() if now - v.get("at", 0) < PR_MATCH_TTL_S}
         return {k: v for k, v in out.items() if v != {}}
 
-    def issue_due(self, now: float | None = None) -> list[Record]:
+    def issue_due(self) -> list[Record]:
         """The tickets whose issue fields the model should read from their issue tracker (STATE_RULES["issues"])."""
         issues = self.raw_state().get("issues", {})
         read, asked = issues.get("read", {}), issues.get("requested", 0)
-        now = time.time() if now is None else now
         return [t for t in self.tickets if t.aliases and (t.stage not in CLOSED_TICKET and (
-            not read.get(t.id) or now - read[t.id] > ISSUE_STALE_S or read[t.id] < asked)
+            not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
     def save_state(self, state: dict) -> None:
