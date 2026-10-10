@@ -163,6 +163,16 @@ class Format(unittest.TestCase):
         for markup in ("&lt;span", "&lt;a ", "&lt;/", "&lt;details", "&lt;p", "&lt;div", "&amp;lt;", "&amp;quot;"):
             self.assertNotIn(markup, page.replace("&lt;b x=&quot;1&quot;&gt;&amp;amp;", ""))
 
+    def test_log_forms_read_back_what_they_write(self):
+        fields = {"id": "D-07", "title": "Auth scheme", "who": " (me)", "answer": "JWT", "branch": "feat/x",
+                  "commits": "a1 one"}
+        for name, form in model.LOG.items():
+            with self.subTest(name=name):
+                self.assertTrue(form.read(form.text(**fields)))
+        self.assertEqual(model.logged_decision(model.LOG["decided"].text(**fields)), "D-07")
+        commits = [(f"c{i}", f"commit {i}") for i in range(model.COMMITS_LOGGED_MAX + 3)]
+        self.assertEqual(model.commits_logged(model.commits_text("feat/x", commits)), len(commits))
+
     def test_fork_prs_are_not_the_tickets(self):
         t = model.Record(Path("T-1.md"), "ticket", {"id": "T-1", "branch": "fix"}, "")
         fork = {"number": 9, "headRefName": "fix", "state": "OPEN", "isCrossRepository": True}
@@ -2052,7 +2062,8 @@ class Actions(unittest.TestCase):
 
     def test_an_actions_id_works_as_any_records(self):
         run(*self.t, "act", "Ask Sam whether v1 stays", "--refs", "T-1")
-        self.assertIn(f"[A-01 T-1] {model.ACTION_ADDED} Ask Sam", run(*self.t, "history", "--ref", "a-1"))
+        added = model.LOG["action"].text(title="Ask Sam")
+        self.assertIn(f"[A-01 T-1] {added}", run(*self.t, "history", "--ref", "a-1"))
         run(*self.t, "log", "Sam is away until Monday", "--ref", "A-01")
         self.assertIn("[A-01] Sam is away until Monday", run(*self.t, "history", "--ref", "A-01"))
         context = run(*self.t, "context", "A-01")
@@ -2093,7 +2104,7 @@ class Actions(unittest.TestCase):
         self.assertTrue(text.endswith("… the rest: `tracker show tracker --section instructions`"))
 
     def test_the_watch_marks_a_new_action(self):
-        events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.ACTION_ADDED} Ask Sam",
+        events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.LOG['action'].text(title='Ask Sam')}",
                                      "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])
         self.assertEqual([urgent for _, urgent, _ in events], [True, False])
 

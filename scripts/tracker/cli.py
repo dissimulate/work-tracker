@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (ACTION_ADDED, BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS,
-    KINDS, NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, a_kind, all_trackers,
+from .model import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LOG,
+    NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, a_kind, all_trackers,
     append_log, append_notes, append_to_section, archived_at, archived_trackers, atomic_file, atomic_write,
     blocker_link, close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit, id_kind, id_list,
     kind_names, link_url, load_record, locked, names, put_section, read_value, relabel, replace_in_section, resolution,
@@ -315,7 +315,8 @@ def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> s
     who = f" ({by})" if by else ""
     rec.change(rec.status_update("closed"))
     append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_log(tr, f"Decided {rec.id} {rec.get('title')}{who}: {short(answer)}", [rec.id, *tr.touched_by(rec)])
+    append_log(tr, LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who, answer=short(answer)),
+               [rec.id, *tr.touched_by(rec)])
     return f"{rec.id} closed"
 
 
@@ -701,8 +702,8 @@ def cmd_decide(args):
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)
-        append_log(tr, f"Opened {d.id} {args.target}" + (f"; blocks {', '.join(newly)}" if newly else ""),
-                   [d.id, *refs, *newly])
+        append_log(tr, LOG["opened"].text(id=d.id, title=args.target)
+                   + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly])
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
@@ -749,7 +750,7 @@ def cmd_act(args):
     a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
     append_notes(a, notes)
     newly = block_tickets(tr, a.id, blocks)
-    append_log(tr, f"{ACTION_ADDED} {args.target}" + (f" (due {due})" if due else "")
+    append_log(tr, LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
                + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly])
     print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
 

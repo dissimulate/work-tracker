@@ -12,8 +12,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (HOME, NO_STAGE, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at,
-    atomic_write, branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
+from .model import (HOME, NO_STAGE, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at, atomic_write,
+    branch_entry, commits_text, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
     Tracker)
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
 
@@ -428,13 +428,8 @@ def new_commits(cwd: str | Path, mark: dict) -> list[tuple[str, str]]:
     return out
 
 
-COMMITS_LOGGED_MAX = 8
-
-
 def log_commits(tr: Tracker, branch: str, commits: list[tuple[str, str]], refs: list[str]) -> None:
-    shown = "; ".join(f"{sha} {subject}" for sha, subject in commits[:COMMITS_LOGGED_MAX])
-    more = f"; and {len(commits) - COMMITS_LOGGED_MAX} more" if len(commits) > COMMITS_LOGGED_MAX else ""
-    append_log(tr, f"Commits on {branch}: {shown}{more}", refs)
+    append_log(tr, commits_text(branch, commits), refs)
 
 
 def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:

@@ -8,18 +8,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import signal
 import sys
 import time
 from pathlib import Path
 
-from .model import (ACTION_ADDED, ARCHIVE, HOME, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash,
-    locked, short, to_trash, whose_move, Tracker)
+from .model import (ARCHIVE, HOME, LOG, LOG_LINE, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, commits_logged, die,
+    files_hash, locked, short, to_trash, whose_move, Tracker)
 from .session import (CLAUDE_SESSIONS, SESSIONS_DIR, alive, drop_session, live_sessions, load_session, match_cwd,
     session_id, Live)
 from .contract import check
-from .views import LOG_LINE, start_text
+from .views import start_text
 from .github import budget, sync
 
 WATCH_DIR = HOME / ".watch"  # <slug>.json: a tracker's watcher and what it reported; grants/<session id>
@@ -142,9 +141,6 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
     return out
 
 
-COMMITS = re.compile(r"Commits on \S+: (.*)")
-
-
 def log_events(lines: list[str]) -> list[Event]:
     """One event per new log line, keyed by the first id it names (a new action for the user needs them); the commits
     the hooks logged, as a count."""
@@ -155,12 +151,10 @@ def log_events(lines: list[str]) -> list[Event]:
             continue
         refs = (m[2] or "").split()
         key, msg = (refs[0] if refs else "log"), line[m.end():].strip()
-        if c := COMMITS.match(msg):
-            items = c[1].split("; ")
-            more = re.fullmatch(r"and (\d+) more", items[-1])
-            commits[key] = commits.get(key, 0) + (len(items) - 1 + int(more[1]) if more else len(items))
+        if n := commits_logged(msg):
+            commits[key] = commits.get(key, 0) + n
         else:
-            out.append((key, msg.startswith(ACTION_ADDED), short(msg, 120)))
+            out.append((key, bool(LOG["action"].read(msg)), short(msg, 120)))
     return out + [(key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
 
 

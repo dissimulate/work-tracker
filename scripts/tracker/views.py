@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
-import re
 import time
 from pathlib import Path
 from statistics import median
 
 from .markdown import section, strip_comments
-from .model import (BIN, ISOLATION_RULE, KINDS, NO_STAGE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS, STAGES,
-    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence, short,
-    show_value, span, utc_seconds, whose_move, Dep, Record, Start, Tracker)
+from .model import (BIN, ISOLATION_RULE, KINDS, LOG_LINE, NO_STAGE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS,
+    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, logged_decision,
+    resolution, sequence, short, show_value, span, utc_seconds, whose_move, Dep, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -182,8 +181,6 @@ def ancestors(tr: Tracker, t: Record) -> list[Record]:
     return out
 
 
-LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")
-DECISION_LOG = re.compile(r"(?:Opened|Decided) (D-\d+)\b")  # the lines `decide` writes that the decision holds
 CONTEXT_LOG = 3  # log lines `context` shows by default
 
 
@@ -197,7 +194,7 @@ def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: se
     lines = [ln[2:] for ln in (path.read_text().splitlines() if path.exists() else [])
              if (m := LOG_LINE.match(ln)) and m[1] >= since
              and (not refs or set(refs) & set((m[2] or "").split()))
-             and not ((d := DECISION_LOG.match(ln, m.end())) and d[1] in shown)]
+             and logged_decision(ln[m.end():]) not in shown]
     return lines[-last:] if last > 0 else lines
 
 

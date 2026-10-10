@@ -6,13 +6,12 @@ import datetime as dt
 import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR,
-    ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN,
-    OWN_VALUE_RULE, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
-    RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS,
-    START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, FORMS,
-    append_to_section, blocker_link, days_since, kind_names, level, names, norm_id, relabel, resolution, sequence,
-    unknown_dep, valid_value, value_form, Record, Tracker)
+from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
+    ISSUE, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN, OWN_VALUE_RULE,
+    PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, RETIRED_KEYS,
+    SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES,
+    STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names, level, names, norm_id,
+    relabel, resolution, sequence, unknown_dep, valid_value, value_form, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -208,8 +207,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
         "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
-        "a note no other write holds. The hooks add the branch's new commits (`Commits on <branch>: ...`), `pause` the "
-        "handoff's first words.",
+        "a note no other write holds. The hooks add the branch's new commits (`"
+        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `pause` the handoff's first words.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
