@@ -165,8 +165,7 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
         repo = tr.repo_of(t)
         # Only started work has a PR: a todo ticket on a branch that holds a PR is not in it yet. A merged PR is
         # final: a later PR from a branch the ticket shared is other tickets' work.
-        started = t.get("status") in ("in-progress", "done")
-        if not started or t.get("pr_state") == "merged" or not repo or not (t.get("branch") or t.get("pr")):
+        if not t.started or t.get("pr_state") == "merged" or not repo or not (t.get("branch") or t.get("pr")):
             continue
         prs = prs_by_repo.get(repo, [])
         pr = pick_pr(prs, t)

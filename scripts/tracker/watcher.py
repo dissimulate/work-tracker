@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from .model import (ACTION_ADDED, ARCHIVE, HOME, IN_FLIGHT, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash,
+from .model import (ACTION_ADDED, ARCHIVE, HOME, SAFE_NAME, STATE_KEEP_DAYS, atomic_write, die, files_hash,
     locked, short, to_trash, whose_move, Tracker)
 from .session import (CLAUDE_SESSIONS, SESSIONS_DIR, alive, drop_session, live_sessions, load_session, match_cwd,
     session_id, Live)
@@ -202,7 +202,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     decisions, the user's open actions and what can start."""
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
-    flight = [t for t in tr.tickets if t.stage in IN_FLIGHT]
+    flight = [t for t in tr.tickets if t.in_flight]
     on = {x.sid: agent_tickets(tr, x) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]

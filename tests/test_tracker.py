@@ -2119,8 +2119,14 @@ class Values(unittest.TestCase):
         for key in ("created_at", "updated_at"):
             self.assertRegex(t.get(key), utc)
         self.assertRegex(self.tr().meta["created_at"], utc)
+        run(*self.t, "set", "T-1", "next=Write the schema", "status=in-progress")
+        t = self.tr().lookup("T-1")
+        self.assertRegex(t.get("started_at"), utc)
+        self.assertNotIn("closed_at", t.meta)  # started, not closed
         run(*self.t, "set", "T-1", "status=done", "summary=shipped")
-        self.assertRegex(self.tr().lookup("T-1").get("closed_at"), utc)
+        t = self.tr().lookup("T-1")
+        self.assertRegex(t.get("closed_at"), utc)
+        self.assertEqual(t.get("next"), "")  # a closed ticket has no next action
         run(*self.t, "set", "T-1", "status=todo")  # open again: no close time
         self.assertNotIn("closed_at", self.tr().lookup("T-1").meta)
         run(*self.t, "decide", "Auth scheme", "--resolve", "OAuth", "--by", "me")
@@ -2131,6 +2137,10 @@ class Values(unittest.TestCase):
         self.assertRegex(self.tr().action("A-01").get("closed_at"), utc)
         self.tr().lookup("T-1").save({"started_at": "last week"})
         self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(cli.check(self.tr())[0]))
+        self.tr().lookup("T-1").save({"started_at": None, "status": "in-progress", "closed_at": "2026-09-01T00:00:00Z"})
+        self.assertIn("T-1: closed_at, but its status in-progress is open", "\n".join(cli.check(self.tr())[1]))
+        run(*self.t, "migrate")
+        self.assertNotIn("closed_at", self.tr().lookup("T-1").meta)
 
     def test_any_record_can_have_a_due_day(self):
         run(*self.t, "new", "T-2", "--title", "Two", "--due", "2099-03-01")

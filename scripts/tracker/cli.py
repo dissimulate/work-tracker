@@ -11,13 +11,13 @@ from pathlib import Path
 
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
-from .model import (ACTION_ADDED, BLOCKER, CLOSED_TICKET, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, IN_FLIGHT,
-    ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIST_KEYS, LIST_OR_ONE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA,
-    STAGES, STATUSES, TIME_FORMAT, a_kind, all_trackers, append_log, append_notes, append_to_section, archived_at,
-    archived_trackers, atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since,
-    die, drop_from_section, fit, id_kind, id_list, kind_names, link_url, load_record, locked, names, parse_day,
-    put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, spawn,
-    today, unblocked, unknown_dep, utc_now, value_form, Busy, Record, Tracker)
+from .model import (ACTION_ADDED, BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS,
+    KINDS, LIST_KEYS, LIST_OR_ONE, NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES,
+    TIME_FORMAT, a_kind, all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers,
+    atomic_file, atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since, die,
+    drop_from_section, fit, id_kind, id_list, kind_names, link_url, load_record, locked, names, parse_day, put_section,
+    relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, spawn, today, unblocked,
+    unknown_dep, utc_now, value_form, Busy, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos,
     load_session, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, record_commits, remember, resolve,
@@ -62,7 +62,7 @@ def cmd_list(args):
     if not trackers:
         print(NO_TRACKERS)
     for t in trackers:
-        active = sum(1 for x in t.tickets if x.stage not in CLOSED_TICKET)
+        active = sum(1 for x in t.tickets if not x.closed)
         print(f"{t.slug:<36} {t.headline()} · {len(t.tickets)} tickets, {active} active · "
               f"{len(t.open_decisions())} open decisions")
     archived = archived_trackers()
@@ -198,28 +198,21 @@ def cmd_set(args):
         items = csv(v)
         updates[k] = items if k in LIST_KEYS or (k in LIST_OR_ONE and len(items) > 1) else v
     notes = []
-    if rec.kind == "ticket" and updates.get("status") in ("done", "dropped"):
-        if rec.get("next") and "next" not in updates:
-            updates["next"] = ""  # a closed ticket has no next action; its summary says what it delivered
-        if not (updates.get("summary") or rec.get("summary")):
-            notes.append(f"set its summary: `tracker set {rec.id} summary=\"<what it delivered, or why dropped>\"`")
-    if rec.kind == "ticket" and updates.get("status") == "in-progress":
-        if "branch" not in updates:
-            notes += start_here(tr, rec, updates)
-        # The first start, from todo: the wait time ends and the cycle time starts at it. A ticket started before 0.29
-        # gets none, not a guess.
-        if not rec.get("started_at") and rec.get("status") == "todo":
-            updates["started_at"] = utc_now()
+    to = STAGES.get(updates.get("status", ""), NO_STAGE) if rec.kind == "ticket" else NO_STAGE
+    if to.closed and not (updates.get("summary") or rec.get("summary")):
+        notes.append(f"set its summary: `tracker set {rec.id} summary=\"<what it delivered, or why dropped>\"`")
+    if to.in_flight and "branch" not in updates:
+        notes += start_here(tr, rec, updates)
     moved = "status" in updates and updates["status"] != rec.get("status")
+    starts = rec.todo and to.in_flight
     if "status" in updates:
         updates.update(rec.status_update(updates["status"]))
-    was = rec.stage if rec.kind == "ticket" else ""
     rec.change(updates)
     if moved:
         append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
-    if was == "todo" and updates.get("status") == "in-progress":
+    if starts:
         notes += base_notes(tr, rec)
     if notes:
         print("\n".join(notes))
@@ -231,7 +224,7 @@ def status_line(rec: Record) -> str:
     status = str(rec.get("status"))
     if rec.kind == "tracker":
         return f"The work is {status} now"
-    where = f" on {rec.get('branch')}" if status == "in-progress" and rec.get("branch") else ""
+    where = f" on {rec.get('branch')}" if rec.in_flight and rec.get("branch") else ""
     what = rec.get("summary") if rec.closed and rec.get("summary") else rec.get("title")
     return f"{rec.id} {status}{where}: {short(str(what))}"
 
@@ -260,7 +253,7 @@ def base_notes(tr: Tracker, t: Record) -> list[str]:
     """A ticket started on the current branch: name the branches of the tickets under way it waits on that this
     branch does not contain (START_RULE). Git is only read."""
     cwd = work_dir()
-    under = [d.rec for d in tr.blockers(t) if d.kind == "ticket" and d.rec.stage in IN_FLIGHT and d.rec.get("branch")
+    under = [d.rec for d in tr.blockers(t) if d.rec and d.rec.in_flight and d.rec.get("branch")
              and same_repo(tr.repo_of(d.rec), tr.repo_of(t))]
     if not under or t.get("branch") != branch_of(cwd) or not in_repos(tr, cwd):  # git runs only past here
         return []
@@ -394,7 +387,7 @@ def cmd_wait(args):
 def cmd_seq(args):
     tr = resolve(args)
     seq = sequence(tr)
-    rows = sorted((t for t in tr.tickets if t.stage != "dropped" and (not args.active or t.stage not in CLOSED_TICKET)),
+    rows = sorted((t for t in tr.tickets if not t.dropped and not (args.active and t.closed)),
                   key=lambda t: (seq.step.get(t.id, 0), sort_key(t.id)))
     w = max([len(t.id) for t in rows] + [2])
     wg = max([len(str(t.get("group") or "—")) for t in rows] + [1])
@@ -473,7 +466,7 @@ def section_edit(args, new: bool = True) -> tuple[Tracker, Record, str]:
     changes only with a reason (--why), which the log keeps."""
     tr, rec = record_for(args, args.id)
     heading = section_named(rec, args.section, new=new)
-    if heading == "Plan" and rec.kind == "ticket" and rec.get("status", "todo") != "todo" and not args.why:
+    if heading == "Plan" and rec.kind == "ticket" and not rec.todo and not args.why:
         die(f"{rec.id} has started, so its Plan is the agreed plan: pass why it changes, for the log: "
             f"--why \"<why the plan changes>\"")
     fit("log", args.why)
@@ -910,7 +903,7 @@ def cmd_step(args):
         updates["next"] = args.next
         done.append("next set")
     if args.done:
-        updates.update(t.status_update("done"), summary=args.done, next="")
+        updates.update(t.status_update("done"), summary=args.done)
         done.append("done")
     for fact in args.carry or []:
         append_to_section(t, "Carry forward", fact if BULLET.match(fact) else f"- {fact}")
@@ -1002,7 +995,7 @@ def cmd_start(args):
     tr = one_tracker(hits, sure, head, "start")
     picks = [tr.find(i) for i in focus]
     closed = [f"{r.id} is {r.stage if r.kind == 'ticket' else a_kind(r.kind)}" for r in picks
-              if r.kind != "ticket" or r.stage in CLOSED_TICKET]
+              if r.kind != "ticket" or r.closed]
     if closed:
         die(f"--on takes open tickets: {'; '.join(closed)}")
     if not sid:

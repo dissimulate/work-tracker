@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (CLOSED_TICKET, HOME, IN_FLIGHT, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at,
+from .model import (HOME, NO_STAGE, SAFE_NAME, STAGES, WINDOWS, all_trackers, append_log, archived_at,
     atomic_write, branch_entry, die, locked, put_entry, resolution, short, state_key, tracker_at, whose_move, Record,
     Tracker)
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
@@ -43,19 +43,19 @@ class Match:
     @property
     def active(self) -> list[Record]:
         """This session's tickets in progress or in review: the work under way here."""
-        return [t for t in self.mine if t.stage in IN_FLIGHT]
+        return [t for t in self.mine if t.in_flight]
 
     @property
     def focus(self) -> list[Record]:
         """Of `mine`, those under way, else the unfinished ones: the tickets the brief shows (`summary` names the
         rest)."""
-        return self.active or [t for t in self.mine if t.stage not in CLOSED_TICKET]
+        return self.active or [t for t in self.mine if not t.closed]
 
     def summary(self) -> str:
         """`SS-2 in-progress; also SS-1 done`: every ticket on the branch in one line, the focus first. More than
         SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 merged`."""
         rest = [t for t in self.tickets if t not in self.focus]
-        closed = [t for t in rest if t.stage in CLOSED_TICKET]
+        closed = [t for t in rest if t.closed]
         also = [f"{t.id} {t.stage}" for t in rest if t not in closed or len(closed) <= SUMMARY_CLOSED_NAMED]
         if len(closed) > SUMMARY_CLOSED_NAMED:
             counts = Counter(t.stage for t in closed)
@@ -226,7 +226,7 @@ def match_cwd(cwd: str | Path, sid: str | None = None, tracker: Tracker | None =
     branch = branch_of(cwd)
     hits, how = branch_tickets(own, cwd, branch)
     picks = [r for r in map(own.lookup, session_focus(own, session_id() if sid is None else sid))
-             if r and r.kind == "ticket" and r.stage not in CLOSED_TICKET]
+             if r and r.kind == "ticket" and not r.closed]
     ids = {r.id for r in hits}
     return Match(own, hits + [r for r in picks if r.id not in ids], branch, how, [r.id for r in picks])
 
@@ -247,7 +247,7 @@ def branch_tickets(own: Tracker, cwd: str | Path, branch: str) -> tuple[list[Rec
                 if r and r.kind == "ticket" and here(r)]
         if hits:
             return hits, "use"
-        hits = [r for r in own.tickets if r.stage not in CLOSED_TICKET and named_in(branch, r) and here(r)]
+        hits = [r for r in own.tickets if not r.closed and named_in(branch, r) and here(r)]
         if hits:
             return hits, "name"
     return [], "start"
@@ -533,7 +533,7 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
             out.append(f"now waits on {ident} ({now[1]})")
         else:
             # The session's own ticket changes stage by its own doing, or sync's: only its end is news.
-            if was[1] != now[1] and (now[0] != "own" or now[1] in CLOSED_TICKET):
+            if was[1] != now[1] and (now[0] != "own" or STAGES.get(now[1], NO_STAGE).closed):
                 out.append(f"{ident} is now {now[1]}")
             if now[0] == "own" and len(was) > 2 and was[2] != now[2] and now[2]:  # older sessions kept no move
                 out.append(f"{ident} move now: {now[2]}")

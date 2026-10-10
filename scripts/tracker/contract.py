@@ -6,10 +6,10 @@ import datetime as dt
 import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (ACTION_BAR, BLOCKER, CLOSED_TICKET, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR,
+from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR,
     ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN,
     OWN_VALUE_RULE, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
-    RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, STARTED,
+    RETIRED_KEYS, SCALE_RULE, SCALES, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS,
     START_RULE, STATE_RULES, STATUSES, TEXT_MAX, VALUE_FORMS, WAIT_RULE,
     append_to_section, blocker_link, days_since, kind_names, level, names, norm_id, relabel, resolution, sequence,
     unknown_dep, valid_value, value_form, Record, Tracker)
@@ -31,6 +31,9 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         errors += [f"{r.path.relative_to(tr.root)}: {x}" for x in r.problems]
         if KINDS[r.kind].refs:
             check_refs(tr, r, errors, warnings)
+        if r.get("closed_at") and r.get("status") not in STATUSES[r.kind].closed:
+            warnings.append(f"{r.id}: closed_at, but its status {r.get('status')} is open — `tracker migrate` removes "
+                            f"it")
     check_meta(tr, "README.md", "tracker", tr.meta, errors, warnings)
     if tr.schema < SCHEMA:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA} — run `tracker migrate`")
@@ -39,13 +42,12 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     errors += [f"README.md: {x}" for x in tr.readme_problems]
     aliases: dict[str, str] = {}
     for t in tr.tickets:
-        status = t.get("status", "")
         check_deps(tr, t, errors, warnings)
-        if t.stage in ("merged", "done") and len(t.carry_forward) > MERGED_CARRY_FORWARD_MAX:
+        if t.closed and not t.dropped and len(t.carry_forward) > MERGED_CARRY_FORWARD_MAX:
             warnings.append(f"{t.id}: {t.stage} but Carry forward has {len(t.carry_forward)} bullets "
                             f"(limit {MERGED_CARRY_FORWARD_MAX}) — keep what a later ticket needs; the detail is in "
                             f"the PR (`tracker drop {t.id} carry \"<text>\"`)")
-        if status == "todo" and t.get("pr_state") in PR_STAGE:
+        if t.todo and t.get("pr_state") in PR_STAGE:
             warnings.append(f"{t.id}: todo, but its PR #{t.get('pr')} is {t.get('pr_state')} — `tracker migrate` "
                             f"sets it in progress; a PR overlays only started work")
         if t.stage == "in-progress" and idle_days(t) > STALE_TICKET_DAYS:
@@ -63,7 +65,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         if not d.closed and idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
     errors += [f"dependency cycle: {' → '.join(c)}" for c in sequence(tr).cycles]
-    open_t = [t.id for t in tr.tickets if t.stage not in CLOSED_TICKET]
+    open_t = [t.id for t in tr.tickets if not t.closed]
     work = tr.meta.get("status")
     if tr.tickets and not open_t and work in ("planning", "active"):
         warnings.append(f"README.md: every ticket is closed but the work is {work} — `tracker set tracker "
@@ -124,9 +126,9 @@ def check_deps(tr: Tracker, t: Record, errors: list[str], warnings: list[str]) -
                               f"in ## Links names it — add one with the URL and why it blocks, or fix the id")
         elif d.ident == t.id:
             errors.append(f"{t.id}: depends_on itself")
-        elif d.kind == "ticket" and d.rec.stage == "dropped":
+        elif d.rec.dropped:
             warnings.append(f"{t.id}: waits on dropped {d.ident} — remove it, or wait on what replaced it")
-        elif d.kind == "ticket" and stage in STARTED and d.rec.stage == "todo":
+        elif t.started and d.rec.todo:
             warnings.append(f"{t.id}: {stage}, but {d.ident}, which it waits on, is still todo")
     open_deps = [d.ident for d in tr.deps(t) if not d.done]
     if stage == "done" and open_deps:
@@ -223,7 +225,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"Ticket status (you set it): {'|'.join(STATUSES['ticket'].values)}. Set in-progress when its work starts: "
         f"from a branch, that records the branch when the ticket has none (a branch holds any number of tickets). Once "
         f"in progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
-        + f". Stages {', '.join(sorted(CLOSED_TICKET))} are closed; closing clears `next` and wants a `summary`.",
+        + f". Stages {', '.join(s for s, x in STAGES.items() if x.closed)} are closed; closing clears `next` and wants "
+        "a `summary`.",
         *(f"{kind.capitalize()} status: {'|'.join(STATUSES[kind].values)}, changed only by `tracker {owner}`."
           for kind in KINDS if (owner := KEYS[kind]["status"][0]) != "set"),
         f"Work status: {'|'.join(STATUSES['tracker'].values)} (`tracker set tracker status=...`).",
@@ -347,6 +350,11 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
                                                       for k, v in upd.items()))
             if apply:
                 r.save(upd)
+    for r in tr.records:  # an earlier version stamped it when a ticket started
+        if r.get("closed_at") and r.get("status") not in STATUSES[r.kind].closed:
+            out.append(f"{r.id}: closed_at=(removed) (its status {r.get('status')} is open)")
+            if apply:
+                r.save({"closed_at": None})
     used = {x.label for x in tr.context} | {x.label for t in tr.tickets for x in t.links}
     extra = sorted(used - set(tr.labels) - {ISSUE, BLOCKER})
     if extra:

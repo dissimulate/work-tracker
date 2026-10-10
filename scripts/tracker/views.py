@@ -9,9 +9,9 @@ from pathlib import Path
 from statistics import median
 
 from .markdown import section, strip_comments
-from .model import (BIN, CLOSED_TICKET, IN_FLIGHT, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES,
-    SPANS, STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution,
-    sequence, short, span, utc_seconds, whose_move, Record, Start, Tracker)
+from .model import (BIN, ISOLATION_RULE, KINDS, NO_STAGE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS, STAGES,
+    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_MAX, cut, days_since, due_date, link_lines, resolution, sequence, short, span,
+    utc_seconds, whose_move, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -41,10 +41,9 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
     w_id = max([len(t.id) for t in rows] + [2])
     w_group = max([len(str(t.get("group") or "—")) for t in rows] + [1])
     for t in rows:
-        closed = t.stage in CLOSED_TICKET
-        nxt = gate(tr, t) + short((not closed and t.get("next")) or t.get("summary") or t.get("title"), 90)
+        nxt = gate(tr, t) + short((not t.closed and t.get("next")) or t.get("summary") or t.get("title"), 90)
         out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}")
-    moves = move_lines(tr) if not stages or stages & IN_FLIGHT else []
+    moves = move_lines(tr) if not stages or any(STAGES.get(s, NO_STAGE).in_flight for s in stages) else []
     out += [""] + moves + [""] * bool(moves) + order_lines(tr)
     decisions = tr.open_decisions()
     if decisions:
@@ -83,7 +82,7 @@ def move_lines(tr: Tracker) -> list[str]:
         move = whose_move(tr, t)
         if move:
             moves.setdefault(move.text(), ((not move.mine, move.rank, move.text()), []))[1].append(t.id)
-        elif t.stage in IN_FLIGHT:
+        elif t.in_flight:
             unread.append(t.id)
     if not moves and not unread:
         return []
@@ -103,12 +102,12 @@ def stage_counts(tr: Tracker) -> dict[str, int]:
 def gate(tr: Tracker, t: Record) -> str:
     """`[waits T-5, D-10] `, `[stacks on T-4] ` (it waits only on work under way) or `[ready] ` for an unfinished
     ticket."""
-    if t.stage in CLOSED_TICKET:
+    if t.closed:
         return ""
     blockers = tr.blockers(t)
     if blockers:
         return f"[{'stacks on' if tr.stackable(t) else 'waits'} {', '.join(d.ident for d in blockers)}] "
-    return "[ready] " if t.stage == "todo" else ""
+    return "[ready] " if t.todo else ""
 
 
 def start_text(tr: Tracker, s: Start) -> str:
@@ -153,9 +152,9 @@ def dep_lines(tr: Tracker, rec: Record) -> list[str]:
     start = tr.start_point(rec) if rec.kind == "ticket" else None
     if start and start.stacked:
         out.append(f"start: {start_text(tr, start)}")
-    elif rec.kind == "ticket" and blockers and rec.stage not in CLOSED_TICKET:
+    elif rec.kind == "ticket" and blockers and not rec.closed:
         out.append("blocked by: " + ", ".join(blockers))
-    elif rec.kind == "ticket" and rec.stage == "todo":
+    elif rec.todo:
         out.append("blocked by: nothing — ready to start")
     later = tr.waiting_on(rec.id)
     if later:
@@ -212,7 +211,7 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
-    closed = rec.stage in CLOSED_TICKET
+    closed = rec.closed
     for k in ("branch", "repo", "due", "summary" if closed else "next"):
         if rec.get(k):
             out.append(f"{k}: {rec.get(k)}")

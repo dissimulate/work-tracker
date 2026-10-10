@@ -19,7 +19,7 @@ import time
 from typing import Callable, NamedTuple
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
-from .model import (CLI, CLOSED_TICKET, EVIDENCE_DIR, HOME, IN_FLIGHT, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
+from .model import (CLI, EVIDENCE_DIR, HOME, LIST_KEYS, PACKAGE, PYTHON, README_SECTIONS,
     ROOT, SCALES, SPANS, STAGES, WINDOWS, all_trackers, archived_at, archived_trackers, atomic_write, branch_entry,
     close_action, day_text, due_date, files_hash, level, level_name, locked, sequence, sort_key, span, spawn,
     tracker_at, value_form, whose_move, Busy, Dep, Move, Record, Tracker)
@@ -258,7 +258,7 @@ def toned(tone: str, body: Html | str, title: str | None = None) -> Html:
 def dep_html(d: Dep) -> Html:
     if not d.rec:
         return toned("blocked", d.ident, d.link.text if d.link else None)
-    tone = "done" if d.done else "stack" if d.kind == "ticket" and d.rec.stage in IN_FLIGHT else "blocked"
+    tone = "done" if d.done else "stack" if d.rec.in_flight else "blocked"
     return toned(tone, ref(d.ident) + " ✓" * d.done)
 
 
@@ -268,13 +268,13 @@ def gate_html(tr: Tracker, r: Record) -> tuple[str, Html]:
     if r.kind != "ticket":
         later = [t.id for t in tr.waiting_on(r.id)]
         return "", chip("blocked", f"blocks {', '.join(later)}") if later and not r.closed else NONE
-    if r.stage in CLOSED_TICKET:
+    if r.closed:
         return "", NONE
     blockers = tr.blockers(r)
     if blockers:
         tone, verb = ("stack", "stacks on") if tr.stackable(r) else ("blocked", "waits on")
         return "blocked", chip(tone, f"{verb} {', '.join(d.ident for d in blockers)}")
-    return ("ready", chip("ready")) if r.stage == "todo" else ("", NONE)
+    return ("ready", chip("ready")) if r.todo else ("", NONE)
 
 
 def body_html(tr: Tracker, r: Record, lead: list[tuple[str, Html]] | None = None) -> Html:
@@ -328,7 +328,7 @@ class Row(NamedTuple):
 
     @classmethod
     def of(cls, tr: Tracker, t: Record, order: int, step: int, links: list[str]) -> Row:
-        waits = [] if t.stage in CLOSED_TICKET else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
+        waits = [] if t.closed else [(d.ident + " ✓" * d.done, dep_html(d)) for d in tr.deps(t)]
         return cls(t, order, step, links, gate_html(tr, t), waits, [(o.id, ref(o.id)) for o in tr.waiting_on(t.id)])
 
 
@@ -407,7 +407,8 @@ COLUMNS = (
     Column((("step", "Step", "dependency order", lambda r: r.order),), step_cell, "max-content"),
     Column((("ticket", "Ticket", "ticket", lambda r: r.t.id),), ticket_cell, "minmax(0, 1fr)"),
     Column((("status", "Status", "status",
-             lambda r: STAGES.index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell, "max-content"),
+             lambda r: list(STAGES).index(r.t.stage) if r.t.stage in STAGES else len(STAGES)),), status_cell,
+           "max-content"),
     Column((("group", "Group", "group", lambda r: r.t.get("group", "")),),
            text_cell("group"), "fit-content(var(--meta-max))", "mid"),
     *(Column(((key, key.capitalize(), key, lambda r, key=key: level(r.t, key)),), scale_cell(key), "max-content",
@@ -429,9 +430,9 @@ def ticket_row(tr: Tracker, r: Row, cells: list[Cell]) -> Html:
     links the graph draws (data-links) and its state (data-dot), from which viewer/app.js draws the graph. Its status
     class s-<state> colours its id as its dot."""
     t = r.t
-    closed = t.stage in CLOSED_TICKET
+    closed = t.closed
     # Its state: dropped or closed; under way, stackable, ready or blocked; else its unknown status.
-    dot = ("dropped" if t.stage == "dropped" else "closed" if closed else "going" if t.stage in IN_FLIGHT
+    dot = ("dropped" if t.dropped else "closed" if closed else "going" if t.in_flight
            else "stack" if tr.stackable(t) else r.gate[0] or t.stage)
     word, line = ("summary", t.get("summary")) if closed else ("next", t.get("next"))
     lead = [x for x in (("time", time_html(t)), (word, md_inline(str(line)) if line else None)) if x[1]]
@@ -469,7 +470,7 @@ def graph_order(tr: Tracker, edges: dict[str, list[str]], step: dict[str, int]) 
     """The tickets in depth-first dependency order, as `git log --topo-order`: each after every ticket it waits on,
     and the tickets that this one lets start right after it, so a chain stays together; the lowest id first among
     those ready. Dropped tickets, and any in a cycle, go last in step order."""
-    live = {t.id for t in tr.tickets if t.stage != "dropped"}
+    live = {t.id for t in tr.tickets if not t.dropped}
     waits = {i: [j for j in edges[i] if j in live] for i in live}
     left = {i: len(js) for i, js in waits.items()}  # per ticket: the tickets it waits on not yet placed
     after: dict[str, list[str]] = {i: [] for i in live}  # per ticket: the tickets that wait on it
@@ -485,7 +486,7 @@ def graph_order(tr: Tracker, edges: dict[str, list[str]], step: dict[str, int]) 
             left[k] -= 1
         stack += sorted((k for k in after[i] if not left[k]), key=sort_key, reverse=True)
     place = {i: n for n, i in enumerate(out)}
-    return sorted(tr.tickets, key=lambda t: (t.id not in place, place.get(t.id, 0), t.stage == "dropped",
+    return sorted(tr.tickets, key=lambda t: (t.id not in place, place.get(t.id, 0), t.dropped,
                                              step[t.id], sort_key(t.id)))
 
 
@@ -504,9 +505,9 @@ def sequence_html(tr: Tracker) -> Html:
         f"--cols-{level}: {' '.join(w for c, w in zip(COLUMNS, widths) if shown_at(c, level))}" for level in HIDES])
 
     counts = stage_counts(tr)
-    n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET),
+    n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if not t.closed),
          "ready": len(tr.ready()),
-         "blocked": sum(1 for t in tr.tickets if t.stage not in CLOSED_TICKET and tr.blockers(t)), **counts}
+         "blocked": sum(1 for t in tr.tickets if not t.closed and tr.blockers(t)), **counts}
     filters = NONE.join(Html('<button data-f="{0}">{0} <span class=n>{1}</span></button>').format(f, n[f])
                         for f in ["all", "active", "ready", "blocked", *[s for s in STAGES if s in counts]])
     # Each heading sorts the rows by its column in the page; Step puts back the dependency order.
@@ -543,7 +544,7 @@ def now_html(tr: Tracker) -> Html:
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     one_repo = len(tr.repos) <= 1
     now = []
-    moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.stage in IN_FLIGHT}
+    moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.in_flight}
 
     # The sessions `tracker start` tied to this tracker that run on this machine: an icon by each ticket they have
     # under way; a session with none gets its own entry.
@@ -578,7 +579,7 @@ def now_html(tr: Tracker) -> Html:
             now.append(item(f"agent-{x.sid}", head, Html("on {}").format(open_ids) if open_ids else "on no ticket",
                             agents_html([x])))
     yours = sum(bool(m and m.mine) for m in moves.values())
-    if not any(t.stage in IN_FLIGHT for t in tr.tickets) and tr.meta.get("status") == "active":
+    if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":
         ready = comma(ref(t.id) for t in tr.ready())
         now.append(Html("<p class=idle>Nothing in progress.{}</p>").format(" Ready: " + ready if ready else ""))
     agents_n = f" · {len(live)} agent{'s' * (len(live) > 1)}" if live else ""
@@ -723,7 +724,7 @@ def issue_state(tr: Tracker) -> str:
         return ""
     issues = tr.raw_state().get("issues", {})
     read, asked = issues.get("read", {}), issues.get("requested", 0)
-    waiting = asked and any(t.stage not in CLOSED_TICKET and read.get(t.id, 0) < asked for t in linked)
+    waiting = asked and any(not t.closed and read.get(t.id, 0) < asked for t in linked)
     if waiting:
         who = ("waiting for a session to read them" if live_sessions(tr.slug)
                else "no session on this tracker to read them")

@@ -158,7 +158,7 @@ Environment variables. All are optional.
 - Record kinds (`KINDS` in `model.py`): each kind's folder, id form, command, sections, and the kinds its `refs` name. Loading, lookup by id, new ids, `check` and `tracker rules` read it for every kind. A new kind is one `KINDS` entry, its `KEYS` and `STATUSES`, its template and its command.
 - Values (`model.py`):
   - A key's name gives its value's form (`value_form`): `_at` a UTC time, `due` a day, a `SCALES` key a level. `check` and `tracker set` hold each value to its form; the views show a time as its day (`day_text`).
-  - Each kind of file has its own status words (`STATUSES`: the values and those that close it). Code asks `Record.closed`, never compares a status to a word. `Record.status_update` stamps or clears `closed_at`, and `Record.change` stamps `updated_at`.
+  - Each kind of file has its own status words (`STATUSES`: the values and those that close it). A ticket's stage (`STAGES`) says whether its work is todo, under way, closed or dropped. Code asks the record (`Record.closed`, `todo`, `in_flight`, `started`, `dropped`); it names a stage only where that one stage matters, such as in progress against in review. `Record.status_update` writes every key a status change sets (`closed_at`, a ticket's `started_at` and cleared `next`), and `Record.change` stamps `updated_at`.
   - A `Scale` holds a level's range, its names in the views and its weights. A level is a rank, not an amount: a sum, an average or a score adds the weights (`weight(t, key)`), never the levels. A new scale is one `SCALES` entry: the CLI flags, `check`, `tracker rules` and the viewer column follow from it.
 - Each fact has one home, and every view is computed from it. `skills/tracker/reference.md` lists each home.
 

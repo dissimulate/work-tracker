@@ -36,6 +36,29 @@ CLI = [*PYTHON, "-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from tra
 WINDOWS = os.name == "nt"
 
 @dataclass(frozen=True)
+class Stage:
+    """What a ticket's stage says of its work. Code asks a record (`Record.todo`, `in_flight`, `started`, `closed`,
+    `dropped`), never compares a stage or a status with a word."""
+    todo: bool = False  # its work has yet to start
+    in_flight: bool = False  # under way: started, not yet closed
+    closed: bool = False
+    dropped: bool = False  # closed without its work done
+
+    @property
+    def started(self) -> bool:
+        return self.in_flight or self.closed and not self.dropped
+
+
+NO_STAGE = Stage()  # of an unknown stage (`check` reports it), and of a record that is no ticket
+# A ticket's stage, in this order: its status, overlaid by its PR once in progress (PR_STAGE).
+STAGES = {"todo": Stage(todo=True), "in-progress": Stage(in_flight=True), "in-review": Stage(in_flight=True),
+          "merged": Stage(closed=True), "done": Stage(closed=True), "dropped": Stage(closed=True, dropped=True)}
+PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
+OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
+OPEN_STAGES = {s for s, x in STAGES.items() if not x.closed}
+
+
+@dataclass(frozen=True)
 class Statuses:
     """The words one kind of file's `status` holds, the first a new file's, and those that close it. Each kind keeps
     its own words; whether a record is closed is `Record.closed`, never a comparison with a word."""
@@ -43,17 +66,13 @@ class Statuses:
     closed: frozenset[str]
 
 
+TICKET_STATUSES = ("todo", "in-progress", "done", "dropped")  # what you set; the PR adds the other stages
 STATUSES = {
-    "ticket": Statuses(("todo", "in-progress", "done", "dropped"), frozenset({"done", "dropped"})),  # what you set
+    "ticket": Statuses(TICKET_STATUSES, frozenset(s for s in TICKET_STATUSES if STAGES[s].closed)),
     "decision": Statuses(("open", "closed"), frozenset({"closed"})),
     "action": Statuses(("open", "done", "dropped"), frozenset({"done", "dropped"})),
     "tracker": Statuses(("planning", "active", "paused", "done"), frozenset({"done"})),  # the work's
 }
-STAGES = ["todo", "in-progress", "in-review", "merged", "done", "dropped"]  # shown: the status, overlaid by the PR
-PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
-OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
-CLOSED_TICKET = STATUSES["ticket"].closed | {"merged"}  # stages
-OPEN_STAGES = set(STAGES) - CLOSED_TICKET
 LIST_KEYS = {"depends_on", "refs", "labels"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
 
@@ -300,7 +319,7 @@ SPANS = {"wait": ("issue_created_at", "started_at", "issue created → started")
 
 def span(t: Record, name: str) -> int | None:
     """A ticket's span (SPANS) in seconds; None when dropped, or without both times exact and in order."""
-    if t.stage == "dropped":
+    if t.dropped:
         return None
     start, end = (utc_seconds(t.get(k)) for k in SPANS[name][:2])
     return int(end - start) if start is not None and end is not None and end >= start else None
@@ -645,28 +664,56 @@ class Record:
 
     @property
     def stage(self) -> str:
-        """A ticket's status; once in progress, overlaid by its PR's state. A todo ticket on a branch that holds a PR
-        has not started, so the PR says nothing about it."""
-        status = self.get("status", "todo")
-        return PR_STAGE.get(self.get("pr_state"), status) if status == "in-progress" else status
+        """A ticket's status; once in progress, overlaid by its PR's state (STAGES). A todo ticket on a branch that
+        holds a PR has not started, so the PR says nothing about it. Any other record's status."""
+        status = str(self.get("status", STATUSES[self.kind].values[0]))
+        if self.kind != "ticket" or not STAGES.get(status, NO_STAGE).in_flight:
+            return status
+        return PR_STAGE.get(self.get("pr_state"), status)
+
+    @property
+    def progress(self) -> Stage:
+        """What a ticket's stage says of its work; NO_STAGE for an unknown stage, and for any other record."""
+        return STAGES.get(self.stage, NO_STAGE) if self.kind == "ticket" else NO_STAGE
+
+    @property
+    def todo(self) -> bool:
+        return self.progress.todo
+
+    @property
+    def in_flight(self) -> bool:
+        return self.progress.in_flight
+
+    @property
+    def started(self) -> bool:
+        return self.progress.started
+
+    @property
+    def dropped(self) -> bool:
+        return self.progress.dropped
 
     @property
     def closed(self) -> bool:
         """A ticket by its stage (a merged PR closes it too); any other record by its kind's closed statuses."""
-        if self.kind == "ticket":
-            return self.stage in CLOSED_TICKET
-        statuses = STATUSES[self.kind]
-        return self.get("status", statuses.values[0]) in statuses.closed
+        return self.progress.closed if self.kind == "ticket" else self.stage in STATUSES[self.kind].closed
 
     def status_update(self, status: str) -> dict:
-        """The keys a status change writes: the status, and `closed_at` now when it closes the record, or none when
-        it opens it again."""
+        """The keys a status change writes, every one of them: the status; `closed_at` now when it closes the record,
+        or none when it opens it again. A ticket's first start from todo stamps `started_at`: its wait time ends and
+        its cycle time starts (one started before 0.29 has none, not a guess). Its close clears `next`: a closed ticket
+        has no next action, and its summary says what it delivered."""
         statuses, updates = STATUSES[self.kind], {"status": status}
+        closes = status in statuses.closed
         if "closed_at" in KEYS[self.kind]:
-            if status not in statuses.closed and self.get("closed_at"):
+            if not closes and self.get("closed_at"):
                 updates["closed_at"] = None
-            elif self.get("status") not in statuses.closed:
+            elif closes and self.get("status") not in statuses.closed:
                 updates["closed_at"] = utc_now()
+        if self.kind == "ticket":
+            if self.todo and STAGES.get(status, NO_STAGE).in_flight and not self.get("started_at"):
+                updates["started_at"] = utc_now()
+            if closes and self.get("next"):
+                updates["next"] = ""
         return updates
 
     def change(self, updates: dict | None = None) -> None:
@@ -986,7 +1033,7 @@ class Tracker:
         base = t.get("base")
         if not base or t.get("pr_state") not in OPEN_PR:
             return []
-        return [o for o in self.tickets if o is not t and o.get("branch") == base and o.get("status") != "todo"
+        return [o for o in self.tickets if o is not t and o.get("branch") == base and not o.todo
                 and same_repo(self.repo_of(o), self.repo_of(t))]
 
     def blockers(self, t: Record) -> list[Dep]:
@@ -996,7 +1043,7 @@ class Tracker:
         """Blocked only by tickets already in flight: its work can stack on their branches. Any other open blocker (a
         decision, an action, an external one) still blocks it."""
         blockers = self.blockers(t)
-        return bool(blockers) and all(d.kind == "ticket" and d.rec.stage in IN_FLIGHT for d in blockers)
+        return bool(blockers) and all(d.rec and d.rec.in_flight for d in blockers)
 
     def holds(self, t: Record, o: Record, seen: frozenset[str] = frozenset()) -> bool:
         """t's branch holds o's work: they share a branch, or t's open PR is based on o's branch, directly or through
@@ -1009,7 +1056,7 @@ class Tracker:
     def start_point(self, t: Record) -> Start | None:
         """Where a todo ticket's work can start (START_RULE); None when it is not todo, or when more than tickets under
         way blocks it. Tickets under way in another repo give no branch to start from."""
-        if t.stage != "todo" or (self.blockers(t) and not self.stackable(t)):
+        if not t.todo or (self.blockers(t) and not self.stackable(t)):
             return None
         under = [d.rec for d in self.blockers(t) if same_repo(self.repo_of(d.rec), self.repo_of(t))]
         base = next((b for b in under if all(self.holds(b, o) for o in under)), None)
@@ -1032,7 +1079,7 @@ class Tracker:
 
     def ready(self) -> list[Record]:
         """The todo tickets that nothing blocks."""
-        return [t for t in self.tickets if t.stage == "todo" and not self.blockers(t)]
+        return [t for t in self.tickets if t.todo and not self.blockers(t)]
 
     @cached_property
     def reviews(self) -> dict[str, dict]:
@@ -1059,14 +1106,14 @@ class Tracker:
         state, now = self.raw_state(), time.time()
         use = {}
         for key, ids in state.get("use", {}).items():
-            ids = [i for i in ids if (r := self.lookup(i)) and r.kind == "ticket" and r.stage not in CLOSED_TICKET]
+            ids = [i for i in ids if (r := self.lookup(i)) and r.kind == "ticket" and not r.closed]
             if ids:
                 use[key] = ids
 
         def current(part: str, key: str, entry) -> bool:
             repo, _, branch = key.rpartition(":")
             on = [t for t in self.tickets if t.get("branch") == branch and same_repo(self.repo_of(t), repo)]
-            if any(t.stage not in CLOSED_TICKET for t in on) or any(k.endswith("@" + branch) for k in use):
+            if any(not t.closed for t in on) or any(k.endswith("@" + branch) for k in use):
                 return True
             at = entry.get("at", 0) if isinstance(entry, dict) else 0
             return now - at < STATE_KEEP_DAYS * 86400 and (part == "synced" or not on)
@@ -1081,7 +1128,7 @@ class Tracker:
         """The tickets whose issue fields the model should read from their issue tracker (STATE_RULES["issues"])."""
         issues = self.raw_state().get("issues", {})
         read, asked = issues.get("read", {}), issues.get("requested", 0)
-        return [t for t in self.tickets if t.aliases and (t.stage not in CLOSED_TICKET and (
+        return [t for t in self.tickets if t.aliases and (not t.closed and (
             not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
@@ -1164,8 +1211,6 @@ def resolution(d: Record) -> str:
 # waits on that ticket: that comes from the PR's `base`, not depends_on. Blockers, "unblocks", steps, the critical
 # path and the ready list are all computed.
 
-STARTED = {"in-progress", "in-review", "merged", "done"}  # stages
-IN_FLIGHT = {"in-progress", "in-review"}  # stages: started, not yet closed
 
 
 @dataclass
@@ -1187,10 +1232,9 @@ class Dep:
         context."""
         if not self.rec:
             return f"{self.ident} external" + (f": {plain_link(self.link.text)}" if self.link else "")
-        status = self.rec.stage if self.rec.kind == "ticket" else self.rec.get("status", "")
         if self.done:
-            return f"{self.ident} {status} ✓"
-        return f"{self.ident} {status}" + (f": {self.rec.get('title')}" if self.kind != "ticket" else "")
+            return f"{self.ident} {self.rec.stage} ✓"
+        return f"{self.ident} {self.rec.stage}" + (f": {self.rec.get('title')}" if self.kind != "ticket" else "")
 
 
 @dataclass
@@ -1254,7 +1298,7 @@ def sequence(tr: Tracker) -> Sequence:
 
 
 def longest_open_chain(tr: Tracker, edges: dict[str, list[str]]) -> list[str]:
-    unfinished = {t.id for t in tr.tickets if t.stage not in CLOSED_TICKET}
+    unfinished = {t.id for t in tr.tickets if not t.closed}
     depth: dict[str, int] = {}
 
     def d(i: str) -> int:
@@ -1307,7 +1351,7 @@ class Move:
 def whose_move(tr: Tracker, t: Record) -> Move | None:
     """The move of a ticket under way (MOVE_RULE); None for any other ticket, and for an open PR whose review facts
     `sync` has not read."""
-    if t.stage not in IN_FLIGHT:
+    if not t.in_flight:
         return None
     r = tr.review(t)
     if r is None and t.get("pr_state") in OPEN_PR:
@@ -1355,7 +1399,7 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
 
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
     """A line naming the unfinished tickets in `blocked` that nothing blocks now."""
-    free = [t.id for t in tr.tickets if t.id in blocked and not tr.blockers(t) and t.stage not in CLOSED_TICKET]
+    free = [t.id for t in tr.tickets if t.id in blocked and not tr.blockers(t) and not t.closed]
     return [f"nothing blocks {', '.join(free)} now (to start one: `tracker set <id> status=in-progress`)"] \
         if free else []
 
