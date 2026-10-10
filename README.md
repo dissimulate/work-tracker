@@ -149,7 +149,7 @@ Environment variables. All are optional.
 - Changelog: a commit with a change that users see adds a line per change under `## Unreleased` in `CHANGELOG.md`, below a `### Added`, `### Changed`, `### Fixed` or `### Removed` heading.
 - Release: `scripts/release.py patch|minor|major` on `main`, `--dry-run` to see the notes first. It runs the tests and lint, moves the Unreleased lines to a `CHANGELOG.md` section for the version, bumps `version` in `.claude-plugin/plugin.json` (installed copies are cached by version), commits, tags `v<version>`, pushes both and makes the GitHub release.
 - The format's contract (keys and who writes each, statuses, link labels, sections) is the constants in `scripts/tracker/model.py`. `tracker rules` prints it, `tracker check` enforces it, and the hooks and templates read it.
-- Each fact has one home, and every view is computed from it. `skills/tracker/SKILL.md` lists each home.
+- Each fact has one home, and every view is computed from it. `skills/tracker/reference.md` lists each home.
 
 ### Code
 

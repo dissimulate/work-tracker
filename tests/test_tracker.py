@@ -96,7 +96,7 @@ class InstructionsMatchTheCli(unittest.TestCase):
 
     def test_commands_and_flags(self):
         sub = cli.build_parser()[1]
-        texts = [*sorted((ROOT / "skills").glob("*/SKILL.md")), ROOT / "README.md", ROOT / "hooks/hooks.json",
+        texts = [*sorted((ROOT / "skills").glob("*/*.md")), ROOT / "README.md", ROOT / "hooks/hooks.json",
                  *sorted((ROOT / "scripts/tracker").glob("*.py")), *sorted((ROOT / "templates").glob("*.md"))]
         bad = []
         for path in texts:
