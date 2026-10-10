@@ -601,7 +601,8 @@ tr:last-child > td { border-bottom: 0; }
 .graph-svg .halo { fill: var(--surface); }
 .graph-svg .dim { --tone: var(--line); } /* the rest of the graph, while a row is hovered (app.js) */
 .seq .tk .id { color: var(--tone, var(--muted)); }
-.seq details.closed:not([open]) > summary { color: var(--muted); }
+/* A closed ticket's row, unless opened: every cell dimmed but the step, so the graph keeps its colours. */
+.seq details.closed:not([open]) > summary > :not(.graph) { opacity: .35; }
 
 /* A narrower sequence (by its own width, not the window's): fewer columns, so the ticket keeps its room; the opened
    ticket has the rest. */

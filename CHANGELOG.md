@@ -26,6 +26,7 @@ The changes a user of the plugin sees, per release. A commit with such a change 
 - Viewer: the sequence starts in a depth-first dependency order, so a chain of tickets stays together; Step puts it back.
 - Viewer: the sequence has no Time column. An opened ticket gives its wait and cycle time on its first line.
 - Viewer: the Status column comes before Group.
+- Viewer: a closed ticket's row is dimmed in every column but Step, not only its title.
 - A new session on a feature branch that a ticket of one tracker names links to that tracker by itself, without the question. On a default branch such as `main`, or when the match is less sure, the session still asks. To undo, tell the agent the session is not that work.
 - After `/clear`, the new session stays on the tracker of the session it replaces, with its `--on` ticket. No need to link again.
 - `tracker start --decline` also unlinks a session that linked by itself.
