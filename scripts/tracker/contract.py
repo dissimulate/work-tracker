@@ -7,11 +7,12 @@ import re
 
 from .markdown import format_value, headings, link_ident, parse_links, section
 from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN, OWN_VALUE_RULE,
-    OWNER_HINT, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
-    RETIRED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
-    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names, level, names,
-    norm_id, relabel, resolution, sequence, stage_of, unknown_dep, valid_value, value_form, Record, Tracker)
+    ISSUE, ISSUE_UPDATES, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN,
+    OWN_VALUE_RULE, OWNER_HINT, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
+    RENAMED_KEYS, RETIRED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS,
+    START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names,
+    level, names, norm_id, relabel, resolution, sequence, stage_of, unknown_dep, valid_value, value_form, Record,
+    Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -34,6 +35,9 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             warnings.append(f"{r.id}: closed_at, but its status {r.get('status')} is open — `tracker migrate` removes "
                             f"it")
     check_meta(tr, "README.md", "tracker", tr.meta, errors, warnings)
+    if tr.meta.get("issue_updates") not in (None, "", *ISSUE_UPDATES):
+        errors.append(f"README.md: issue_updates '{tr.meta.get('issue_updates')}' is not one of "
+                      f"{'|'.join(ISSUE_UPDATES)}")
     if tr.schema < SCHEMA:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA} — run `tracker migrate`")
     elif tr.schema > SCHEMA:

@@ -17,7 +17,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
-from .views import brief, issue_request
+from .views import brief, issue_request, issue_update_request
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
 
@@ -134,8 +134,15 @@ def hook_session_start(data: dict) -> None:
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
     remember(sid, m, cwd)
+    if sid:
+        save_session(sid, told_updates=updates_told(m.tracker))  # the brief lists them: no prompt repeats it
     note = "\n\n".join(x for x in (note, found) if x)
     emit_context("SessionStart", brief(m, cwd, changes, note, compact=source == "compact"), notice)
+
+
+def updates_told(tr: Tracker) -> list[str]:
+    """The issue updates due, as a session remembers having been told them: a new one is told again."""
+    return sorted(f"{t.id}: {x}" for t, items in tr.issue_updates_due() for x in items)
 
 
 def hook_session_end(data: dict) -> None:
@@ -320,6 +327,10 @@ def hook_prompt(data: dict) -> None:
     if asked and asked != entry.get("told_issues"):  # the viewer's Refresh: passed on once
         fields["told_issues"] = asked
         lines += [x for x in [issue_request(m.tracker, m.focus)] if x]
+    updates = updates_told(m.tracker)
+    if updates and updates != entry.get("told_updates"):  # the issue updates due: passed on once per change
+        lines.append(issue_update_request(m.tracker, m.focus))
+    fields["told_updates"] = updates
     idle = not m.active and bool(m.branch) and in_repos(m.tracker, cwd)
     mark = get_mark(m.tracker, cwd, m.branch) if idle else None
     told = bool(mark) and entry.get("idle_told") == (mark.get("at") or 0)  # said for this mark: no git until the next

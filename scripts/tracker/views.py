@@ -408,6 +408,26 @@ def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
             "them: never guess a value.")
 
 
+ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool: move the issue to the state that "
+                   "means the status in its own workflow (started, in review, done, won't do), and comment a closed "
+                   "ticket's summary and each settled decision, its question and answer. Write in your own words and "
+                   "cite only real ids (an issue id, a PR, a URL), never the tracker's ids or name. Then record it: "
+                   "`tracker issue <id> --written`. With no tool for that issue tracker, leave them.")
+
+
+def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
+    """The request for the issue updates due (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
+    session's own) named first. `tracker issue` lists what to write; the model writes it with the issue tracker's
+    tool, which the tracker cannot."""
+    due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
+    if not due:
+        return ""
+    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    return (f"[work-tracker] Issue updates to write for {len(due)} ticket(s): {ids}. With a tool for their issue "
+            "tracker, run `tracker issue` for what to write, write it, then `tracker issue <id> --written`; with "
+            "none, leave them.")
+
+
 def instructions(tr: Tracker) -> str:
     """The README's ## Instructions for the brief: this work's standing rules for the agent, cut to
     BRIEF_INSTRUCTIONS_CHARS."""
@@ -492,9 +512,9 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
         parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS, urls=False)))
     if synced:
         parts.append("Synced PR state: " + "; ".join(synced))
-    ask = issue_request(tr, focus)
-    if ask:
-        parts.append(ask)
+    for ask in (issue_request(tr, focus), issue_update_request(tr, focus)):
+        if ask:
+            parts.append(ask)
     problems = check_lines(tr, focus)
     if problems:
         parts.append(problems)

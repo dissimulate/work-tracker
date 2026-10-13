@@ -46,6 +46,7 @@ Record each fact at the moment it forms, in its home:
 | a ticket must wait, or stops waiting | `tracker wait <id> on\|off <ids>`; on an external blocker: `tracker wait <id> on EXT-12 --link "<url> — <why it blocks>"` |
 | a note for several tickets, or none | `tracker log "<what changed and why>" --ref <ids>` |
 | a `[work-tracker]` line names issue fields to read | with a tool for their issue tracker (such as an MCP server), run `tracker issue` and record what it asks for; with none, leave them: never guess a value |
+| a `[work-tracker]` line names issue updates to write | with a tool for their issue tracker, run `tracker issue`, write each update to its issue as it says, then `tracker issue <id> --written`; with none, leave them |
 
 - **Text with quotes, backticks or several lines**: pass `-` for any text argument but a title, a name or a link, and the text on stdin, in a heredoc with a quoted marker (`<<'EOF'`), so the shell changes nothing. Edit a tracker file by hand only for what `add`, `drop` and `put` do not cover.
 - **Subagents** do not write the tracker: put what one needs in its prompt (`tracker context <id> --brief`, or the part that matters), and record what it reports as your own work.
