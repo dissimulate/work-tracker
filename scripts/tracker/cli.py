@@ -27,8 +27,9 @@ from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_sess
     mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve, save_session,
     session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
-from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, brief, context_lines, dep_lines,
-    history_lines, index_lines, levels_text, order_lines, span_lines, start_text)
+from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief,
+    context_lines, dep_lines, history_lines, index_lines, issue_update_request, levels_text, order_lines, span_lines,
+    start_text, updates_told)
 from .github import NAME as FORGE, match_pr, sync
 from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
     unarchive_tracker, watching)
@@ -211,6 +212,8 @@ def cmd_set(args):
     if "status" in updates:
         updates.update(rec.status_update(updates["status"]))
     rec.change(updates)
+    if updates.get("issue_updates") == "on":
+        tr.start_issue_updates()
     if moved:
         append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
@@ -820,13 +823,20 @@ def cmd_sync(args):
 
 
 def cmd_issue(args):
-    """Record what the model read from a ticket's issue tracker, or, with no id, list the tickets whose issue fields
-    are to read."""
+    """Record what the model read from a ticket's issue tracker, or with `--written` that it wrote the updates the
+    listing gave; with no id, list the tickets whose issue fields are to read and the issue updates to write, and
+    remember that listing for `--written` (STATE_RULES["issues"])."""
     if not args.id:
         tr = resolve(args)
         due = tr.issues_to_read()
-        print("\n".join([*(f"{t.id}  " + ", ".join(link_url(x) for x in t.links if x.label == ISSUE) for t in due),
+        print("\n".join([*(f"{t.id}  " + issue_urls(t) for t in due),
                          "", ISSUE_HOW]) if due else "no ticket's issue fields are to read")
+        updates = tr.issue_updates_due()
+        if updates:
+            tr.list_issue_updates(updates)  # what `--written` records
+            print("\n".join(["", f"Issue updates to write for {len(updates)} ticket(s):",
+                             *(f"{t.id}  {issue_urls(t)}\n" + "\n".join(f"  - {x}" for x in items)
+                               for t, items in updates), "", ISSUE_WRITE_HOW]))
         return
     tr, t = locate(args, args.id)
     if t.kind != "ticket" or not t.aliases:
@@ -836,12 +846,23 @@ def cmd_issue(args):
         given = getattr(args, flag)
         if given is not None:
             updates[key] = read_value(key, given) or None  # empty: the issue has none now
+    if args.written:
+        if not tr.mark_issue_written(t):
+            die(f"{t.id}: `tracker issue` listed no update for it to write; run `tracker issue` first")
+        left = next((items for x, items in tr.issue_updates_due() if x.id == t.id), None)
+        print(f"{t.id}: written as listed" + (f"; due since the listing: {'; '.join(left)}" if left else ""))
+        if not updates:
+            return  # no fields given: the issue was written, not read
     if updates:
         t.save(updates)  # not `updated_at`: reading the issue is no change to the work
     state = tr.raw_state()
     state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
     tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
+
+
+def issue_urls(t: Record) -> str:
+    return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
 
 
 def cmd_synced(args):
@@ -956,7 +977,9 @@ def cmd_start(args):
         return
     focus = id_list(args.on)
     if not args.name and not focus and session_tracker(sid):
-        print(brief(match_cwd(cwd, sid), cwd, with_protocol=False))
+        m = match_cwd(cwd, sid)
+        print(brief(m, cwd, with_protocol=False))
+        tell_updates(m.tracker)
         return
     if focus and not args.name:
         hits, sure, head = [locate(args, focus[0])[0]], True, ""
@@ -982,6 +1005,7 @@ def cmd_start(args):
     record_commits(m, cwd)  # as the hooks do: the commits since the branch's mark, or its baseline
     remember(sid, m, cwd)
     print(brief(m, cwd, note=found))
+    tell_updates(m.tracker)
 
 
 def cmd_watch(args):
@@ -1268,14 +1292,17 @@ def build_parser():
     add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open PRs' "
                           "reviews, checks and merge state, from which each ticket's move is computed")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
-                                 "due day, when the issue was created), or with no id list the tickets whose fields "
-                                 "are to read")
+                                 "due day, when the issue was created), or with --written that its issue now shows "
+                                 "the tracker's changes; with no id, list the tickets whose fields are to read and, "
+                                 "with README issue_updates on, the updates to write")
     sp.add_argument("id", nargs="?", help="ticket id, or an id its Issue link names")
     for key, scale in SCALES.items():
         sp.add_argument(f"--{key}", help=f"the issue's {key} mapped onto {scale.span} ({scale.ends}); empty: it "
                                          f"has none")
     sp.add_argument("--due", metavar="YYYY-MM-DD", help="the issue's due day; empty: it has none")
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
+    sp.add_argument("--written", action="store_true", help="every update `tracker issue` last listed for the "
+                                                           "ticket is written to its issue; a change since stays due")
     add("synced", cmd_synced, "log the current branch's commits that the hooks have not logged (they log each "
                               "commit on a branch with a ticket under way), mark it at HEAD, and clear its handoff")
     sp = add("pause", cmd_pause, "stopping mid-work: leave the state of the branch's unfinished work for the next "
@@ -1341,22 +1368,39 @@ WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate
 
 
 def with_check(run, args) -> None:
-    """Run a write command, then print the tickets it left unblocked and the `check` problems it added to the
-    tracker, and end with whether `check` found new problems: no `tracker check` needs to follow a write. Each write
-    logs what the history needs, so no `tracker log` follows one either. `migrate` checks for itself; `init` is not
-    checked."""
+    """Run a write command, then print the tickets it left unblocked, the request for an issue update it made due,
+    and the `check` problems it added to the tracker, and end with whether `check` found new problems: no
+    `tracker check` needs to follow a write. Each write logs what the history needs, so no `tracker log` follows one
+    either. `migrate` checks for itself; `init` is not checked."""
     tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
     before = set(problem_lines(tr)) if tr else set()
     blocked = {t.id for t in tr.tickets if tr.blockers(t)} if tr else set()
+    due = issue_update_items(tr) if tr else set()
     run()
     if not tr:
         return
     tr = Tracker(tr.root)
     added = [x for x in problem_lines(tr) if x not in before]
     lines = unblocked(tr, blocked)
+    if issue_update_items(tr) - due:  # this write made an issue update due: ask for it now
+        lines.append(issue_update_request(tr))
+        tell_updates(tr)
     if added:
         lines += ["This change added `tracker check` problems:", *added]
     print("\n".join([*lines, "`check`: " + ("fix the problems above" if added else "no new problems")]))
+
+
+def issue_update_items(tr: Tracker) -> set[tuple[str, str]]:
+    return {(t.id, x) for t, items in tr.issue_updates_due() for x in items}
+
+
+def tell_updates(tr: Tracker) -> None:
+    """This session was just told tr's issue updates due (a brief, a write's request): its prompt hook does not
+    repeat them."""
+    sid = session_id()
+    own = session_tracker(sid) if sid else None
+    if own and own.slug == tr.slug:
+        save_session(sid, told_updates=updates_told(tr))
 
 
 def own_changes(run) -> None:

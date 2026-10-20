@@ -197,6 +197,9 @@ KEYS = {
         "owner": ("set", "who owns the work"),
         "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
+        "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
+                                 "decisions settled on it to the ticket's issue, with the issue tracker's tool "
+                                 "(`tracker issue` says what is due); off or empty: the tracker never asks"),
         "schema": ("auto", "the tracker's format version; `tracker migrate` brings an older one up to date"),
     },
 }
@@ -209,6 +212,7 @@ RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_crea
 # `migrate` removes them, or renames them
 RETIRED_KEYS = {kind: removed | set(RENAMED_KEYS[kind]) for kind, removed in
                 {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
+ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
@@ -234,7 +238,15 @@ STATE_RULES = {
               "viewer's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
               "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
-              "ones to read for the model, which reads them with the issue tracker's tool",
+              "ones to read for the model, which reads them with the issue tracker's tool. With README "
+              "`issue_updates: on`, `history`: the answer of each decision settled when updates were first turned on "
+              "(`set` records it once; with none, nothing is due and `check` warns); `listed`: per ticket, what its "
+              "issue should show as `tracker issue` last listed it; `written`: per ticket, what `tracker issue <id> "
+              "--written` recorded from that listing: its stage, its summary once closed, and each settled decision's "
+              "answer. A linked ticket's update is due when its stage or summary differs from the one written (one "
+              "never written is due once out of todo), or a decision that touches it has an answer other than the "
+              "one written or in `history`; the brief, the prompt hook and each write that makes one due ask the "
+              "model for them",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
                f"branch's tickets are closed, and a mark, or a handoff on a branch no ticket is on, {STATE_KEEP_DAYS} "
                f"days after it was set. `use` keeps only unfinished tickets",
@@ -251,6 +263,7 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
 LIST_KEYS = {"depends_on", "refs", "labels"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
+CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
 
 
 class Form:
@@ -345,13 +358,30 @@ class ListForm(Form):
         return ", ".join(map(str, value)) if isinstance(value, list) else str(value)
 
 
-FORMS = {"time": TimeForm(), "day": DayForm(), "level": LevelForm(), "list": ListForm(), "": Form()}
+class ChoiceForm(Form):
+    """One of the key's words (CHOICES)."""
+
+    def describe(self, key: str) -> str:
+        return f"one of {'|'.join(CHOICES[key])}"
+
+    def fits(self, key: str, value) -> bool:
+        return value in CHOICES[key]
+
+    def read(self, key: str, text: str) -> str:
+        if text not in CHOICES[key]:
+            raise ValueError(f"{key} '{text}' is not {self.describe(key)}")
+        return text
+
+
+FORMS = {"time": TimeForm(), "day": DayForm(), "level": LevelForm(), "list": ListForm(), "choice": ChoiceForm(),
+         "": Form()}
 
 
 def value_form(key: str) -> str:
-    """The form of a key's value (FORMS): "time", "day", "level" (a SCALES key), "list", or "" for text."""
+    """The form of a key's value (FORMS): "time", "day", "level" (a SCALES key), "list", "choice" (a CHOICES key), or
+    "" for text."""
     return ("time" if key.endswith("_at") else "day" if key in DAY_KEYS else "level" if key in SCALES
-            else "list" if key in LIST_KEYS | LIST_OR_ONE else "")
+            else "list" if key in LIST_KEYS | LIST_OR_ONE else "choice" if key in CHOICES else "")
 
 
 def read_value(key: str, text: str):
@@ -1214,6 +1244,63 @@ class Tracker:
             not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
+    def issue_shown(self, t: Record) -> dict:
+        """What t's issue should show (STATE_RULES["issues"]): its stage, its summary once closed, and the answer of
+        each settled decision that touches it."""
+        return {"stage": t.stage, "summary": (t.get("summary") or None) if t.closed else None,
+                "decisions": {d.id: answer(d) for d in self.decisions_for(t) if d.closed}}
+
+    def issue_updates_due(self) -> list[tuple[Record, list[str]]]:
+        """Per linked ticket, what its issue should now show and does not yet, as items for the model to write with
+        the issue tracker's tool (STATE_RULES["issues"]): its stage, with its summary once closed; and each settled
+        decision that touches it, by title and answer. Nothing while README `issue_updates` is not on, or before
+        `set` recorded the history."""
+        issues = self.raw_state().get("issues", {})
+        if self.readme.get("issue_updates") != "on" or "history" not in issues:
+            return []
+        written, history = issues.get("written", {}), issues["history"]
+        out = []
+        for t in self.tickets:
+            if not t.aliases:
+                continue
+            last, now = written.get(t.id, {}), self.issue_shown(t)
+            items = []
+            if (now["stage"], now["summary"]) != (last.get("stage"), last.get("summary")) and (last or not t.todo):
+                items.append(f"status {now['stage']}" + (f"; summary: {now['summary']}" if now["summary"] else ""))
+            told = {**history, **last.get("decisions", {})}
+            items += [f"decision settled: {d.get('title')}: {now['decisions'][d.id]}" for d in self.decisions_for(t)
+                      if d.closed and now["decisions"][d.id] != told.get(d.id)]
+            if items:
+                out.append((t, items))
+        return out
+
+    def list_issue_updates(self, due: list[tuple[Record, list[str]]]) -> None:
+        """`tracker issue` listed these updates: what `--written` then records for each ticket."""
+        state = self.raw_state()
+        state.setdefault("issues", {})["listed"] = {t.id: self.issue_shown(t) for t, _ in due}
+        self.save_state(state)
+
+    def mark_issue_written(self, t: Record) -> bool:
+        """Record that t's issue now shows what `tracker issue` last listed for it; False when it listed nothing for
+        t. A change after the listing stays due."""
+        state = self.raw_state()
+        issues = state.setdefault("issues", {})
+        shown = issues.get("listed", {}).pop(t.id, None)
+        if shown is None:
+            return False
+        issues.setdefault("written", {})[t.id] = {**shown, "at": time.time()}
+        self.save_state(state)
+        return True
+
+    def start_issue_updates(self) -> None:
+        """README `issue_updates` is on: the decisions settled before it first was are history, never due. Kept once
+        recorded, so turning updates off and on again catches up on what was settled since."""
+        state = self.raw_state()
+        issues = state.setdefault("issues", {})
+        if "history" not in issues:
+            issues["history"] = {d.id: answer(d) for d in self.decisions if d.closed}
+            self.save_state(state)
+
     def save_state(self, state: dict) -> None:
         write_json(self.root / ".state.json", state, indent=2)
 
@@ -1275,6 +1362,12 @@ def archived_at(slug: str) -> Tracker | None:
 
 
 RESOLUTION_LINE = re.compile(r"^(?:- )?\d{4}-\d{2}-\d{2}\b")
+
+
+def answer(d: Record) -> str:
+    """A closed decision's answer alone: its resolution without the leading day and who settled it."""
+    text = resolution(d)
+    return text.split(": ", 1)[1] if RESOLUTION_LINE.match(text) and ": " in text else text
 
 
 def resolution(d: Record) -> str:

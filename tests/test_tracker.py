@@ -1508,6 +1508,165 @@ class IssueFields(unittest.TestCase):
         self.assertIn("Issue fields to read for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
         self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="again")))  # once per request
 
+    def updates(self, s: str) -> list[str]:
+        return [f"{t.id}: {'; '.join(items)}" for t, items in model.Tracker(model.HOME / s).issue_updates_due()]
+
+    def write(self, t: tuple[str, str], *ids: str) -> None:
+        """The model's write: list the updates, then record each ticket's as written."""
+        run(*t, "issue")
+        for ident in ids:
+            run(*t, "issue", ident, "--written")
+
+    def test_issue_updates_are_off_until_the_tracker_turns_them_on(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
+        self.assertEqual(self.updates(s), [])  # off: the tracker never asks to write to an issue
+        self.assertNotIn("Issue updates", run(*t, "issue"))
+        self.assertIn("issue_updates 'yes' is not one of on|off", run(*t, "set", "tracker", "issue_updates=yes",
+                                                                       code=2))
+        self.assertIn("issue_updates", run(*t, "rules"))
+
+    def test_status_summary_and_settled_decisions_are_due_until_written(self):
+        s, t = self.tracker()
+        run(*t, "decide", "Settled before", "--refs", "T-1", "--resolve", "Old answer", "--by", "me")
+        run(*t, "set", "tracker", "issue_updates=on")
+        # T-1 has not started and was never written: its issue keeps whatever it shows. T-3 closed with a summary.
+        # A decision settled before the tracker turned updates on is history, not news.
+        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres, for the joins", "--by", "me")
+        run(*t, "decide", "Which queue", "--blocks", "T-1", "--question", "SQS or Kafka?")
+        self.assertEqual(self.updates(s)[0], "T-1: decision settled: Which store: Postgres, for the joins")
+        run(*t, "decide", "D-3", "--resolve", "SQS", "--by", "me")  # a decision the ticket waited on counts too
+        self.assertIn("decision settled: Which queue: SQS", self.updates(s)[0])
+
+        run(*t, "issue", "T-1")  # its fields read: the listing holds only updates
+        run(*t, "issue", "T-3")
+        listing = run(*t, "issue")
+        self.assertTrue(listing.startswith("no ticket's issue fields are to read"))
+        self.assertIn("Issue updates to write for 2 ticket(s)", listing)
+        self.assertIn("T-1  https://issues.example/story/1", listing)
+        self.assertIn(model.ISOLATION_RULE, listing)  # the isolation rule, where the writing happens
+        self.assertNotIn("T-2", listing)  # no Issue link: nowhere to write
+
+        self.assertIn("T-1: written as listed", run(*t, "issue", "T-1", "--written"))
+        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertEqual(self.updates(s)[0], "T-1: status in-progress")  # a later change is due again
+        self.write(t, "T-1", "T-3")
+        self.assertEqual(self.updates(s), [])
+        self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--written", code=2))
+        self.assertIn("listed no update", run(*t, "issue", "T-1", "--written", code=2))  # nothing listed to record
+
+        run(*t, "set", "tracker", "issue_updates=off")
+        run(*t, "set", "T-1", "status=dropped", "summary=not needed")
+        run(*t, "decide", "Which cache", "--refs", "T-1", "--resolve", "None", "--by", "me")
+        self.assertEqual(self.updates(s), [])
+        run(*t, "set", "tracker", "issue_updates=on")  # on again: what changed while off is due
+        self.assertEqual(self.updates(s), ["T-1: status dropped; summary: not needed; "
+                                           "decision settled: Which cache: None"])
+
+    def test_a_changed_answer_summary_or_stage_is_due_again(self):
+        s, t = self.tracker()
+        run(*t, "decide", "Which queue", "--refs", "T-1", "--resolve", "SQS", "--by", "me")
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "set", "T-1", "status=in-progress")
+        self.write(t, "T-1", "T-3")
+        run(*t, "decide", "D-1", "--resolve", "Kafka", "--by", "me")  # settled again: history holds the old answer
+        run(*t, "set", "T-3", "summary=shipped, with the retry")  # set after the close
+        self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: Kafka",
+                                           "T-3: status done; summary: shipped, with the retry"])
+        self.write(t, "T-1", "T-3")
+        run(*t, "set", "T-3", "status=in-progress")  # reopened: its old summary is not news
+        tr = model.Tracker(model.HOME / s)
+        tr.lookup("T-1").save({"pr": "9", "pr_state": "open"})  # what `sync` writes: its PR is in review
+        self.assertEqual(self.updates(s), ["T-1: status in-review", "T-3: status in-progress"])
+        self.write(t, "T-1")
+        tr.lookup("T-1").save({"pr_state": "merged"})
+        self.assertEqual(self.updates(s), ["T-1: status merged", "T-3: status in-progress"])
+
+    def test_written_records_what_was_listed_not_what_changed_since(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "issue")  # lists T-3's status
+        run(*t, "decide", "Which store", "--refs", "T-3", "--resolve", "Postgres", "--by", "me")  # another session
+        out = run(*t, "issue", "T-3", "--written")
+        self.assertIn("T-3: written as listed; due since the listing: decision settled: Which store: Postgres", out)
+        self.assertEqual(self.updates(s), ["T-3: decision settled: Which store: Postgres"])
+
+    def test_written_with_fields_records_both_and_check_reads_the_setting(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "issue")
+        out = run(*t, "issue", "T-3", "--size", "2", "--written")
+        self.assertIn("T-3: size=2", out)
+        self.assertIn("T-3: written", out)
+        self.assertEqual(self.updates(s), [])
+        self.assertEqual(model.Tracker(model.HOME / s).lookup("T-3").get("size"), "2")
+        tr = model.Tracker(model.HOME / s)
+        tr.readme.save({"issue_updates": "yes"})  # a hand edit
+        self.assertIn("README.md: issue_updates 'yes' is not one of on|off", run(*t, "check", code=1))
+
+    def test_on_with_no_record_of_what_was_written_asks_for_nothing(self):
+        s, t = self.tracker()
+        run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
+        model.Tracker(model.HOME / s).readme.save({"issue_updates": "on"})  # a hand edit, or a lost .state.json
+        self.assertEqual(self.updates(s), [])  # not every issue written again
+        self.assertIn("no record of what its issues show", run(*t, "check"))
+        run(*t, "set", "tracker", "issue_updates=on")  # already on: starts the record
+        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        self.assertNotIn("no record", run(*t, "check"))
+        run(*t, "decide", "Which queue", "--refs", "T-1", "--resolve", "SQS", "--by", "me")
+        run(*t, "set", "tracker", "issue_updates=on")  # on again: the history stays, and so does what is due
+        self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: SQS",
+                                           "T-3: status done; summary: shipped"])
+
+    def test_a_write_asks_for_the_update_it_makes_due(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        self.write(t, "T-3")
+        out = run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
+        self.assertIn("[work-tracker] Issue updates to write for 1 ticket(s): T-1", out)
+        self.assertIn("issue_updates=off` stops these requests", out)  # the way out with no tool for it
+        self.assertNotIn("Issue updates to write", run(*t, "log", "a note", "--ref", "T-1"))  # nothing new: no repeat
+        self.assertIn("Issue updates to write", run(*t, "set", "T-1", "status=in-progress"))
+
+    def test_the_request_names_the_sessions_tickets_first_and_counts_the_rest(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        for n in range(4, 10):
+            run(*t, "new", f"T-{n}", "--title", f"Linked {n}")
+            run(*t, "add", f"T-{n}", "link", f"Issue: [SC-{n} Story](https://issues.example/story/{n})")
+            run(*t, "set", f"T-{n}", "status=in-progress")
+        tr = model.Tracker(model.HOME / s)
+        request = views.issue_update_request(tr, [tr.lookup("T-9")])
+        self.assertIn("for 7 ticket(s): T-9, T-3, T-4, T-5, T-6 +2.", request)
+
+    def test_the_brief_and_the_prompt_hook_ask_for_due_updates_once_per_change(self):
+        s, t = self.tracker()
+        sid, work = f"sid{time.monotonic_ns()}", repo("feat/T-1")
+        run(*t, "issue", "T-1")
+        run(*t, "issue", "T-3")  # no issue fields due: only updates are asked for
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "set", "T-1", "status=in-progress", cwd=work)
+        env = {**os.environ, "TRACKER_SESSION": sid}
+        started = subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True,
+                                 text=True, check=True).stdout
+        self.assertIn("Issue updates to write for 2 ticket(s): T-1, T-3", started)
+        self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="go")))  # `start`'s brief told them
+        run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
+        self.assertIn("Issue updates to write", said(hook("prompt", sid, work, prompt="next")))  # a new one
+        self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="again")))  # told once
+        self.write(t, "T-1")
+        self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="later")))  # T-3 left: not asked again
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):  # this session's write asks, and has told it
+            self.assertIn("Issue updates to write", run(*t, "set", "T-1", "status=dropped", "summary=not needed"))
+        self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="then")))
+        self.assertIn("Issue updates to write", said(hook("session-start", sid, work, source="compact")))
+        self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="after")))  # the brief told them
+        self.write(t, "T-1", "T-3")
+        self.assertNotIn("Issue updates", said(hook("session-start", sid, work, source="startup")))
+
     def test_the_viewer_shows_priority_and_what_a_refresh_waits_on(self):
         s, t = self.tracker()
         run(*t, "new", "T-4", "--title", "Least", "--priority", "4")

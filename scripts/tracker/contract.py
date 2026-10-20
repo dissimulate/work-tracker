@@ -34,6 +34,10 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             warnings.append(f"{r.id}: closed_at, but its status {r.get('status')} is open — `tracker migrate` removes "
                             f"it")
     check_meta(tr, "README.md", "tracker", tr.meta, errors, warnings)
+    if tr.meta.get("issue_updates") == "on" and "history" not in tr.raw_state().get("issues", {}):
+        warnings.append("README.md: issue_updates is on, but .state.json has no record of what its issues show, so "
+                        "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
+                        "so far count as written, and each linked ticket out of todo is due once for its status")
     if tr.schema < SCHEMA:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA} — run `tracker migrate`")
     elif tr.schema > SCHEMA:

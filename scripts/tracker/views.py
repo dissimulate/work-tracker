@@ -387,7 +387,7 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
     return lines
 
 
-ISSUE_SHOWN = 5  # tickets named in the request for their issue fields; the rest as a count
+ISSUE_SHOWN = 5  # tickets named in a request for their issue fields or issue updates; the rest as a count
 ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time with its issue tracker's tool and record "
              "them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
              + " --due <YYYY-MM-DD> --created <ISO 8601 time>`. Map each by what it means on its issue tracker's own "
@@ -406,6 +406,34 @@ def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
     return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
             "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
             "them: never guess a value.")
+
+
+ISSUE_UPDATES_OFF = "tell the user that `tracker set tracker issue_updates=off` stops these requests"
+ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool: move the issue to the state in its "
+                   "own workflow that means the ticket's status (" + ", ".join(STAGES) + "), and comment a closed "
+                   "ticket's summary and each settled decision, by its title and answer. Once every update of a "
+                   "ticket is written, run `tracker issue <id> --written`: it records what this list showed. When "
+                   "one fails, leave that ticket: it stays due. " + ISOLATION_RULE + " With no tool for that issue "
+                   "tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
+
+
+def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
+    """The request for the issue updates due (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
+    session's own) named first. `tracker issue` lists what to write (ISSUE_WRITE_HOW); the model writes it with the
+    issue tracker's tool, which the tracker cannot."""
+    due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
+    if not due:
+        return ""
+    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    return (f"[work-tracker] Issue updates to write for {len(due)} ticket(s): {ids}. With a tool for their issue "
+            "tracker, run `tracker issue` for what to write, write it, then `tracker issue <id> --written`; with "
+            f"none, leave them and {ISSUE_UPDATES_OFF}.")
+
+
+def updates_told(tr: Tracker) -> list[str]:
+    """The issue updates due, as a session remembers having been told them (its `told_updates`): the prompt hook asks
+    again only when one is not among them."""
+    return sorted(f"{t.id}: {x}" for t, items in tr.issue_updates_due() for x in items)
 
 
 def instructions(tr: Tracker) -> str:
@@ -492,9 +520,9 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
         parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS, urls=False)))
     if synced:
         parts.append("Synced PR state: " + "; ".join(synced))
-    ask = issue_request(tr, focus)
-    if ask:
-        parts.append(ask)
+    for ask in (issue_request(tr, focus), issue_update_request(tr, focus)):
+        if ask:
+            parts.append(ask)
     problems = check_lines(tr, focus)
     if problems:
         parts.append(problems)

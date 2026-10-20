@@ -42,7 +42,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker open [id]` | the live page |
 | `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the viewer; `tracker unarchive <slug>` brings it back |
 | `tracker delete <slug>` | move a tracker's folder, archived or not, to the system's trash (only in a terminal; refused while a session or a watch is on it) |
-| `tracker issue` | the tickets whose issue fields (priority, size, due day, when the issue was created) are to read, with their issue links and how to record them |
+| `tracker issue` | the tickets whose issue fields (priority, size, due day, when the issue was created) are to read, with their issue links and how to record them; with issue updates on, also the updates to write to each issue |
 | `tracker check` | problems in the tracker's files |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
 | `tracker <command> --help` | the syntax of a command |
@@ -81,9 +81,10 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - **Actions** are tasks for you that the agent cannot or should not do: talk to a person, get an access or a sign-off. The agent asks before it adds one, and closes it when you say it is done or no longer needed. An action can have a due day, and can block tickets as an open decision does. The agent asks you about one past its due day, or with none, open longer than a week.
 - **Priority** is a number from 0 (most urgent) to 4 (least), shown as P0 to P4. **Size** is a number from 1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a week, XL more. The scales are the same for every issue tracker, so values compare, sort and add up across them.
 - **Issue fields.** A ticket with an `Issue:` link takes its issue's priority, estimate (as its size), due day and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to), maps each value by what it means on that issue tracker's scale (High is 1; 5 Fibonacci points are L), and records it with `tracker issue`. With no such tool, the fields stay empty.
+- **Issue updates.** Off until you turn them on for a tracker: `tracker set tracker issue_updates=on`. Then, when a linked ticket's stage changes (it starts, goes to review, merges, closes, is dropped or reopened), its summary changes once closed, or a decision that touches it is settled or settled again, the agent writes that to the ticket's issue with the same tool: it moves the issue to the matching state in the issue tracker's own workflow and comments the ticket's summary and each settled decision. It writes in its own words and never names the tracker. The agent is asked right after the change, in each session's brief, and at your next message when a new update is due. When you first turn them on, each linked ticket already started or closed is due once for its status; decisions settled before then are not written. `issue_updates=off` stops it; on again, what changed while off is due. The record of what was written is in `.state.json`, on this machine only: a second machine on the same tracker writes the same updates again, and with no record (`check` warns) nothing is due until `tracker set tracker issue_updates=on` starts a new one.
 - **The agent's own values.** On a ticket with no issue value, the agent sets priority and size as its best estimate, or leaves them empty when it cannot estimate them reliably. A due day (`YYYY-MM-DD`, on any ticket, decision or action) is only a day that you or the issue tracker gave.
 - **Times**: a key that ends `_at` holds a time in UTC to the second, such as `started_at` or `merged_at`. The views show each as its day.
-- Nothing leaves your machine except the `gh` calls to GitHub. The viewer listens on 127.0.0.1 only.
+- Nothing leaves your machine except the `gh` calls to GitHub and, with issue updates on, what the agent writes to issues with its own tool. The viewer listens on 127.0.0.1 only.
 
 ### Tickets, branches and sessions
 
@@ -100,8 +101,8 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 | Event | Does |
 |---|---|
-| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief. With none: links the session, or has the agent offer the link, as [Usage](#usage) step 2 says. |
-| UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
+| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief, with the issue fields to read and the issue updates to write. With none: links the session, or has the agent offer the link, as [Usage](#usage) step 2 says. |
+| UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. Once each: an issue update newly due, the issue fields a viewer Refresh asked for. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
 | PostToolUse (Bash) | After a commit: logs it, and once per next action asks whether a step ended. After `git push` or `gh pr …`: records the branch on its ticket and syncs PR state. |
 | PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
 | PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
@@ -192,7 +193,7 @@ Options after the mode's words go to `claude plugin eval` as they are, such as `
   - `write`: the write commands and their output, the skill's Write table
   - `log`: what is logged: the commit hooks, `step` messages
   - `decision`: `decide`, the decision bar, the question hook
-  - `issue`: issue fields
+  - `issue`: issue fields and issue updates
   - `read`: `index`, `ready`, `context` and what can start
   - the skill's other parts and the brief's protocol reach every case: `quick all`
 - A case sets `runs: 1` only when it is one plain command that passed in every full run.
