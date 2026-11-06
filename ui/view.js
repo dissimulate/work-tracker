@@ -347,11 +347,12 @@ export function trackerView(host, first = null) {
         .on_click((_e, cx) => { cx.stop_propagation(); this.follow(pr.url, cx); });
     }
 
+    // A row's sessions: filled red while one needs the user, green while one works, yellow while one is idle, a grey
+    // ring with none.
     agentMark(agents, t) {
-      if (!agents.length) return [];
-      const busy = agents.some(a => a.busy);
-      return [div().flex_none().size(SIZE.dot).rounded(SIZE.dot / 2).when(busy, el => el.bg(t.working))
-        .when(!busy, el => el.border(1).border_color(t.muted))];
+      const mark = div().flex_none().size(SIZE.dot).rounded(SIZE.dot / 2).mr(SPACE.xs);
+      if (!agents.length) return mark.border(1).border_color(t.muted);
+      return mark.bg(agents.some(a => a.waiting) ? t.blocked : agents.some(a => a.busy) ? t.ansi2 : t.working);
     }
 
     nowItem(item, t) {
@@ -359,26 +360,25 @@ export function trackerView(host, first = null) {
       const open = this.isOpen(key, false);
       const more = () => v_flex().gap(SPACE.xxs)
         .when(Boolean(item.line), el => el.child(div().text_color(t.muted).child(plainInline(item.line))))
-        .when(Boolean(item.on?.length), el => el.child(h_flex().flex_wrap().gap(SPACE.sm).items_center()
-          .child(div().text_color(t.dim).child("on"))
-          .children(item.on.map(x => h_flex().gap(SPACE.xs).child(this.idLink(`on-${item.key}`, x.id, t))
-            .child(div().text_color(t.dim).child(x.stage))))))
         .when(Boolean(item.fresh), el => el.child(div().text_size(TEXT.tiny).text_color(t.dim).child(item.fresh)))
         .children(item.agents.map(a => div().text_size(TEXT.tiny).text_color(t.dim)
-          .child(`session ${a.name}: ${a.word}, in ${a.cwd}`)));
+          .child(`${a.word}, in ${a.cwd}`)));
       const head = h_flex().flex_1().min_w(0).gap(SPACE.sm).items_center().text_size(TEXT.small)
-        // The agent's mark sits in the id column on a row with no id, and just after the id on a ticket's.
-        .when(item.kind !== "ticket", el => el.child(h_flex().w(this.idColumn).flex_none().items_center().children(this.agentMark(item.agents, t))))
+        .child(this.agentMark(item.agents, t))
+        .when(item.kind !== "ticket", el => el.child(div().w(this.idColumn).flex_none()))
         .when(item.kind === "ticket", el => el
           .child(this.idLink("now", item.id, t, tone(item.stage, t)).w(this.idColumn).truncate())
-          .children(this.agentMark(item.agents, t))
           .child(chip(item.stage, item.stage, t))
           .children((item.prs ?? []).map(pr => this.prLink(item.key, pr, t)))
           .when(Boolean(item.move), row => row.child(div().flex_1().min_w(0).truncate().text_right()
             .text_color(tone(item.move.mine ? "you" : "them", t)).child(item.move.text))))
-        .when(item.kind !== "ticket", el => el.child(this.named(item.title, item.meta, t, t.muted)));
+        // An agent on no ticket under way: the tickets it is on, each as a ticket's row starts, or says it has none.
+        .when(item.kind === "agent", el => el
+          .children((item.on ?? []).flatMap(x => [this.idLink(`on-${item.key}`, x.id, t, tone(x.stage, t)), chip(x.stage, x.stage, t)]))
+          .when(!item.on?.length, row => row.child(chip("no-ticket", "none", t))))
+        .when(item.kind === "handoff", el => el.child(this.named(item.title, "", t, t.muted)));
       // A card that opens where it is: with nothing more to show, it does not take a click.
-      const expands = Boolean(item.line || item.on?.length || item.fresh || item.agents.length);
+      const expands = Boolean(item.line || item.fresh || item.agents.length);
       return card(key, [head], t, { click: expands ? cx => { this.panels.set(key, !open); cx.notify(); } : null,
         more: open && expands ? more : null });
     }

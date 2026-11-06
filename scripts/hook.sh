@@ -7,6 +7,7 @@
 #   link, or while a session that /clear ended hands its tracker over (.cleared.json);
 # - edit: Python only for a tracker file edited by hand (the project's files: git shows that work, see `lag`);
 # - post-bash: Python only when the command names git and commit or push, or gh and pr;
+# - resumed: Python only for a session that waited on the user;
 # - prompt: in any session, Python for the user's /work-tracker:watch, which gives the session the watch or ends it.
 event=$1
 input=$(cat)
@@ -77,6 +78,11 @@ case $event in
     ;;
   post-bash)
     case $input in *git*commit*|*git*push*|*gh*pr*) ;; *) exit 0 ;; esac
+    ;;
+  resumed)
+    # After every tool of every tracked session: only a session that waited on the user has anything to write.
+    [ -n "$sid" ] && [ -f "$session.json" ] || exit 0
+    case $(cat "$session.json") in *'"status": "waiting"'*) ;; *) exit 0 ;; esac
     ;;
 esac
 # Only the hooks' modules load, not the CLI's; Python reuses their compiled bytecode.

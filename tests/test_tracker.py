@@ -152,6 +152,16 @@ class Format(unittest.TestCase):
                               ("git@gitlab.com:group/sub/name.git", "group/sub/name"), ("/srv/git/api.git", "")]:
             self.assertEqual(git.repo_slug(remote), slug_, remote)
 
+    def test_a_sessions_status_is_its_hooks_but_for_what_only_its_process_file_knows(self):
+        hook = {"status": "waiting", "since": 50.0, "at": 60.0}
+        self.assertEqual(session.hook_status(hook, "idle", 70.0), ("waiting", 50.0))  # a wait is the hooks' to end
+        self.assertEqual(session.hook_status({**hook, "status": "idle"}, "busy", 70.0), ("idle", 50.0))
+        self.assertEqual(session.hook_status({**hook, "status": "busy"}, "busy", 70.0), ("busy", 50.0))
+        self.assertEqual(session.hook_status({**hook, "status": "busy"}, "idle", 55.0), ("busy", 50.0))  # an older idle
+        self.assertEqual(session.hook_status({**hook, "status": "busy"}, "idle", 70.0), ("idle", 70.0))  # interrupted
+        self.assertEqual(session.hook_status({}, "busy", 70.0), ("busy", 70.0))  # no hook has told it yet
+        self.assertEqual(session.hook_status({**hook, "status": "ended"}, "idle", 70.0), ("idle", 70.0))
+
     def test_fork_prs_are_not_the_tickets(self):
         t = model.Record(Path("T-1.md"), "ticket", {"id": "T-1", "branch": "fix"}, "")
         fork = {"number": 9, "headRefName": "fix", "state": "OPEN", "isCrossRepository": True}
@@ -591,10 +601,10 @@ class LiveSessions(unittest.TestCase):
 
         now = viewmodel.now_view(tr)
         self.assertEqual(now["items"][0]["agents"],
-                         [{"name": "agent-a", "busy": True, "word": "working since Tue 09:05", "cwd": str(work)}])
+                         [{"busy": True, "waiting": False, "word": "working since Tue 09:05", "cwd": str(work)}])
         spare_item = now["items"][-1]
-        self.assertEqual((spare_item["key"], spare_item["kind"], spare_item["title"], spare_item["meta"]),
-                         (f"agent-agent-b{n}", "agent", "agent-b", "main"))
+        self.assertEqual((spare_item["key"], spare_item["kind"]), (f"agent-agent-b{n}", "agent"))
+        self.assertFalse(spare_item.keys() & {"title", "meta", "line"})
         self.assertEqual(spare_item["on"], [{"id": "L-2", "stage": "todo"}])
         self.assertEqual(spare_item["agents"][0]["word"], "idle since Tue 09:05")
         self.assertEqual(now["agents"], 2)
@@ -1018,6 +1028,33 @@ def said(out: dict | None) -> str:
 class Hooks(unittest.TestCase):
     """scripts/hook.sh end to end: its shell filters, and what each event tells the model."""
 
+    def test_a_wait_on_the_user_shows_until_the_session_moves_on(self):
+        s, sid, work = slug(), f"sid{time.monotonic_ns()}", repo("main")
+        run("init", s, "--title", "Hooked", "--owner", "me")
+        session.save_session(sid, tracker=s, cwd=str(work))
+
+        def status():
+            return session.load_session(sid)["activity"]["status"]
+
+        self.assertIsNone(hook("resumed", sid, work, tool_name="Read"))  # no wait: the shell filter ends it
+        self.assertNotIn("activity", session.load_session(sid))
+        self.assertIsNone(hook("prompt", sid, work, prompt="go") and None)
+        self.assertEqual(status(), "busy")
+        self.assertIsNone(hook("waiting", sid, work, tool_name="Bash"))  # a hook that decides nothing and says nothing
+        self.assertEqual(status(), "waiting")
+        live = session.live_sessions(s)
+        self.assertEqual([x.status for x in live], ["waiting"])
+        self.assertEqual(viewmodel.agent_word(live[0]).split(" since")[0], "needs you")
+        hook("resumed", sid, work, tool_name="Bash")
+        self.assertEqual(status(), "busy")
+        hook("waiting", sid, work, tool_name="AskUserQuestion", agent_id="sub")  # a subagent's wait is the session's
+        self.assertEqual(status(), "waiting")
+        hook("stop", sid, work)
+        self.assertEqual(status(), "idle")
+        hook("prompt", sid, work, prompt="go")
+        hook("stop-failure", sid, work)
+        self.assertEqual(status(), "idle")
+
     def test_session(self):
         s, sid, work = slug(), f"sid{time.monotonic_ns()}", repo("feat/H-1")
         run("init", s, "--title", "Hooked", "--owner", "me")
@@ -1219,7 +1256,7 @@ class Hooks(unittest.TestCase):
         native = session.CLAUDE_SESSIONS / f"{sid}.json"
         native.parent.mkdir(parents=True, exist_ok=True)
         native.write_text(json.dumps({"sessionId": sid, "pid": os.getpid(), "name": "native", "status": "busy"}))
-        self.assertEqual([(x.name, x.status) for x in session.live_sessions(s)], [("native", "busy")])
+        self.assertEqual([(x.name, x.status) for x in session.live_sessions(s)], [("native", "idle")])  # its hooks say, not the file
         native.write_text(json.dumps({"sessionId": sid, "pid": -1}))
         self.assertEqual(session.live_sessions(s), [])  # a dead native process is not replaced by hook activity
         session.session_activity(sid, "idle")

@@ -10,7 +10,7 @@ from .markdown import headings, section_block, strip_comments, without_section, 
 from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
     branch_entry, day_text, due_date, level, level_name, sequence, show_value, sort_key, span, whose_move, Dep, Gate,
     Record, Tracker)
-from .session import ago, handoff_where, live_by_tracker, live_sessions, match_cwd, Live
+from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .github import PR_PAGE, pr_url
 from .views import dep_facts, duration, pr_label, span_lines, stage_counts
@@ -84,7 +84,7 @@ def graph_order(tr: Tracker, edges: dict[str, list[str]], step: dict[str, int]) 
 def agent_word(s: Live) -> str:
     """`working since 09:52`: an agent session's status, and since when (a clock time: the view does not change while
     the status holds)."""
-    word = {"busy": "working"}.get(s.status, s.status or "running")
+    word = {"busy": "working", "waiting": "needs you"}.get(s.status, s.status or "running")
     return f"{word} since {clock(s.since)}" if s.since else word
 
 
@@ -200,7 +200,6 @@ def now_view(tr: Tracker) -> dict:
     watch."""
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
-    one_repo = len(tr.repos) <= 1
     moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.in_flight}
 
     # The sessions `tracker start` tied to this tracker that run on this machine: a mark by each ticket they have
@@ -209,7 +208,7 @@ def now_view(tr: Tracker) -> dict:
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:
-        return [{"name": x.name, "busy": x.status == "busy", "word": agent_word(x), "cwd": x.cwd} for x in sessions]
+        return [{"busy": x.status == "busy", "waiting": x.status == "waiting", "word": agent_word(x), "cwd": x.cwd} for x in sessions]
 
     def turn(t: Record) -> tuple:
         move = moves[t.id]
@@ -226,15 +225,12 @@ def now_view(tr: Tracker) -> dict:
                       "move": {"text": move.text(), "mine": move.mine} if move else None,
                       "line": f"next: {t.get('next')}" if t.get("next") else "", "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():
-        b = key.rpartition(":")[2] if one_repo else key  # a tracker that spans repos names the repo
-        items.append({"key": f"handoff-{key}", "kind": "handoff", "title": f"Handoff on {b}",
-                      "meta": handoff_where(h), "line": h.get("text", ""), "agents": []})
+        items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""), "agents": []})
     busy = len(items)
     for x, m in live:
         if not m.active:
             on = [{"id": t.id, "stage": t.stage} for t in m.focus]
-            items.append({"key": f"agent-{x.sid}", "kind": "agent", "title": x.name, "meta": x.branch, "on": on,
-                          "line": "" if on else "on no ticket", "agents": agent_views([x])})
+            items.append({"key": f"agent-{x.sid}", "kind": "agent", "on": on, "agents": agent_views([x])})
     idle = None
     if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":
         idle = {"ready": [t.id for t in tr.ready()]}

@@ -191,7 +191,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     acts = [a.id for a in tr.open_actions()]
 
     def agent(x: Live) -> str:
-        return f"agent {x.name} {'busy' if x.status == 'busy' else 'idle'}" + \
+        return f"agent {x.name} {x.status if x.status in ('busy', 'waiting') else 'idle'}" + \
             (f" {int((now - x.since) // 60)} min" if x.since else "")
 
     def line(urgent: bool, text: str) -> str:

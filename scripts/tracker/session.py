@@ -626,15 +626,19 @@ def count_own(sid: str, m: Match, picked) -> None:
 
 
 # ---------------------------------------------------------------- live sessions
-# Claude Code keeps one file per running `claude` process: <config dir>/sessions/<pid>.json, with its pid, sessionId,
-# cwd, name, status ("busy" while the model works, "idle" while it waits for the user) and when the status last
-# changed (statusUpdatedAt, epoch ms). Other hosts use the activity recorded by their hooks. An ended session or
-# one with no hook activity for a day does not count. A session with a process file is judged by that file alone,
-# and once its hooks saw one (`native`), so is the session after the file is gone: a session that ended with no
-# SessionEnd hook (its terminal closed; the hook cut short) leaves its last activity behind.
+# A session's status comes from its hooks, on any host: `busy` from a prompt or a tool after a wait, `waiting` while it
+# asks the user for a permission or an answer, `idle` from a stop. Claude Code also keeps one file per running `claude`
+# process: <config dir>/sessions/<pid>.json, with its pid, sessionId, cwd, name, status and when the status last changed
+# (statusUpdatedAt, epoch ms). That file says whether a session runs, once its hooks saw one (`native`) also after the
+# file is gone: a session that ended with no SessionEnd hook (its terminal closed; the hook cut short) leaves its last
+# activity behind. It settles a status only where hooks cannot: a session with no hook status yet, and a turn the user
+# interrupted, which runs no Stop hook. An ended session, or a host's with no hook activity for a day, does not count.
 
 CLAUDE_SESSIONS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "sessions"
 ACTIVITY_MAX_AGE_S = 86400
+
+
+LIVE_STATUSES = ("busy", "idle", "waiting")
 
 
 def claude_sessions() -> list[dict]:
@@ -682,6 +686,15 @@ class Live:
     since: float  # when the status last changed (epoch s); 0 when not known
 
 
+def hook_status(activity: dict, file_status: str, file_changed: float) -> tuple[str, float]:
+    """A running Claude Code session's status and since when: its hooks', but for what only its process file knows (see
+    above)."""
+    status, since, at = activity.get("status"), activity.get("since", 0), activity.get("at", 0)
+    if status not in LIVE_STATUSES or (status == "busy" and file_status == "idle" and file_changed > at):
+        return file_status, file_changed
+    return status, since
+
+
 def live_sessions(slug: str) -> list[Live]:
     """Tracked sessions on this tracker with a running process or recent hook activity, by name."""
     return live_by_tracker({slug}).get(slug, [])
@@ -703,14 +716,15 @@ def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
 
     for c in claude_sessions():
         try:
-            sid, pid, since = str(c["sessionId"]), int(c["pid"]), float(c.get("statusUpdatedAt") or 0) / 1000
+            sid, pid, changed = str(c["sessionId"]), int(c["pid"]), float(c.get("statusUpdatedAt") or 0) / 1000
         except (ValueError, KeyError, TypeError):
             continue
         native.add(sid)
         entry = load_session(sid)
         if not wanted(entry) or not alive(pid):
             continue
-        add(sid, entry, str(c.get("name") or sid[:8]), str(c.get("status") or ""), since, str(c.get("cwd") or ""))
+        status, since = hook_status(entry.get("activity", {}), str(c.get("status") or ""), changed)
+        add(sid, entry, str(c.get("name") or sid[:8]), status, since, str(c.get("cwd") or ""))
     now = time.time()
     for f in SESSIONS_DIR.glob("*.json"):
         if f.stem in native:
@@ -723,6 +737,6 @@ def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
             status, since, at = activity["status"], float(activity["since"]), float(activity["at"])
         except (KeyError, ValueError, TypeError):
             continue
-        if wanted(entry) and status in ("busy", "idle") and now - at < ACTIVITY_MAX_AGE_S:
+        if wanted(entry) and status in LIVE_STATUSES and now - at < ACTIVITY_MAX_AGE_S:
             add(f.stem, entry, f.stem[:8], status, since)
     return {slug: sorted(live.values(), key=lambda s: (s.name, s.sid)) for slug, live in out.items()}

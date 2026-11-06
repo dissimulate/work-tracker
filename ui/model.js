@@ -175,10 +175,10 @@ export function followNotice(agent, slug) {
 }
 
 // The width of a column of ids in a monospace font, in px: room for the longest, within limits so that a short list
-// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size.
+// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size: only a whisker over, so the gap after the longest id is the row's gap.
 export function idWidth(ids, size) {
   const longest = Math.max(0, ...[...ids].map(id => String(id).length));
-  return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.62);
+  return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.605);
 }
 
 // A README's Goal and Scope as rows for a compact grid: each `## Heading` a label and its text, whose `### Heading` is

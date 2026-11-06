@@ -7,6 +7,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Added
 
 - A ticket can have several PRs, all equal. `tracker sync` reads those from the ticket's branch and its `PR:` links; the ticket counts as merged only once none is open, and its move is the most urgent of its open PRs'. Run `tracker migrate` on each tracker: its tickets' `pr`, `pr_state` and `base` become one `prs` list. Until then they still read correctly.
+- A session's status comes from the tracker's hooks on any host, and adds "needs you" while it asks for a permission or an answer. In the view, each Current row's dot is red for that, green while working, yellow while idle, and a grey ring with no session.
 - `tracker refresh`: pull PR state now, and have the next session prompt read the issue fields again.
 - `tracker sync --live`: sync only if no sync ran lately.
 - `tracker evidence <file>`: open a file of the tracker's evidence on your screen.

@@ -366,7 +366,8 @@ def hook_subagent_start(data: dict) -> None:
 
 HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": hook_session_end,
          "post-bash": hook_post_bash, "edit": hook_edit,
-         "prompt": hook_prompt, "answered": hook_answered, "subagent-start": hook_subagent_start}
+         "prompt": hook_prompt, "answered": hook_answered, "subagent-start": hook_subagent_start,
+         "waiting": lambda data: None, "resumed": lambda data: None, "stop-failure": lambda data: None}
 
 
 HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks that call gh 15 s
@@ -378,11 +379,13 @@ def run_hook(event: str) -> None:
     try:
         sid = where(data)[1]
         os.environ["TRACKER_SESSION"] = sid  # command_context, session_id() and spawned commands read it
-        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "session-end": "ended"}.get(event)
+        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle", "session-end": "ended",
+                  "waiting": "waiting", "resumed": "busy"}.get(event)
         if event == "session-end" and not data.get("agent_id"):
             session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
         HOOKS[event](data)
-        if status and event != "session-end" and not data.get("agent_id"):
+        # A subagent's turn is not the session's, but its wait on the user is.
+        if status and event != "session-end" and (not data.get("agent_id") or event in ("waiting", "resumed")):
             session_activity(sid, status)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         print(f"work-tracker hook {event} failed: {exc}", file=sys.stderr)

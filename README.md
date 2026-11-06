@@ -108,7 +108,10 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 | PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
 | PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
+| PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
+| PostToolUse (any tool) | Ends that mark, in a shell check that starts no Python otherwise. |
 | Stop | Logs the commits no other hook saw. |
+| StopFailure | Marks the session idle after a failed turn. |
 | SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
 
 ### View
