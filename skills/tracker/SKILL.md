@@ -6,7 +6,7 @@ argument-hint: "[tracker command, e.g. index --active]"
 
 # Work tracker
 
-A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the page the user watches (`tracker open`). It lives in `$TRACKER_HOME/<slug>/` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
+A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the view the user watches (`tracker open`). It lives in `$TRACKER_HOME/<slug>/` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
 
 The CLI is `tracker`; `tracker <command> --help` gives each command's syntax. If this skill is invoked with arguments, run `tracker $ARGUMENTS` and report the result; with none, run `tracker start`.
 

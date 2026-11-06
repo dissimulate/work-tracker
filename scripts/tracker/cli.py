@@ -6,8 +6,10 @@ The `tracker` command line: one function per command, and the parser."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,13 +17,13 @@ from pathlib import Path
 from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
 from .model import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LOG,
-    NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, VIEWER_PORT, a_kind,
+    LIVE_SYNC_S, NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, a_kind,
     all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers, atomic_file,
     atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit,
-    id_kind, id_list, kind_names, link_url, load_record, locked, names, put_section, read_value, relabel,
+    id_kind, id_list, kind_names, link_url, load_record, locked, names, put_section, read_value, record_cli, relabel,
     replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, stage_of, today, unblocked,
     unknown_dep, utc_now, Busy, Record, Tracker)
-from .system import spawn
+from .system import open_with_system
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos, locate,
     mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve, save_session,
@@ -33,6 +35,8 @@ from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HO
 from .github import NAME as FORGE, match_pr, sync
 from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
     unarchive_tracker, watching)
+from .viewmodel import trackers_view, view_model
+from .ui import NO_HOST, open_ui
 
 # ---------------------------------------------------------------- templates
 
@@ -62,7 +66,14 @@ def new_record(tr: Tracker, kind: str, ident: str, title: str, **meta) -> Record
 
 # ---------------------------------------------------------------- commands
 
+REFRESH_SYNC_S = 15  # a Refresh syncs GitHub unless a sync ran this recently
+EVIDENCE_OPENS = {".csv", ".gif", ".jpeg", ".jpg", ".json", ".log", ".md", ".pdf", ".png", ".txt"}  # run no code
+
+
 def cmd_list(args):
+    if args.json:
+        print(json.dumps(trackers_view()))
+        return
     trackers = all_trackers()
     if not trackers:
         print(NO_TRACKERS)
@@ -818,7 +829,7 @@ def cmd_check(args):
 
 def cmd_sync(args):
     tr = resolve(args)
-    changes = sync(tr, force=True)
+    changes = sync(tr, force=False, min_interval=LIVE_SYNC_S) if args.live else sync(tr, force=True)
     print("\n".join(changes) if changes else "no changes")
 
 
@@ -1045,10 +1056,10 @@ def cmd_unarchive(args):
 
 
 def cmd_delete(args):
-    """The user's: in a terminal, or from the viewer's tracker menu. The model never deletes a tracker: the command
+    """The user's: in a terminal, or from the UI's tracker menu. The model never deletes a tracker: the command
     refuses an agent session."""
     if agent_session()[0]:
-        die("only the user deletes a tracker: in a terminal (`tracker delete <slug>`) or from the viewer's tracker "
+        die("only the user deletes a tracker: in a terminal (`tracker delete <slug>`) or from the UI's tracker "
             "menu. Do not delete one yourself.", REFUSED)
     tr = tracker_at(args.slug) or archived_at(args.slug) or \
         die(f"no tracker '{args.slug}' (`tracker list --archived` lists them)")
@@ -1099,30 +1110,50 @@ def cmd_use(args):
 
 
 def cmd_open(args):
-    from .viewer import viewer_ping, viewer_port
     here = find_tracker(args) if args.id else None
     whole = args.id and not (here and here.lookup(args.id)) and (tracker_at(args.id) or archived_at(args.id))
     tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
-    old = viewer_ping()  # a viewer on other code is replaced on its port, so its open pages carry on
-    port = viewer_port()
-    if not port:
-        spawn("serve", "--port", str(old[0] if old else VIEWER_PORT))
-        for _ in range(50):
-            time.sleep(0.1)
-            if port := viewer_port():
-                break
-        else:
-            die("viewer did not start")
-    url = f"http://127.0.0.1:{port}/t/{tr.slug}/" + (f"#{rec.id}" if rec else "")
-    if not args.no_browser:
-        import webbrowser
-        webbrowser.open(url)
-    print(url)
+    record_cli()  # a mod finds the CLI by this, also before any hook has run
+    host = open_ui(tr.slug, rec.id if rec else "")
+    if not host:
+        die(NO_HOST)
+    print(f"opened {tr.slug}{f' {rec.id}' if rec else ''} in {host}")
 
 
-def cmd_serve(args):
-    from .viewer import serve
-    serve(args.port)
+def cmd_data(args):
+    """A UI's one read of a tracker: viewmodel.view_model as JSON. An archived tracker too, as `open` shows it."""
+    tr = (tracker_at(args.slug) or archived_at(args.slug) or die(f"no tracker '{args.slug}'")) if args.slug \
+        else resolve(args)
+    print(json.dumps(view_model(tr)))
+
+
+def cmd_refresh(args):
+    """A UI's Refresh: ask again for every open ticket's issue fields, and pull PR state unless a sync just ran. Only
+    the model can read an issue tracker (through its tool), so this records the request; the next prompt hook passes it
+    on."""
+    tr = resolve(args)
+    with locked():
+        state = tr.raw_state()
+        state.setdefault("issues", {})["requested"] = time.time()
+        tr.save_state(state)
+    print("\n".join(sync(tr, force=False, min_interval=REFRESH_SYNC_S)) or "no changes")
+
+
+def cmd_evidence(args):
+    """A UI's evidence link: the user's click opens the file, and only a kind of file that runs no code; any other kind
+    shows in its folder. The agent reads evidence itself, and has no reason to put a window on the user's screen."""
+    if agent_session()[0]:
+        die("only the user opens evidence this way: read the file instead", REFUSED)
+    tr = resolve(args)
+    folder = (tr.root / EVIDENCE_DIR).resolve()
+    path = folder.joinpath(*Path(args.file).parts).resolve()
+    if not path.is_relative_to(folder) or not path.is_file():
+        die(f"no file '{args.file}' in {folder}")
+    try:
+        open_with_system(path, reveal=path.suffix.lower() not in EVIDENCE_OPENS)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        die(f"could not open {path}: {exc}")
+    print(path)
 
 
 # ---------------------------------------------------------------- main
@@ -1147,6 +1178,7 @@ def build_parser():
 
     sp = add("list", cmd_list, "list all trackers, and how many are archived")
     sp.add_argument("--archived", action="store_true", help="list the archived trackers too")
+    sp.add_argument("--json", action="store_true", help="every tracker, archived too, as JSON for a UI")
     sp = add("init", cmd_init, "create a tracker")
     sp.add_argument("slug")
     sp.add_argument("--title", required=True)
@@ -1289,8 +1321,9 @@ def build_parser():
     sp = add("migrate", cmd_migrate, "bring a tracker made by an older version to the current rules "
                                      "(backs it up to $TRACKER_HOME/.backups first)")
     sp.add_argument("--dry-run", action="store_true", help="only list the changes")
-    add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open PRs' "
-                          "reviews, checks and merge state, from which each ticket's move is computed")
+    sp = add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open "
+                               "PRs' reviews, checks and merge state, from which each ticket's move is computed")
+    sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with --written that its issue now shows "
                                  "the tracker's changes; with no id, list the tickets whose fields are to read and, "
@@ -1343,7 +1376,7 @@ def build_parser():
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
-    sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the viewer. "
+    sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the UI. "
                                      "Refuses while another agent session or a watch is on it")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp = add("unarchive", cmd_unarchive, "bring an archived tracker back")
@@ -1352,14 +1385,15 @@ def build_parser():
                                    "Refuses while an agent session or a watch is on it, and in an agent session")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
-    sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when no "
-                                "page or tracked agent session needs it)")
+    sp = add("data", cmd_data, "a tracker's sequence as JSON, for a UI")
+    sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
+    sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open, else its own window")
     sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
                                              "archived one too)")
-    sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")
-    sp = sub.add_parser("serve")
-    sp.add_argument("--port", type=int, default=0)
-    sp.set_defaults(fn=cmd_serve)
+    add("refresh", cmd_refresh, "pull PR state now, and have the next session prompt read the issue fields again: a "
+                                "UI's Refresh")
+    sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link")
+    sp.add_argument("file", help="its path under evidence/")
     return p, sub
 
 
@@ -1495,7 +1529,7 @@ def main(argv=None):
     reclaim(args, argv, parser)
     no_id(args)
     stdin_text(args)
-    if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive")) and watching():
+    if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive", "refresh")) and watching():
         die("this session watches trackers for the user (/work-tracker:watch): it writes nothing to them, and works "
             "on no tracker", REFUSED)
     try:

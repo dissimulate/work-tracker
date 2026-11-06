@@ -143,7 +143,7 @@ def order_lines(tr: Tracker) -> list[str]:
 
 
 def dep_facts(tr: Tracker, rec: Record) -> list[tuple[str, list[Dep] | str]]:
-    """What a record waits on and what waits on it, as the text views (dep_lines) and the viewer both show it: a
+    """What a record waits on and what waits on it, as the text views (dep_lines) and a UI both show it: a
     ticket's dependencies and where it can start stacked, the tickets that wait on the record, and the records it
     touches (refs). Each as (label, the records it names, or a text)."""
     out: list[tuple[str, list[Dep] | str]] = []

@@ -14,8 +14,10 @@ PACKAGE = Path(__file__).resolve().parent
 # This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode
 PYTHON = [sys.executable, "-I", "-X", "utf8"]
 # The CLI on this Python, as bin/tracker starts it: Windows starts no shell script as a process
-CLI = [*PYTHON, "-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()",
-       str(PACKAGE.parent)]
+CLI_START = "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()"
+CLI = [*PYTHON, "-c", CLI_START, str(PACKAGE.parent)]
+# What the CLI and `gh` need of the environment. A UI's host can start programs with none (gpui-shell does).
+CLI_ENV = ("TRACKER_HOME", "HOME", "USERPROFILE", "SYSTEMROOT", "PATH", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_HOST")
 
 
 def env_int(names: str | tuple[str, ...], default: int, least: int = 0) -> int:
@@ -39,6 +41,28 @@ def spawn(*args: str) -> None:
               else {"start_new_session": True})
     subprocess.Popen([*CLI, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      **detach)
+
+
+def cli_for_ui() -> list[str]:
+    """How a UI starts the CLI: as CLI, with this environment as the default for what it finds unset. Never a secret:
+    CLI_ENV names none, and `gh` keeps its login in its own config."""
+    env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
+    start = f"import os; os.environ.update({{**{env!r}, **os.environ}}); {CLI_START}"
+    return [*PYTHON, "-c", start, str(PACKAGE.parent)]
+
+
+def open_with_system(path: Path, reveal: bool = False) -> None:
+    """Open a file in the app the system has for it, or with `reveal` show it in its folder. Raises OSError."""
+    if WINDOWS:
+        if reveal:
+            subprocess.Popen(["explorer", f"/select,{path}"])
+        else:
+            os.startfile(path)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.run(["open", *(["-R"] if reveal else []), str(path)], check=True, capture_output=True)
+    else:
+        subprocess.Popen(["xdg-open", str(path.parent if reveal else path)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
 
 
 def to_trash(path: Path) -> None:

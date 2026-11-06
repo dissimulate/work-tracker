@@ -164,7 +164,7 @@ def read_log(tr: Tracker, offset: int) -> tuple[list[str], int]:
 
 
 def agent_tickets(tr: Tracker, x: Live) -> list[str]:
-    """The tickets a session has under way, as the viewer shows them."""
+    """The tickets a session has under way, as a UI shows them."""
     m = match_cwd(x.cwd, x.sid, tr)
     return [t.id for t in m.active] if m else []
 
@@ -201,7 +201,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
                        f"{sum(needs_you(facts[t.id]) for t in flight)} your move, {len(live)} agent(s), "
                        f"{len(opened)} open decision(s)" + (f" ({', '.join(opened)})" if opened else ""))]
     if acts:
-        out.append(line(True, f"{len(acts)} open action(s) for you: {', '.join(acts)} (in the viewer, or `tracker "
+        out.append(line(True, f"{len(acts)} open action(s) for you: {', '.join(acts)} (in the UI, or `tracker "
                               f"actions`)"))
     for t in flight:
         agents = [x for x in live if t.id in on[x.sid]]
@@ -224,7 +224,7 @@ def load_state(slug: str) -> dict:
 
 
 def watcher_of(tr: Tracker) -> dict:
-    """Who watches the tracker, for the viewer: `who`, `running` (REARM_S), `since` and `ended`; {} when no watch
+    """Who watches the tracker, for a UI: `who`, `running` (REARM_S), `since` and `ended`; {} when no watch
     ran in a day."""
     st = load_state(tr.slug)
     if not st.get("who"):
@@ -316,7 +316,7 @@ class Watcher:
         return lines_of(events, now)
 
     def github(self, now: float) -> list[Event]:
-        """Sync PR state at most every LIVE_SYNC_S (a viewer's or a hook's sync counts), and say once when it fails, and
+        """Sync PR state at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and say once when it fails, and
         once when it works again. What it changes shows as the files change."""
         tr = self.tracker()
         if not tr.repos or now - self.synced < LIVE_SYNC_S:
@@ -464,7 +464,7 @@ def archive_tracker(tr: Tracker, own_sid: str = "") -> str:
         refuse_in_use(tr, "archive", own_sid)
         move_tracker(tr, ARCHIVE / tr.slug)
         forget(tr.slug)
-    return (f"archived {tr.slug}: the viewer still shows it, and `tracker unarchive {tr.slug}` brings it back")
+    return (f"archived {tr.slug}: `tracker open` still shows it, and `tracker unarchive {tr.slug}` brings it back")
 
 
 def unarchive_tracker(tr: Tracker) -> str:

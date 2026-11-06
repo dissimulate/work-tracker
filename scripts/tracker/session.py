@@ -16,7 +16,7 @@ from .model import (HOME, SAFE_NAME, STAGES, all_trackers, append_log, archived_
     commits_text, die, load_record, locked, put_entry, resolution, short, stage_of, state_key, tracker_at, whose_move,
     write_json, Record, Tracker)
 from .system import alive
-from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
+from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
 
 def named_in(branch: str, t: Record) -> bool:
@@ -677,7 +677,6 @@ def live_sessions(slug: str) -> list[Live]:
 def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
     """`live_sessions` of these trackers (None: of every tracker), by slug: one pass over the session files, however
     many trackers ask."""
-    worktree.cache_clear()  # the viewer runs for hours: read each worktree's branch again
     out: dict[str, dict[str, Live]] = {}
     native = set()
 

@@ -188,7 +188,7 @@ def idle_days(r: Record) -> int:
 
 
 def rules_lines(tr: Tracker | None) -> list[str]:
-    """The tracker's contract, from the constants that `check`, `set` and the viewer use."""
+    """The tracker's contract, from the constants that `check`, `set` and the UI use."""
     def keys(kind: str) -> list[str]:
         return [f"    {k}" + ("" if w == "set" else f" ({w})") + f": {meaning}"
                 for k, (w, meaning) in KEYS[kind].items()]

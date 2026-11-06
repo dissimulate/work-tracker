@@ -79,7 +79,7 @@ case $event in
     case $input in *git*commit*|*git*push*|*gh*pr*) ;; *) exit 0 ;; esac
     ;;
 esac
-# Only the hooks' modules load, not the CLI's or the viewer's; Python reuses their compiled bytecode.
+# Only the hooks' modules load, not the CLI's; Python reuses their compiled bytecode.
 . "${0%/*}/python.sh"
 printf '%s' "$input" | "$python" -I -X utf8 -c \
   'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.hooks import run_hook; run_hook(sys.argv[1])' \

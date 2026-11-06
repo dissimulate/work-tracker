@@ -11,7 +11,7 @@ labels: []
 
 <!-- The documents this work answers to, most authoritative first. One line each: `- Label: [title](url) — why it matters`.
      Labels: {{labels}}; add this tracker's own in frontmatter `labels`. Nested bullets add detail.
-     Shown at the top of the viewer and in every session on this work. -->
+     Shown at the top of the UI and in every session on this work. -->
 
 ## Goal
 

@@ -1,0 +1,22 @@
+{
+  "id": "local.work-tracker",
+  "name": "Work Tracker",
+  "version": "0.1.0",
+  "shell-version": "0.9.0",
+  "entry": "app.js",
+  "capabilities": {
+    "fs": {
+      "read": [
+        "${homeDir}/.claude/trackers"
+      ],
+      "execute": "*"
+    },
+    "storage": true,
+    "process": {
+      "env": [
+        "TRACKER_OPEN",
+        "TRACKER_CLI"
+      ]
+    }
+  }
+}

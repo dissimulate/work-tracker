@@ -6,7 +6,22 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Added
 
+- `tracker refresh`: pull PR state now, and have the next session prompt read the issue fields again.
+- `tracker sync --live`: sync only if no sync ran lately.
+- `tracker evidence <file>`: open a file of the tracker's evidence on your screen.
+- `tracker data <slug>` and `tracker list --json`: all the view shows, as JSON.
 - Issue updates: with `tracker set tracker issue_updates=on`, the agent writes a linked ticket's status, its summary once it closes, and each decision settled on it to the ticket's issue with its own tool for the issue tracker, then records it with `tracker issue <id> --written`. `tracker issue` lists what is due, and the agent is asked right after the change, in the brief, and at your next message when a new update is due. Off by default.
+
+### Changed
+
+- The live view is now native: a tab in Herdr, or its own window through `gpui-shell`. `tracker open` shows it. It needs Herdr or `gpui-shell` 0.9.0; without them `tracker open` says so, and `tracker index` and `tracker context <id>` still show the same facts.
+- A record opens beside the page, not inside its row.
+- Links in a record open only `http` and `https`: a `mailto:` link no longer opens.
+
+### Removed
+
+- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer that is already running stops by itself when no session needs it.
+- The sort in the address (`?sort=`): the view starts in dependency order.
 
 ## 0.31.1 - 2026-10-12
 

@@ -18,12 +18,12 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
-from .system import PACKAGE, WINDOWS, env_int
+from .system import PACKAGE, WINDOWS, cli_for_ui, env_int
 from .markdown import (BULLET, bullets, format_value, frontmatter_problems, link_ident, parse_links, parse_meta,
     render_frontmatter, section, section_span, split_frontmatter, strip_comments, Link)
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
-ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, viewer/
+ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
 BIN = ROOT / "bin" / "tracker"  # the CLI
 
 
@@ -72,7 +72,7 @@ def stage_of(kind: str, status) -> Stage:
 # it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
 # amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
 # A new scale is one SCALES entry: its ticket key, the CLI flags (`new`, `set`, `issue`), `check`, `tracker rules` and
-# the viewer's column follow from it.
+# the UI's column follow from it.
 
 @dataclass(frozen=True)
 class Scale:
@@ -235,7 +235,7 @@ STATE_RULES = {
     "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
            "tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
-              "viewer's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
+              "UI's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
               "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
               "ones to read for the model, which reads them with the issue tracker's tool. With README "
@@ -406,7 +406,7 @@ def show_value(key: str, value) -> str:
     return FORMS[value_form(key)].show(key, value) if value not in ("", None) else ""
 
 
-# A record's facts as its views show them, in this order, each by its form (show_value): the viewer's opened record all
+# A record's facts as its views show them, in this order, each by its form (show_value): the UI's opened record all
 # of them; `tracker context` and the brief, on one line, those in TEXT_FACTS (their first line holds the group and the
 # PR). A new key, a new scale's too, shows once it is here.
 FACTS = ("branch", "base", "repo", "group", "owner", *SCALES, "due", "created_at", "started_at", "merged_at",
@@ -502,14 +502,11 @@ STALE_DECISION_DAYS = 14
 STALE_ACTION_DAYS = 7
 STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
-# While a page or a watch shows the work live, it syncs this often. TRACKER_VIEWER_SYNC and TRACKER_WATCH_SYNC are the
+# While a UI or a watch shows the work live, it syncs this often. TRACKER_VIEWER_SYNC and TRACKER_WATCH_SYNC are the
 # names 0.30 gave it, one each: read until a release drops them.
 LIVE_SYNC_S = env_int(("TRACKER_SYNC", "TRACKER_VIEWER_SYNC", "TRACKER_WATCH_SYNC"), 120, least=30)
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
-# The viewer's one port, so a bookmark or a page left open works again once a viewer runs. 0: a free port each start,
-# and the hooks start no viewer. VIEWER_FILE names the running viewer's port, pid and plugin version.
-VIEWER_PORT = env_int("TRACKER_VIEWER_PORT", 7316)
-VIEWER_FILE = HOME / ".viewer.json"
+CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
 MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
 
 
@@ -548,7 +545,7 @@ def fit(kind: str, text: str | None) -> None:
 
 
 # ---------------------------------------------------------------- template contract
-# Every tracker has the same shape, and `check` enforces it, so the viewer and the AI find the same things in the
+# Every tracker has the same shape, and `check` enforces it, so the UI and the AI find the same things in the
 # same place. The templates/ folder shows each file's shape.
 
 README_SECTIONS = ["Context", "Goal", "Scope"]  # required, first, in this order; any sections may follow
@@ -875,6 +872,13 @@ def write_json(path: Path, data: dict, indent: int = 1) -> None:
     atomic_write(path, json.dumps(data, indent=indent) + "\n")
 
 
+def record_cli() -> None:
+    """Say how to start this CLI, for a UI outside any session: the plugin's path changes with each version. Only when
+    that changes: a UI watches this folder, and each session has its own PATH."""
+    if read_json(CLI_FILE).get("package") != str(PACKAGE):
+        write_json(CLI_FILE, {"package": str(PACKAGE), "argv": cli_for_ui()})
+
+
 def create(path: Path, text: str) -> None:
     """Write a new file; refuse one that exists, even one another session made a moment ago."""
     global _writes
@@ -1144,7 +1148,7 @@ class Tracker:
 
     def gate(self, r: Record) -> Gate:
         """What stands before a record: a ticket's open blockers, or that it is ready; the tickets an open decision or
-        action blocks. The text views and the viewer show it the same."""
+        action blocks. The text views and the UI show it the same."""
         if r.kind != "ticket":
             later = tuple(t.id for t in self.waiting_on(r.id))
             return Gate("blocks", later) if later and not r.closed else Gate()
@@ -1232,7 +1236,7 @@ class Tracker:
         return {k: v for k, v in out.items() if v != {}}
 
     def issue_reads(self) -> tuple[dict[str, float], float]:
-        """When `tracker issue` last read each ticket's issue fields, and when the viewer's Refresh asked for them
+        """When `tracker issue` last read each ticket's issue fields, and when a UI's Refresh asked for them
         again (STATE_RULES["issues"])."""
         issues = self.raw_state().get("issues", {})
         return issues.get("read", {}), issues.get("requested", 0)
@@ -1305,7 +1309,7 @@ class Tracker:
         write_json(self.root / ".state.json", state, indent=2)
 
     def data_files(self) -> list[Path]:
-        """Every file that holds the tracker's facts: a change to one is a change the viewer and the watcher show."""
+        """Every file that holds the tracker's facts: a change to one is a change a UI and the watcher show."""
         return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
                 *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
 
@@ -1349,7 +1353,7 @@ def tracker_at(slug: str, home: Path = HOME) -> Tracker | None:
 
 
 # An archived tracker is a folder in ARCHIVE. Every list, lookup, hook and sync reads HOME alone, so it costs nothing
-# there; the viewer still shows it, and `tracker unarchive` brings it back. A slug names one tracker, archived or not.
+# there; a UI still shows it, and `tracker unarchive` brings it back. A slug names one tracker, archived or not.
 ARCHIVE = HOME / ".archive"
 
 

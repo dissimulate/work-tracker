@@ -5,23 +5,17 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import html
-import http.client
 import io
 import json
 import os
 import re
 import shutil
-import socket
 import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from unittest import mock
 from pathlib import Path
 
@@ -29,14 +23,14 @@ ROOT = Path(__file__).resolve().parent.parent
 BASE = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, BASE, True)
 os.environ["TRACKER_HOME"] = f"{BASE}/home"  # before the import: HOME is read once
-os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude sessions the viewer reads: not the user's
-os.environ["TRACKER_VIEWER_PORT"] = "0"  # a free port, and no viewer started by a tracked session's hooks
+os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude sessions the view reads: not the user's
 # An agent session running the tests must not leak in: its tracker, its id, or that it is one.
 for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
             "CODEX_THREAD_ID", "PLUGIN_ROOT"):
     os.environ.pop(var, None)
 sys.path.insert(0, str(ROOT / "scripts"))
-from tracker import cli, git, github, hooks, markdown, model, session, system, viewer, views, watcher  # noqa: E402
+from tracker import (cli, git, github, hooks, markdown, model, session, system, ui, viewmodel, views,  # noqa: E402
+                     watcher)
 
 
 def slug() -> str:
@@ -46,7 +40,8 @@ def slug() -> str:
 def repo(branch: str) -> Path:
     """A new git repo on `branch` with one commit."""
     path = Path(tempfile.mkdtemp(dir=BASE))
-    for args in (["init", "-q", "-b", branch], ["config", "user.email", "me@x"], ["config", "user.name", "me"]):
+    for args in (["init", "-q", "-b", branch], ["config", "user.email", "me@x"], ["config", "user.name", "me"],
+                 ["config", "commit.gpgsign", "false"]):
         subprocess.run(["git", "-C", str(path), *args], check=True)
     commit(path, "start")
     return path
@@ -75,15 +70,9 @@ def run(*args: str, cwd: Path | None = None, code: int = 0) -> str:
     return out.getvalue()
 
 
-SEQ_HEAD = [("step", "Step"), ("ticket", "Ticket"), ("status", "Status"), ("group", "Group"),
-            ("priority", "Priority"), ("size", "Size"), ("waits", "← Waits on"),
-            ("unblocks", "→ Unblocks")]  # the viewer's sequence heading buttons, as (sort key, label)
-
-
-def seq_head(page: str) -> list[tuple[str, str]]:
-    """The heading buttons of the viewer's sequence, as (sort key, label)."""
-    head = re.search(r"<div class=seq-head>(.*?)</div>", page).group(1)
-    return re.findall(r'<button type=button data-sort="(\w+)" data-said="[^"]+">([^<]+)</button>', head)
+def data(s: str) -> dict:
+    """What a UI reads of a tracker, archived or not."""
+    return json.loads(run("data", s))
 
 
 def piped(text: str):
@@ -126,28 +115,8 @@ class Format(unittest.TestCase):
                 meta, problems = markdown.parse_meta([line])
                 self.assertEqual((meta["k"], problems), (value, []))
 
-    def test_links_are_safe(self):
-        html = viewer.md_inline('[a](javascript:alert(1)) [b](https://x.y/?q="1") <script> [c](evidence/r.txt)')
-        self.assertNotIn("<script>", html)
-        self.assertNotIn('href="javascript', html)
-        self.assertIn('href="https://x.y/?q=&quot;1&quot;"', html)
-        self.assertIn('href="evidence/r.txt"', html)
-        # A bare URL inside a link's URL is not linked again: its quotes would end the href.
-        html = viewer.md_inline("[t](https://a.b/-http://x/onmouseover=alert//) https://c.d")
-        self.assertEqual(html.count('"'), 4)
-        self.assertIn('<a href="https://c.d">https://c.d</a>', html)
-
-    def test_html_escapes_text_and_keeps_markup(self):
-        H = viewer.Html
-        self.assertEqual(H("<b>{}</b>").format('<i>"&'), "<b>&lt;i&gt;&quot;&amp;</b>")
-        self.assertEqual(H("<b>{}</b>").format(H("<i>")), "<b><i></b>")
-        self.assertEqual(H(", ").join([H("<i>"), "<"]), "<i>, &lt;")
-        self.assertEqual((H("<i>") + "<", "<" + H("<i>")), ("<i>&lt;", "&lt;<i>"))
-        self.assertIsInstance(H("<i>").format() + "x" + H(""), H)
-        self.assertEqual(viewer.attributes({"title": 'a"b', "open": True, "hidden": False, "x": None}),
-                         ' title="a&quot;b" open')
-
-    def test_the_page_escapes_every_field_once(self):
+    def test_the_data_keeps_text_as_it_is(self):
+        """A UI draws text as text: no field of `tracker data` is markup, and none is escaped."""
         s = slug()
         t = ("--tracker", s)
         bad = '<b x="1">&amp;'
@@ -156,12 +125,15 @@ class Format(unittest.TestCase):
         run(*t, "new", "T-2", "--title", "Two", "--depends", "T-1")
         run(*t, "set", "T-1", f"next=Do {bad}", "status=in-progress")
         run(*t, "add", "T-1", "link", f"Issue: [SC-1 {bad}](https://issues.example/1)")
-        model.Tracker(model.HOME / s).lookup("T-1").save({"priority": bad})  # check refuses it; the page shows it
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertNotIn("<b x=", page)
-        self.assertGreaterEqual(page.count("&lt;b x=&quot;1&quot;&gt;&amp;amp;"), 4)  # title, group, priority, next
-        for markup in ("&lt;span", "&lt;a ", "&lt;/", "&lt;details", "&lt;p", "&lt;div", "&amp;lt;", "&amp;quot;"):
-            self.assertNotIn(markup, page.replace("&lt;b x=&quot;1&quot;&gt;&amp;amp;", ""))
+        model.Tracker(model.HOME / s).lookup("T-1").save({"priority": bad})  # check refuses it; the UI shows it
+        got = data(s)
+        row = next(x for x in got["tickets"] if x["id"] == "T-1")
+        self.assertEqual((got["title"], row["title"], row["group"], row["levels"]["priority"]),
+                         (f"Work {bad}", f"One {bad}", f"g{bad}", bad))
+        self.assertEqual(got["records"]["T-1"]["line"], {"label": "next", "text": f"Do {bad}"})
+        self.assertIn(bad, got["records"]["T-1"]["links"][0]["text"])
+        self.assertTrue(got["check"]["errors"])
+
 
     def test_log_forms_read_back_what_they_write(self):
         fields = {"id": "D-07", "title": "Auth scheme", "who": " (me)", "answer": "JWT", "branch": "feat/x",
@@ -194,20 +166,23 @@ class Format(unittest.TestCase):
             github.budget(None)
         run_gh.assert_not_called()
 
-    def test_viewer_sync_waits_after_a_failure(self):
+    def test_a_uis_sync_asks_github_only_when_no_sync_ran_lately(self):
         s = slug()
+        t = ("--tracker", s)
         run("init", s, "--title", "Offline", "--owner", "me", "--repo", "a/x")
-        run("--tracker", s, "new", "S-1", "--title", "Started", "--branch", "f1")
-        run("--tracker", s, "set", "S-1", "status=in-progress")
-        calls, failed = [], {}
-        with mock.patch.object(github, "gh", lambda *args, **kw: calls.append(args)):  # None: gh failed
-            for _ in range(3):  # the syncer's rounds, 10 s apart
-                viewer.sync_viewed({s: time.monotonic()}, failed)
+        run(*t, "new", "S-1", "--title", "Started", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        calls = []
+        with mock.patch.object(github, "gh_prs", lambda *args: calls.append(args) or {"a/x": []}):
+            for _ in range(3):  # the UI's rounds
+                run(*t, "sync", "--live")
             self.assertEqual(len(calls), 1)
-            failed[s] -= model.LIVE_SYNC_S  # LIVE_SYNC_S later: gh is asked again
-            viewer.sync_viewed({s: time.monotonic()}, failed)
+            run(*t, "sync")  # the user's or the agent's: always
             self.assertEqual(len(calls), 2)
-
+        with mock.patch.object(github, "gh", lambda *args, **kw: None):  # gh failed: nothing is written
+            tr = model.Tracker(model.HOME / s)
+            tr.save_state({**tr.raw_state(), "last_sync": 0})
+            self.assertIn("sync skipped", run(*t, "sync", "--live"))
 
 def ticket(root: Path, ident: str, **meta) -> None:
     meta = {"id": ident, "title": ident, "status": "todo", **meta}
@@ -369,9 +344,9 @@ class Moves(unittest.TestCase):
             index = run(*t, "index")
             self.assertIn("  you: draft — S-2\n  rev: review requested — S-1", index)
             self.assertIn("move: rev — review requested", run(*t, "context", "S-1"))
-            page = viewer.main_html(tr)
-            self.assertIn('<span class="chip move s-you">you: draft</span>', page)
-            self.assertIn("Current · 2 · 1 your move", page)
+            now = viewmodel.now_view(tr)
+            self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True})
+            self.assertEqual((now["busy"], now["yours"]), (2, 1))
 
             seen = session.watch(tr, [tr.lookup("S-1")])
             prs[0] = pull(11, branch="f1", decision="APPROVED", reviews=[
@@ -451,8 +426,8 @@ class Starts(unittest.TestCase):
         self.assertIn("[waits on R-1] ", index)
         self.assertIn("start: stack on fa (A-1 in-progress; you: no PR yet)", run("--tracker", s, "context", "S-1"))
         self.assertIn("blocked by: A-1, D-01", run("--tracker", s, "context", "W-2"))
-        self.assertIn("<dt>start</dt><dd>stack on fa (A-1 in-progress; you: no PR yet)</dd>",
-                      viewer.main_html(model.Tracker(root)))  # the opened ticket on the page
+        self.assertIn({"label": "start", "text": "stack on fa (A-1 in-progress; you: no PR yet)"},
+                      data(s)["records"]["S-1"]["deps"])  # the opened ticket in a UI
 
     def test_start_checks_the_branch(self):
         s, work = slug(), repo("main")
@@ -477,7 +452,7 @@ class Starts(unittest.TestCase):
 
 
 class LiveSessions(unittest.TestCase):
-    """The viewer shows the Claude sessions that run on this machine and that `tracker start` tied to the tracker."""
+    """A UI shows the Claude sessions that run on this machine and that `tracker start` tied to the tracker."""
 
     def test_live_sessions(self):
         s, n = slug(), time.monotonic_ns()
@@ -510,20 +485,16 @@ class LiveSessions(unittest.TestCase):
         tr = model.Tracker(model.HOME / s)
         self.assertEqual([x.name for x in session.live_sessions(s)], ["agent-a", "agent-b"])
 
-        page = viewer.main_html(tr)
-        self.assertRegex(page, r'data-id="_now-L-1"[^>]*><summary><span class="agent busy" role="img" '
-                               r'aria-label="agent working" title="agent-a: working since Tue 09:05"></span>')
-        self.assertRegex(page, rf'data-id="_now-agent-agent-b{n}"><summary><span class="agent" role="img" '
-                               r'aria-label="agent idle" title="agent-b: idle since Tue 09:05"></span><b>agent-b</b>'
-                               r'<span class=meta>main</span>'
-                               r'<span class=nx>on <a class=id href="#L-2">L-2</a> todo</span>')
-        self.assertIn(" · 2 agents</h2>", page)
-        self.assertIn(f"<p class=meta>session agent-a: working since Tue 09:05, in {work}</p>", page)
-        self.assertNotRegex(page, "agent-[cde]")
-
-        before = viewer.version(tr).split(".")[0]
-        running("agent-a", os.getpid(), "idle")  # the page swaps its content when a session's status changes
-        self.assertNotEqual(viewer.version(tr).split(".")[0], before)
+        now = viewmodel.now_view(tr)
+        self.assertEqual(now["items"][0]["agents"],
+                         [{"name": "agent-a", "busy": True, "word": "working since Tue 09:05", "cwd": str(work)}])
+        spare_item = now["items"][-1]
+        self.assertEqual((spare_item["key"], spare_item["kind"], spare_item["title"], spare_item["meta"]),
+                         (f"agent-agent-b{n}", "agent", "agent-b", "main"))
+        self.assertEqual(spare_item["on"], [{"id": "L-2", "stage": "todo"}])
+        self.assertEqual(spare_item["agents"][0]["word"], "idle since Tue 09:05")
+        self.assertEqual(now["agents"], 2)
+        self.assertNotRegex(json.dumps(now), "agent-[cde]")
 
 
 class Flow(unittest.TestCase):
@@ -578,10 +549,7 @@ class Flow(unittest.TestCase):
         self.assertIn("[T-2] Commits on feat/T-2-api:", log)
         t2 = model.Tracker(model.HOME / s).lookup("T-2")
         self.assertEqual((t2.get("next"), t2.carry_forward), ("Auth middleware", ["GET /users is public"]))
-        tr = model.Tracker(model.HOME / s)  # the viewer's page, rendered without its server
-        page = viewer.page_html(tr.title, viewer.main_html(tr), s, viewer.version(tr))
-        self.assertIn('data-id="T-2"', page)
-        self.assertFalse(viewer.code_ready())  # the code on disk is the code running: no restart
+        self.assertEqual(data(s)["records"]["T-2"]["line"], {"label": "next", "text": "Auth middleware"})
         self.assertIn("Decided D-01 Auth scheme (me): JWT", log)
 
 
@@ -1177,7 +1145,7 @@ class Hooks(unittest.TestCase):
         (work / "json.py").write_text(f"open({str(ran)!r}, 'w').close()\n")
         data = json.dumps({"session_id": f"sid{time.monotonic_ns()}", "cwd": str(work)})
         runs = [([str(ROOT / "scripts/hook.sh"), "session-start"], data), ([str(ROOT / "bin/tracker"), "rules"], ""),
-                ([*system.CLI, "rules"], "")]  # the viewer and spawn() start the CLI so
+                ([*system.CLI, "rules"], "")]  # spawn() and a UI start the CLI so
         for cmd, stdin in runs:
             subprocess.run(cmd, input=stdin, cwd=work, capture_output=True, text=True)
             self.assertFalse(ran.exists(), cmd[0])
@@ -1314,8 +1282,7 @@ class BriefSize(unittest.TestCase):
 
 
 class SequenceSort(unittest.TestCase):
-    """The viewer's sequence sorts by any column in the page (viewer/app.js); the server gives each row the values it
-    sorts on and each column a sort button."""
+    """A UI's sequence sorts by any column (ui/model.js); `tracker data` gives each row the values it sorts on."""
 
     def test_rows_carry_their_sort_values(self):
         s = slug()
@@ -1327,35 +1294,25 @@ class SequenceSort(unittest.TestCase):
         run(*t, "new", "T-4", "--title", "Gone", "--group", "api")
         run(*t, "set", "T-4", "status=dropped", "summary=not needed")
         run(*t, "new", "T-5", "--title", "Uses that", "--depends", "T-3")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
+        rows = {x["id"]: x for x in data(s)["tickets"]}
 
-        self.assertEqual(seq_head(page), SEQ_HEAD)
-
-        def row(ident: str) -> dict[str, str]:
-            attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
-            return dict(re.findall(r'data-sort-(\w+)="([^"]*)"', attrs))
-
-        # step: the depth-first dependency order the page starts in, a chain together and dropped last; status: its
+        # step: the depth-first dependency order the sequence starts in, a chain together and dropped last; status: its
         # place in todo → dropped.
         keys = ("step", "ticket", "group", "status", "waits", "unblocks")
-        self.assertEqual([row("T-2")[k] for k in keys], ["0", "T-2", "api", "0", "0", "1"])
-        self.assertEqual([row("T-3")[k] for k in keys], ["1", "T-3", "", "0", "1", "1"])
-        self.assertEqual([row("T-5")[k] for k in keys], ["2", "T-5", "", "0", "1", "0"])
-        self.assertEqual([row("T-10")[k] for k in keys], ["3", "T-10", "ui", "0", "0", "0"])
-        self.assertEqual([row("T-4")[k] for k in keys], ["4", "T-4", "api", "5", "0", "0"])
-        self.assertEqual(len(row("T-2")), len(SEQ_HEAD))  # a value per heading button
+        self.assertEqual([rows["T-2"]["sort"][k] for k in keys], [0, "T-2", "api", 0, 0, 1])
+        self.assertEqual([rows["T-3"]["sort"][k] for k in keys], [1, "T-3", "", 0, 1, 1])
+        self.assertEqual([rows["T-5"]["sort"][k] for k in keys], [2, "T-5", "", 0, 1, 0])
+        self.assertEqual([rows["T-10"]["sort"][k] for k in keys], [3, "T-10", "ui", 0, 0, 0])
+        self.assertEqual([rows["T-4"]["sort"][k] for k in keys], [4, "T-4", "api", 5, 0, 0])
+        self.assertEqual(set(rows["T-2"]["sort"]), {*keys, *model.SCALES})
 
-        # One Deps column: a line ← what the ticket waits on, a line → what it unblocks; the title names both lists.
-        def deps(ident: str) -> str:
-            return re.search(rf'<details data-id="{ident}".*?(<span class="deps lines hide-narrow" .*?)</summary>',
-                             page).group(1)
-        self.assertIn('title="waits on: T-2; unblocks: T-5"><span><span class=meta>←</span> ', deps("T-3"))
-        self.assertIn('</span><span><span class=meta>→</span> <a class=id href="#T-5">T-5</a></span>', deps("T-3"))
-        self.assertIn('title="unblocks: T-3"><span><span class=meta>→</span> <a class=id href="#T-3">', deps("T-2"))
+        # What the ticket waits on, and what it unblocks.
+        self.assertEqual(([d["id"] for d in rows["T-3"]["waits"]], rows["T-3"]["unblocks"]), (["T-2"], ["T-5"]))
+        self.assertEqual((rows["T-2"]["waits"], rows["T-2"]["unblocks"]), ([], ["T-3"]))
 
     def test_rows_carry_the_graph(self):
-        """viewer/app.js draws the dependency graph from each row's data: its step (its dot's column), its links and
-        its state (its dot's colour, and its id's, by its status class)."""
+        """ui/model.js draws the dependency graph from each row's data: its step (its dot's column), its links and its
+        state (its dot's colour)."""
         s = slug()
         t = ("--tracker", s)
         run("init", s, "--title", "Work", "--owner", "me")
@@ -1364,42 +1321,33 @@ class SequenceSort(unittest.TestCase):
         run(*t, "new", "T-3", "--title", "Also uses base", "--depends", "T-1")
         run(*t, "new", "T-4", "--title", "Joins both", "--depends", "T-3,T-2")
         run(*t, "new", "T-5", "--title", "Alone")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
 
-        def row(ident: str) -> dict[str, str]:
-            attrs = re.search(rf'<details data-id="{ident}"([^>]*)>', page).group(1)
-            return dict(re.findall(r'(class|data-step|data-links|data-dot)="([^"]*)"', attrs))
-        self.assertEqual(row("T-1"), {"class": "t s-ready", "data-step": "1", "data-dot": "ready"})
-        self.assertEqual(row("T-5"), {"class": "t s-ready", "data-step": "1", "data-dot": "ready"})
-        for ident in ("T-2", "T-3"):
-            self.assertEqual(row(ident),
-                             {"class": "t s-blocked", "data-step": "2", "data-links": "T-1", "data-dot": "blocked"})
-        self.assertEqual(row("T-4"),
-                         {"class": "t s-blocked", "data-step": "3", "data-links": "T-3 T-2", "data-dot": "blocked"})
-        self.assertRegex(page, r'<details data-id="T-4"[^>]*><summary><span class="graph" title="step 3"></span>')
+        def rows() -> dict[str, tuple]:
+            return {x["id"]: (x["step"], x["links"], x["state"]) for x in data(s)["tickets"]}
+        self.assertEqual(rows(), {"T-1": (1, [], "ready"), "T-5": (1, [], "ready"),
+                                  "T-2": (2, ["T-1"], "blocked"), "T-3": (2, ["T-1"], "blocked"),
+                                  "T-4": (3, ["T-3", "T-2"], "blocked")})
         run(*t, "set", "T-1", "status=done")
         run(*t, "set", "T-2", "status=in-progress")
         run(*t, "set", "T-5", "status=dropped")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        dots = dict(re.findall(r'<details data-id="(T-\d)"[^>]* data-dot="(\w+)"', page))
-        self.assertEqual(dots, {"T-1": "closed", "T-2": "going", "T-3": "ready", "T-4": "blocked", "T-5": "dropped"})
-        self.assertEqual(row("T-1")["class"], "t closed s-closed")
+        self.assertEqual({i: x[2] for i, x in rows().items()},
+                         {"T-1": "closed", "T-2": "going", "T-3": "ready", "T-4": "blocked", "T-5": "dropped"})
 
     def test_the_graph_draws_only_the_links_no_chain_implies(self):
         edges = {"A": [], "B": ["A"], "C": ["B", "A"], "D": ["C", "A", "B"], "E": ["E2"], "E2": ["E"]}  # E: a cycle
-        self.assertEqual(viewer.drawn_links(edges),
+        self.assertEqual(viewmodel.drawn_links(edges),
                          {"A": [], "B": ["A"], "C": ["B"], "D": ["C"], "E": ["E2"], "E2": ["E"]})
 
     def test_an_unknown_status_still_renders(self):
-        """A hand-edited status outside STAGES sorts after them, and the page shows the check's error."""
+        """A hand-edited status outside STAGES sorts after them, and a UI shows the check's error."""
         s = slug()
         run("init", s, "--title", "Work", "--owner", "me")
         run("--tracker", s, "new", "T-1", "--title", "Odd")
         path = model.HOME / s / "tickets" / "T-1.md"
         path.write_text(re.sub(r"^status: .*", "status: wip", path.read_text(), flags=re.M))
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertRegex(page, rf'<details data-id="T-1"[^>]* data-sort-status="{len(model.STAGES)}"')
-        self.assertIn("T-1: status &#x27;wip&#x27; not one of", page)
+        got = data(s)
+        self.assertEqual(got["tickets"][0]["sort"]["status"], len(model.STAGES))
+        self.assertTrue(any(x.startswith("T-1: status 'wip' not one of") for x in got["check"]["errors"]))
 
 
 class IssueFields(unittest.TestCase):
@@ -1447,7 +1395,7 @@ class IssueFields(unittest.TestCase):
         self.read_at(s, "T-1", time.time() - 30 * 86400)  # read once is enough: no read again by age
         self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
 
-        viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh asks again for every open one
+        run(*t, "refresh")  # a UI's Refresh asks again for every open one
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])
 
         run(*t, "issue", "T-1", "--priority", "")
@@ -1504,7 +1452,7 @@ class IssueFields(unittest.TestCase):
         self.assertNotIn("Issue fields to read", said(hook("session-start", sid, work, source="startup")))
         self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="go")))
 
-        viewer.request_refresh(model.Tracker(model.HOME / s))  # the viewer's Refresh, which cannot read issues itself
+        run(*t, "refresh")  # a UI's Refresh, which cannot read issues itself
         self.assertIn("Issue fields to read for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
         self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="again")))  # once per request
 
@@ -1667,119 +1615,150 @@ class IssueFields(unittest.TestCase):
         self.write(t, "T-1", "T-3")
         self.assertNotIn("Issue updates", said(hook("session-start", sid, work, source="startup")))
 
-    def test_the_viewer_shows_priority_and_what_a_refresh_waits_on(self):
+    def test_a_ui_shows_priority_and_what_a_refresh_waits_on(self):
         s, t = self.tracker()
         run(*t, "new", "T-4", "--title", "Least", "--priority", "4")
         run(*t, "issue", "T-1", "--priority", "1")
         run(*t, "issue", "T-3")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertEqual(seq_head(page), SEQ_HEAD)
 
-        def p(ident: str) -> str:
-            return re.search(rf'<details data-id="{ident}"[^>]* data-sort-priority="([^"]*)"', page).group(1)
-        self.assertEqual((p("T-1"), p("T-2"), p("T-4")), ("1", "", "4"))
-        self.assertRegex(page, r'data-id="T-1".*?<summary>.*?<span class="hide-narrow">P1</span>')
+        def row(ident: str) -> dict:
+            return next(x for x in data(s)["tickets"] if x["id"] == ident)
+        self.assertEqual([row(i)["sort"]["priority"] for i in ("T-1", "T-2", "T-4")], [1, None, 4])
+        self.assertEqual(row("T-1")["levels"]["priority"], "P1")
         run(*t, "set", "T-4", "size=5")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertRegex(page, r'<details data-id="T-4"[^>]* data-sort-size="5"')
-        self.assertRegex(page, r'data-id="T-4".*?<summary>.*?<span class="hide-narrow">XL</span>')
+        self.assertEqual((row("T-4")["sort"]["size"], row("T-4")["levels"]["size"]), (5, "XL"))
 
-        self.assertRegex(page, r"<span hidden id=issue-state>issues read \d\d:\d\d</span>")
-        viewer.request_refresh(model.Tracker(model.HOME / s))
-        self.assertIn("<span hidden id=issue-state>issues: asked; no session on this tracker to read them</span>",
-                      viewer.main_html(model.Tracker(model.HOME / s)))
+        self.assertRegex(data(s)["issues"], r"^issues read \d\d:\d\d$")
+        run(*t, "refresh")
+        self.assertEqual(data(s)["issues"], "issues: asked; no session on this tracker to read them")
         sid = f"live{time.monotonic_ns()}"  # a Claude session on this machine, tied to the tracker by `tracker start`
         session.CLAUDE_SESSIONS.mkdir(parents=True, exist_ok=True)
         (session.CLAUDE_SESSIONS / f"{sid}.json").write_text(json.dumps(
             {"pid": os.getpid(), "sessionId": sid, "cwd": "/", "name": "live", "status": "idle",
              "statusUpdatedAt": time.time() * 1000}))
         session.save_session(sid, tracker=s, cwd=BASE)
-        self.assertIn("<span hidden id=issue-state>issues: asked; waiting for a session to read them</span>",
-                      viewer.main_html(model.Tracker(model.HOME / s)))
+        self.assertEqual(data(s)["issues"], "issues: asked; waiting for a session to read them")
         unlinked = slug()
         run("init", unlinked, "--title", "Plain", "--owner", "me")
-        self.assertNotIn("issue-state", viewer.main_html(model.Tracker(model.HOME / unlinked)))
+        self.assertEqual(data(unlinked)["issues"], "")
 
-    def test_the_server_guards_every_request(self):
-        s, _ = self.tracker()
-        threading.Thread(target=viewer.serve, daemon=True).start()
-        for _ in range(100):
-            if viewer.VIEWER_FILE.exists():
-                break
-            time.sleep(0.05)
-        port = json.loads(viewer.VIEWER_FILE.read_text())["port"]
-        base = f"http://127.0.0.1:{port}/t/{s}"
-
-        def post(headers: dict) -> int:
-            req = urllib.request.Request(f"{base}/refresh", data=b"", method="POST", headers=headers)
-            try:
-                return urllib.request.urlopen(req).status
-            except urllib.error.HTTPError as err:
-                return err.code
-
-        page = urllib.request.urlopen(f"{base}/").read().decode()
-        token = re.search(r'data-token="([^"]+)"', page).group(1)
-        self.assertEqual(post({}), 403)
-        self.assertEqual(post({"X-Tracker-Token": "wrong"}), 403)
-        self.assertEqual(post({"X-Tracker-Token": token, "Sec-Fetch-Site": "cross-site"}), 403)
-        self.assertIsNone(model.Tracker(model.HOME / s).raw_state().get("issues", {}).get("requested"))
-        self.assertEqual(post({"X-Tracker-Token": token, "Sec-Fetch-Site": "same-origin"}), 204)
-        self.assertGreater(model.Tracker(model.HOME / s).raw_state()["issues"]["requested"], time.time() - 60)
-
-        # Every response is uncached; a GET has the same guard as a POST; a file from evidence/ runs no script.
-        def get(path: str, headers: dict | None = None) -> tuple[int, dict[str, str], bytes]:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            try:
-                conn.request("GET", path, headers=headers or {})
-                r = conn.getresponse()
-                return r.status, dict(r.getheaders()), r.read()
-            finally:
-                conn.close()
-
-        (model.HOME / s / "evidence").mkdir(exist_ok=True)
-        (model.HOME / s / "evidence" / "r.txt").write_text("hi")
-        code, headers, body = get(f"/t/{s}/evidence/r.txt")
-        self.assertEqual((code, body, headers["Content-Security-Policy"], headers["Cache-Control"]),
-                         (200, b"hi", "sandbox", "no-store"))
-        code, headers, _ = get(f"/t/{s}")
-        self.assertEqual((code, headers["Location"], headers["Content-Length"]), (301, f"/t/{s}/", "0"))
-        self.assertEqual(get(f"/t/{s}/", {"Host": f"evil.example:{port}"})[0], 403)
-        self.assertEqual(get(f"/t/{s}/", {"Host": f"localhost:{port}"})[0], 200)
-        self.assertEqual(get(f"/t/{s}/", {"Sec-Fetch-Site": "cross-site"})[0], 403)
-        self.assertEqual(get("/t/no-such-tracker/")[0], 404)
-        code, headers, _ = get(f"/t/{s}/")
-        self.assertEqual((code, headers["Cache-Control"]), (200, "no-store"))
-        self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
-
-    def test_a_tracked_session_starts_the_viewer_when_none_runs(self):
-        with mock.patch.object(hooks, "spawn") as spawn:
-            hooks.keep_viewer()  # TRACKER_VIEWER_PORT=0: the hooks start none
-            self.assertFalse(spawn.called)
-            with mock.patch.object(hooks, "VIEWER_PORT", 7316):
-                with mock.patch.object(hooks, "VIEWER_FILE", Path(BASE) / "no-viewer.json"):
-                    hooks.keep_viewer()
-                spawn.assert_called_once_with("serve", "--port", "7316")
-                spawn.reset_mock()
-                with socket.create_server(("127.0.0.1", 0)) as running:
-                    file = Path(BASE) / "viewer.json"
-                    info = {"port": running.getsockname()[1], "pid": os.getpid(), "version": model.plugin_version()}
-                    file.write_text(json.dumps(info))
-                    with mock.patch.object(hooks, "VIEWER_FILE", file):
-                        hooks.keep_viewer()
-                        self.assertFalse(spawn.called)
-                        # A viewer of an older release (0.30 named none) serves its old code: a new one replaces it.
-                        for old in ([0], None):
-                            file.write_text(json.dumps({**info, "version": old}))
-                            hooks.keep_viewer()
-                            spawn.assert_called_once_with("serve", "--port", "7316")
-                            spawn.reset_mock()
-        # A hook loads no module only a rare command or the viewer needs, and keep_viewer none of the viewer's
+    def test_a_tracked_session_records_how_a_ui_starts_the_cli(self):
+        file = Path(BASE) / f"cli{time.monotonic_ns()}.json"
+        with mock.patch.object(model, "CLI_FILE", file), \
+                mock.patch.dict(os.environ, {"GH_TOKEN": "secret", "PATH": "/my/bin", "HOME": "/me"}):
+            hooks.record_cli()
+            saved = json.loads(file.read_text())
+            self.assertEqual(saved["package"], str(system.PACKAGE))
+            self.assertNotIn("secret", file.read_text())
+            self.assertIn("/my/bin", saved["argv"][-2])
+            before = file.stat().st_mtime_ns
+            with mock.patch.dict(os.environ, {"PATH": "/another/session"}):
+                hooks.record_cli()  # a UI watches this folder: a session's own PATH changes nothing
+            self.assertEqual(file.stat().st_mtime_ns, before)
+        # A host can start programs with no environment: the CLI still has its home, and what `gh` needs.
+        code = saved["argv"][-2].replace("from tracker.cli import main; main()",
+                                         "import os; print(os.environ['HOME'], os.environ['PATH'])")
+        out = subprocess.run([saved["argv"][0], *saved["argv"][1:-2], code, saved["argv"][-1]], env={},
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out.split(), ["/me", "/my/bin"])
+        out = subprocess.run([saved["argv"][0], *saved["argv"][1:-2], code, saved["argv"][-1]], env={"HOME": "/other"},
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out.split()[0], "/other")  # the real environment wins
+        # A hook loads no module only a rare command or a UI needs
         code = (f"import sys; sys.path.insert(0, {str(ROOT / 'scripts')!r}); import tracker.hooks; "
-                "tracker.hooks.keep_viewer(); print(*sys.modules)")
+                "print(*sys.modules)")
         loaded = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
                                 check=True).stdout.split()
-        self.assertEqual([x for x in ("tracker.viewer", "tracker.cli", "statistics", "tempfile", "shutil",
-                                      "concurrent.futures") if x in loaded], [])
+        self.assertEqual([x for x in ("tracker.viewmodel", "tracker.ui", "tracker.cli", "statistics", "tempfile",
+                                      "shutil", "concurrent.futures") if x in loaded], [])
+
+
+class Ui(unittest.TestCase):
+    """`tracker open` shows a tracker in Herdr when Herdr is open, else in its own window; `tracker evidence` is the
+    UI's link to a file."""
+
+    def tracker(self) -> str:
+        s = slug()
+        run("init", s, "--title", "Shown", "--owner", "me")
+        run("--tracker", s, "new", "T-1", "--title", "One")
+        return s
+
+    def test_the_mod_gets_only_its_own_files(self):
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        target = ui.install_mod(home)
+        self.assertEqual(sorted(x.name for x in target.iterdir()), sorted(ui.MOD_FILES))
+        for name in ui.MOD_FILES:
+            self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
+        before = (target / "view.js").stat().st_mtime_ns
+        ui.install_mod(home)  # a new file would reload a mod that runs
+        self.assertEqual((target / "view.js").stat().st_mtime_ns, before)
+        self.assertNotIn("gpui-shell.json", ui.MOD_FILES)  # Herdr would read it, and refuse what it does not know
+
+    def test_the_ui_reads_this_schema(self):
+        self.assertIn(f"const SCHEMA = {viewmodel.VIEW_SCHEMA};", (ROOT / "ui/view.js").read_text())
+        manifest = json.loads((ROOT / "ui/gpui-shell.json").read_text())
+        self.assertEqual((manifest["shell-version"], manifest["entry"]), (ui.GPUI_SHELL_VERSION, "app.js"))
+        self.assertEqual(manifest["capabilities"]["process"]["env"], ["TRACKER_OPEN", "TRACKER_CLI"])
+
+    def test_open_uses_the_tab_it_has_else_a_new_one(self):
+        s = self.tracker()
+        calls = []
+
+        def herdr(*args):
+            calls.append(args)
+            if args == ("ls",):
+                return {"spaces": [{"tabs": [{"id": "tb1", "name": f"tracker: {s}"}] * have}]}
+            return {"ok": True}
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        with mock.patch.object(ui, "herdr", herdr), mock.patch.object(ui, "herdr_home", lambda: home):
+            have = 0
+            self.assertEqual(run("--tracker", s, "open", "T-1"), f"opened {s} T-1 in Herdr\n")
+            self.assertEqual(calls[-1][:2], ("do", "tab.new"))
+            self.assertEqual(json.loads(calls[-1][2]), {"name": f"tracker: {s}", "mod": "work-tracker",
+                                                        "props": {"slug": s, "open": "T-1", "trackers": str(model.HOME)}})
+            self.assertTrue((home / "mods/work-tracker/view.js").exists())
+            have = 1
+            calls.clear()
+            run("--tracker", s, "open", "T-1")
+            self.assertEqual(calls[1:], [("do", "tab.select", json.dumps({"id": "tb1"})),
+                                         ("do", f"work-tracker.open:{s}/T-1")])
+
+    def test_open_falls_back_to_the_window_and_says_when_it_has_neither(self):
+        s = self.tracker()
+        with mock.patch.object(ui, "herdr", lambda *args: None):
+            with mock.patch.object(ui.shutil, "which", lambda name: None):
+                self.assertIn("needs Herdr", run("--tracker", s, "open", code=2))
+            with mock.patch.object(ui.shutil, "which", lambda name: "/bin/gpui-shell"), \
+                    mock.patch.object(ui.subprocess, "Popen") as popen:
+                self.assertEqual(run("--tracker", s, "open", "T-1"), f"opened {s} T-1 in gpui-shell\n")
+            self.assertEqual(popen.call_args.args[0], ["/bin/gpui-shell", "run", "--dir", str(ROOT / "ui")])
+            self.assertEqual(popen.call_args.kwargs["env"]["TRACKER_OPEN"], f"{s}/T-1")
+
+    def test_refresh_and_sync_are_for_trackers_at_work(self):
+        s = self.tracker()
+        run("archive", s)
+        run("--tracker", s, "refresh", code=2)
+        self.assertTrue(data(s)["archived"])  # its page still shows
+
+    def test_evidence_opens_only_the_trackers_files_and_runs_no_code(self):
+        s = self.tracker()
+        t = ("--tracker", s)
+        folder = model.HOME / s / "evidence"
+        folder.mkdir()
+        (folder / "run.txt").write_text("hi")
+        (folder / "page.html").write_text("<script>")
+        (model.HOME / s / "secret.txt").write_text("no")
+        with mock.patch.object(cli, "open_with_system") as opened:
+            run(*t, "evidence", "run.txt")
+            self.assertEqual(opened.call_args.kwargs, {"reveal": False})
+            run(*t, "evidence", "page.html")
+            self.assertEqual(opened.call_args.kwargs, {"reveal": True})  # only shown in its folder
+            opened.reset_mock()
+            run(*t, "evidence", "../secret.txt", code=2)
+            run(*t, "evidence", "none.txt", code=2)
+            with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+                run(*t, "evidence", "run.txt", code=4)  # the user's click, not the agent's
+            opened.assert_not_called()
 
 
 class Spans(unittest.TestCase):
@@ -1869,31 +1848,27 @@ class Spans(unittest.TestCase):
         self.assertEqual([views.duration(x) for x in (59, 60, 3599, 3600, 47 * 3600 + 3599, 48 * 3600, 100 * 3600)],
                          ["1 min", "1 min", "59 min", "1 h", "47 h", "2.0 d", "4.2 d"])
 
-    def test_the_viewer_and_index_show_the_spans(self):
+    def test_a_ui_and_the_index_show_the_spans(self):
         s = slug()
         run("init", s, "--title", "Timed", "--owner", "me")
         self.ticket(s, "S-1", "2026-09-01T00:00:00Z", "2026-09-01T02:00:00Z", "2026-09-01T08:00:00Z")
         self.ticket(s, "S-2", "2026-09-01T00:00:00Z", status="todo")
         tr = model.Tracker(model.HOME / s)
-        page = viewer.main_html(tr)
-        self.assertEqual(seq_head(page), SEQ_HEAD)
+        got = data(s)["records"]
 
         # The opened ticket's first line gives its times, those it has, then its summary.
-        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>time</dt><dd>'
-                               r'<span title="issue created → started">wait 2 h</span> · '
-                               r'<span title="started → PR merged">cycle 6 h</span></dd>')
-        self.assertNotIn("<dt>time</dt>", re.search(r'<details data-id="S-2".*?</details>', page, re.S).group())
+        self.assertEqual(got["S-1"]["time"], [{"name": "wait", "text": "2 h", "about": "issue created → started"},
+                                              {"name": "cycle", "text": "6 h", "about": "started → PR merged"}])
+        self.assertEqual(got["S-2"]["time"], [])
         run("--tracker", s, "set", "S-1", "summary=Shipped the API")
-        page = viewer.main_html(model.Tracker(model.HOME / s))
-        self.assertRegex(page, r'data-id="S-1".*?<dl class=props><dt>time</dt><dd>.*?</dd>'
-                               r'<dt>summary</dt><dd>Shipped the API</dd>')
+        self.assertEqual(data(s)["records"]["S-1"]["line"], {"label": "summary", "text": "Shipped the API"})
         lines = views.span_lines(tr)
         self.assertEqual(len(lines), 2)
-        self.assertIn("".join(f"<p class=lead>{html.escape(x)}</p>" for x in lines), page)
+        self.assertEqual(data(s)["spans"], lines)
         self.assertEqual(run("--tracker", s, "index").splitlines()[1:3], lines)
         bare = slug()
         run("init", bare, "--title", "Untimed", "--owner", "me")
-        self.assertNotIn("class=lead", viewer.main_html(model.Tracker(model.HOME / bare)))
+        self.assertEqual(data(bare)["spans"], [])
         self.assertNotIn("Cycle time", run("--tracker", bare, "index"))
 
 
@@ -2038,8 +2013,7 @@ class Watch(unittest.TestCase):
             self.assertIn(f"Next: `tracker watch {self.s} --once` again", out)
             run(*self.t, "log", "a note", code=4)  # it watches only
             run("start", self.s, code=4)
-        page = viewer.main_html(model.Tracker(self.root))
-        self.assertIn("Watched by session sid", page)  # between two runs of `--once` it still watches
+        self.assertIn("Watched by session sid", data(self.s)["now"]["watch"]["text"])  # between two `--once` it watches
 
         self.assertIsNone(hook("prompt", sid, cwd, prompt="/work-tracker:watch stop"))
         self.assertFalse(watcher.granted(sid))
@@ -2047,7 +2021,8 @@ class Watch(unittest.TestCase):
             run(*self.t, "log", "a note")
         st = watcher.load_state(self.s)
         watcher.state_path(self.s).write_text(json.dumps({**st, "ended": time.time() - watcher.REARM_S - 1}))
-        self.assertRegex(viewer.main_html(model.Tracker(self.root)), r'class="watch ended">Watch by session sid')
+        self.assertEqual(data(self.s)["now"]["watch"]["running"], False)
+        self.assertRegex(data(self.s)["now"]["watch"]["text"], "^Watch by session sid")
 
         worker = f"sid{time.monotonic_ns()}"
         subprocess.run([str(ROOT / "bin/tracker"), "start", self.s], cwd=cwd, env={**os.environ,
@@ -2069,8 +2044,8 @@ class Watch(unittest.TestCase):
 
 
 class Delete(unittest.TestCase):
-    """`tracker archive` and `delete`, and the viewer's tracker menu: an archived tracker leaves every list and lookup
-    but the viewer's; a deleted one goes to the system's trash, only by the user; neither while a session or a watch
+    """`tracker archive` and `delete`, and a UI's tracker menu: an archived tracker leaves every list and lookup but a
+    UI's; a deleted one goes to the system's trash, only by the user; neither while a session or a watch
     is on it. The tests use the freedesktop trash in BASE, not the user's."""
 
     def setUp(self):
@@ -2147,61 +2122,35 @@ class Delete(unittest.TestCase):
         self.assertIn("to the trash", run("delete", self.s, "--yes"))
         self.assertFalse((model.ARCHIVE / self.s).exists())
 
-    def test_the_viewer_lists_and_deletes(self):
-        threading.Thread(target=viewer.serve, daemon=True).start()
-        for _ in range(100):
-            if viewer.VIEWER_FILE.exists():
-                break
-            time.sleep(0.05)
-        port = json.loads(viewer.VIEWER_FILE.read_text())["port"]
-        base = f"http://127.0.0.1:{port}"
-        page = urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode()
-        token = re.search(r'data-token="([^"]+)"', page).group(1)
-
+    def test_the_ui_lists_and_deletes(self):
         def listed(group: str = "active") -> dict:
-            got = json.loads(urllib.request.urlopen(f"{base}/trackers").read())
-            return next((t for t in got[group] if t["slug"] == self.s), {})
-
-        def delete(headers: dict, what: str = "delete") -> tuple[int, str]:
-            req = urllib.request.Request(f"{base}/t/{self.s}/{what}", data=b"", method="POST", headers=headers)
-            try:
-                with urllib.request.urlopen(req) as r:
-                    return r.status, r.read().decode()
-            except urllib.error.HTTPError as err:
-                return err.code, err.read().decode()
+            return next((t for t in json.loads(run("list", "--json"))[group] if t["slug"] == self.s), {})
 
         self.assertEqual(listed(), {"slug": self.s, "title": "Doomed", "root": str(self.root), "in_use": ""})
-        self.assertEqual(delete({})[0], 403)
-        self.assertEqual(delete({"X-Tracker-Token": token, "Sec-Fetch-Site": "cross-site"})[0], 403)
         sid = self.live()
         self.assertEqual(listed()["in_use"], "agent session busy-one")
-        code, said = delete({"X-Tracker-Token": token})
-        self.assertEqual((code, said.split(":")[0]), (409, f"{self.s} is in use by agent session busy-one"))
-        self.assertEqual(delete({"X-Tracker-Token": token}, "archive")[0], 409)
+        self.assertIn(f"{self.s} is in use by agent session busy-one", run("delete", self.s, "--yes", code=4))
+        run("archive", self.s, code=4)
         (session.CLAUDE_SESSIONS / f"{sid}.json").unlink()
 
-        # Archived: in its own list, its page read-only, then back; deleted from the archive.
-        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (204, ""))
+        # Archived: in its own list, it still shows, then back; deleted from the archive.
+        run("archive", self.s)
         self.assertEqual((listed(), listed("archived")),
                          ({}, {"slug": self.s, "title": "Doomed", "root": str(model.ARCHIVE / self.s)}))
-        page = urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode()
-        self.assertIn("<p id=archived>Archived:", page)
-        self.assertEqual(delete({"X-Tracker-Token": token}, "refresh")[0], 404)
-        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (409, f"{self.s} is archived already"))
-        self.assertEqual(delete({"X-Tracker-Token": token}, "unarchive"), (204, ""))
+        self.assertTrue(data(self.s)["archived"])
+        self.assertIn("is archived", run("archive", self.s, code=2))
+        run("unarchive", self.s)
         self.assertTrue(listed())
-        self.assertNotIn("id=archived", urllib.request.urlopen(f"{base}/t/{self.s}/").read().decode())
-        self.assertEqual(delete({"X-Tracker-Token": token}, "archive"), (204, ""))
-        self.assertEqual(delete({"X-Tracker-Token": token}), (204, ""))
+        self.assertFalse(data(self.s)["archived"])
+        run("archive", self.s)
+        run("delete", self.s, "--yes")
         self.assertFalse((model.ARCHIVE / self.s).exists())
         self.assertEqual((listed(), listed("archived")), ({}, {}))
-        self.assertEqual(delete({"X-Tracker-Token": token})[0], 404)
-
-
+        run("delete", self.s, "--yes", code=2)
 
 class Actions(unittest.TestCase):
     """A user's action: a task the agent cannot or should not do. The agent adds it with `tracker act`; the user's
-    word closes it, from the CLI or the viewer's Done and Drop. Open ones show above Current and in the brief; closed
+    word closes it, from the CLI or a UI's Done and Drop. Open ones show above Current and in the brief; closed
     ones go to Reference."""
 
     def setUp(self):
@@ -2257,39 +2206,19 @@ class Actions(unittest.TestCase):
         self.assertNotIn("A-02", index)
         self.assertIn('`act "<what, with whom>" --refs <ids>`', views.protocol(self.s))
 
-    def test_the_viewer_shows_them_and_closes_one(self):
+    def test_a_ui_shows_them_and_closes_one(self):
         run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--refs", "T-1")
         run(*self.t, "act", "Get read access to the prod DB")
-        page = viewer.main_html(self.tr())
-        self.assertLess(page.index('data-id="_sec-actions"'), page.index('data-id="_sec-seq"'))
-        self.assertIn('data-close="done" data-ref="A-01"', page)
-        self.assertNotIn("_closed-actions", page)
-
-        threading.Thread(target=viewer.serve, daemon=True).start()
-        for _ in range(100):
-            if viewer.VIEWER_FILE.exists():
-                break
-            time.sleep(0.05)
-        base = f"http://127.0.0.1:{json.loads(viewer.VIEWER_FILE.read_text())['port']}/t/{self.s}"
-        token = re.search(r'data-token="([^"]+)"', urllib.request.urlopen(f"{base}/").read().decode()).group(1)
-
-        def close(ident: str, what: str, headers: dict) -> int:
-            req = urllib.request.Request(f"{base}/actions/{ident}/{what}", data=b"", method="POST", headers=headers)
-            try:
-                return urllib.request.urlopen(req).status
-            except urllib.error.HTTPError as err:
-                return err.code
-
-        self.assertEqual(close("A-01", "done", {}), 403)
-        self.assertEqual(close("A-01", "done", {"X-Tracker-Token": token}), 204)
-        self.assertEqual(close("A-01", "drop", {"X-Tracker-Token": token}), 409)
-        self.assertEqual(close("A-09", "done", {"X-Tracker-Token": token}), 409)
-        self.assertEqual(close("A-02", "finish", {"X-Tracker-Token": token}), 404)
-        self.assertEqual(close("A-02", "drop", {"X-Tracker-Token": token}), 204)
+        got = data(self.s)
+        self.assertEqual([a["id"] for a in got["actions"]], ["A-01", "A-02"])
+        self.assertEqual(got["reference"]["actions"], [])
+        run(*self.t, "act", "A-01", "--done")  # what its Done runs
+        run(*self.t, "act", "A-09", "--drop", code=2)
+        run(*self.t, "act", "A-02", "--drop")
         self.assertEqual([a.get("status") for a in self.tr().actions], ["done", "dropped"])
-        page = viewer.main_html(self.tr())
-        self.assertNotIn("_sec-actions", page)
-        self.assertIn("<b>Closed actions</b><span class=meta>2, newest first</span>", page)
+        got = data(self.s)
+        self.assertEqual(got["actions"], [])
+        self.assertEqual(sorted(a["id"] for a in got["reference"]["actions"]), ["A-01", "A-02"])
 
     def test_a_due_day_orders_them_and_shows_in_the_row(self):
         run(*self.t, "act", "Send the deck to Kim")
@@ -2301,10 +2230,10 @@ class Actions(unittest.TestCase):
                       run(*self.t, "actions"))
         self.assertIn("A-03 (due 2020-01-02, overdue: ask the user whether it is done): Book the review",
                       run(*self.t, "index"))
-        page = viewer.main_html(self.tr())
-        self.assertIn('<span class="meta" title="2099-01-15">Due: 15 Jan 2099</span>', page)
-        self.assertIn('<span class="meta overdue" title="2020-01-02">Due: 2 Jan 2020</span>', page)
-        self.assertEqual(page.count("Due: "), 2)  # A-01 has none, and shows no age instead
+        due = {a["id"]: a["due"] for a in data(self.s)["actions"]}
+        self.assertEqual(due, {"A-02": {"day": "2099-01-15", "text": "15 Jan 2099", "late": ""},
+                               "A-03": {"day": "2020-01-02", "text": "2 Jan 2020", "late": "overdue"},
+                               "A-01": None})  # A-01 has none, and shows no age instead
         run(*self.t, "act", "A-03", "--due", "none")
         self.assertEqual(self.tr().action("A-03").get("due"), "")
         self.tr().action("A-02").save({"due": "soon"})
@@ -2328,7 +2257,7 @@ class Actions(unittest.TestCase):
         self.assertEqual([d.ident for d in tr.blockers(t1)], ["A-01"])
         self.assertIn("waits on: A-01 open: Get read access to the prod DB", run(*self.t, "context", "T-1"))
         self.assertIn("A-01: Get read access to the prod DB (T-2); blocks T-1", "\n".join(views.action_lines(tr)))
-        self.assertIn("blocks T-1", viewer.main_html(tr))
+        self.assertEqual(data(self.s)["actions"][0]["gate"], "blocks T-1")
         t1.save({"status": "in-progress"})
         self.assertEqual(model.whose_move(self.tr(), self.tr().lookup("T-1")).text(), "you: A-01 open")
 
@@ -2368,9 +2297,10 @@ class Actions(unittest.TestCase):
         self.assertIn("blocks: T-1 todo; touches: T-2 todo",
                       "; ".join(run(*self.t, "context", "A-01").splitlines()))
         self.assertIn("[waits on A-01] ", run(*self.t, "index"))
-        page = viewer.main_html(self.tr())
-        self.assertRegex(page, r"<dt[^>]*>blocks</dt><dd>.*T-1.*</dd><dt[^>]*>touches</dt><dd>.*T-2")
-        self.assertIn('<span class="chip s-blocked">blocks T-1</span>', page)  # Tracker.gate, as the index's
+        got = data(self.s)
+        self.assertEqual([(d["label"], [x["id"] for x in d["items"]]) for d in got["records"]["A-01"]["deps"]],
+                         [("blocks", ["T-1"]), ("touches", ["T-2"])])
+        self.assertEqual(got["actions"][0]["gate"], "blocks T-1")  # Tracker.gate, as the index's
 
     def test_the_brief_prints_the_readmes_instructions(self):
         work = repo("feat/T-1")
@@ -2429,7 +2359,7 @@ class Values(unittest.TestCase):
         ready = run(*self.t, "ready").splitlines()
         self.assertEqual([x.split()[0] for x in ready], ["T-2", "T-3", "T-1"])  # no priority: last
         self.assertIn("· priority P1 · size M", ready[0])
-        self.assertIn("<dt>priority</dt><dd>P1</dd>", viewer.main_html(self.tr()))
+        self.assertIn({"label": "priority", "text": "P1", "code": False}, data(self.s)["records"]["T-2"]["facts"])
 
     def test_every_kind_reads_one_lifecycle(self):
         self.assertEqual(model.STATUSES["ticket"], ("todo", "in-progress", "done", "dropped"))  # the PR adds the rest

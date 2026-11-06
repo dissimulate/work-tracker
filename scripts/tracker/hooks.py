@@ -10,8 +10,8 @@ import sys
 import time
 from pathlib import Path
 
-from .model import (DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, VIEWER_FILE, VIEWER_PORT,
-    locked, plugin_version, read_json, set_branch, short, Tracker)
+from .model import (DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, locked, record_cli,
+    set_branch, short, Tracker)
 from .system import env_int, spawn
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
@@ -25,22 +25,6 @@ PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's 
 
 # ---------------------------------------------------------------- hooks
 # A hook adds context only when it changes what the model does next, and says each thing once.
-
-
-def keep_viewer() -> None:
-    """Start the viewer when none runs, or when the one that runs is an older release of the plugin (after an update,
-    the old copy's viewer would serve its old code while sessions run), so the user's pages and bookmarks work while
-    they work with an agent. A connect only, with no HTTP and no viewer code: the hook stays fast."""
-    import socket
-    if not VIEWER_PORT:
-        return
-    try:
-        info = read_json(VIEWER_FILE)
-        if list(info.get("version") or []) < plugin_version():
-            raise ValueError("an older release's viewer")  # `serve` stops it and takes its port
-        socket.create_connection(("127.0.0.1", int(info["port"])), timeout=0.5).close()
-    except (OSError, ValueError, KeyError, TypeError):
-        spawn("serve", "--port", str(VIEWER_PORT))
 
 
 def hook_input() -> dict:
@@ -129,7 +113,7 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    keep_viewer()
+    record_cli()
     changes = sync(m.tracker, force=False)
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
@@ -304,7 +288,7 @@ def hook_prompt(data: dict) -> None:
     m = match_cwd(cwd, sid)
     if not m:
         return
-    keep_viewer()
+    record_cli()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]
@@ -320,7 +304,7 @@ def hook_prompt(data: dict) -> None:
     if ask:
         lines.append(ask)  # it holds what the state line would say
     asked = m.tracker.issue_reads()[1]
-    if asked and asked != entry.get("told_issues"):  # the viewer's Refresh: passed on once
+    if asked and asked != entry.get("told_issues"):  # a UI's Refresh: passed on once
         fields["told_issues"] = asked
         lines += [x for x in [issue_request(m.tracker, m.focus)] if x]
     updates = updates_told(m.tracker)
