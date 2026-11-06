@@ -1834,6 +1834,39 @@ class Ui(unittest.TestCase):
         for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
 
+    def test_a_pr_link_that_sync_has_not_read_is_not_no_pr(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Shown", "--owner", "me", "--repo", "acme/app")
+        run(*t, "new", "T-1", "--title", "One", "--branch", "b")
+        run(*t, "set", "T-1", "status=in-progress")
+
+        def move():
+            tracker = model.tracker_at(s)
+            return model.whose_move(tracker, tracker.lookup("T-1"))
+        self.assertEqual((move().text(), move().quiet), ("you: no PR yet", True))
+        run(*t, "add", "T-1", "link", "PR: [Not a PR page](https://example.com/7)")
+        self.assertEqual(move().text(), "you: no PR yet")
+        run(*t, "add", "T-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/30)")
+        self.assertEqual((move().text(), move().quiet), ("you: PR in b/y", True))
+        run(*t, "add", "T-1", "link", "PR: [Part two](https://github.com/acme/app/pull/8)")
+        self.assertEqual((move().text(), move().quiet), ("you: PR not synced", True))
+        path = model.tracker_at(s).lookup("T-1").path
+        path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\nprs: [8:closed]", 1))
+        self.assertEqual(move().text(), "you: PR in b/y")  # the link here is read now
+
+    def test_a_closed_pr_is_your_move_and_not_quiet(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Shown", "--owner", "me", "--repo", "acme/app")
+        run(*t, "new", "T-1", "--title", "One", "--branch", "b")
+        run(*t, "set", "T-1", "status=in-progress")
+        path = model.tracker_at(s).lookup("T-1").path
+        path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\nprs: [8:closed]", 1))
+        tracker = model.tracker_at(s)
+        move = model.whose_move(tracker, tracker.lookup("T-1"))
+        self.assertEqual((move.text(), move.quiet), ("you: PR closed", False))
+
     def test_a_current_ticket_lists_each_of_its_prs_once(self):
         s = slug()
         t = ("--tracker", s)

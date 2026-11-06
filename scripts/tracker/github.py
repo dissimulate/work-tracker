@@ -10,7 +10,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .model import (FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, locked, pr_key,
+from .model import (FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, linked_prs, locked, pr_key,
     put_entry, set_branch, utc_seconds, Record, Tracker)
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
@@ -45,7 +45,6 @@ def gh(*args: str, fields: str | None = None, partial: bool = False):
         return None
 
 
-PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
 
 
 def pr_url(repo: str, number: object) -> str:
@@ -55,8 +54,8 @@ def pr_url(repo: str, number: object) -> str:
 
 def named_prs(t: Record, repo: str) -> set[str]:
     """The numbers of the PRs a ticket names in this repo: the ones `sync` follows, and its `PR:` links."""
-    linked = (PR_PAGE.search(x.text) for x in t.links if x.label == "PR")
-    return {n for n in (*t.prs, *(m[2] for m in linked if m and m[1].lower() == repo.lower())) if n.isdigit()}
+    linked = (x.number for x in linked_prs(t) if x.repo.lower() == repo.lower())
+    return {n for n in (*t.prs, *linked) if n.isdigit()}
 
 
 def ticket_prs(prs: list[dict], t: Record, repo: str) -> list[dict]:

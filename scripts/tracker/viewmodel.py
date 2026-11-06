@@ -8,11 +8,11 @@ import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
-    branch_entry, day_text, due_date, level, level_name, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
+    branch_entry, day_text, due_date, level, level_name, linked_prs, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
     Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
-from .github import PR_PAGE, pr_url
+from .github import pr_url
 from .views import dep_facts, duration, pr_label, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
@@ -121,10 +121,8 @@ def pr_views(tr: Tracker, t: Record) -> list[dict]:
     for n in t.prs:
         url = pr_url(tr.repo_of(t), n)
         prs[url or str(n)] = {"number": str(n), "url": url}
-    for link in t.links:
-        m = PR_PAGE.search(link.text) if link.label == "PR" else None
-        if m:
-            prs.setdefault(m[0], {"number": m[2], "url": m[0]})
+    for link in linked_prs(t):
+        prs.setdefault(link.url, {"number": link.number, "url": link.url})
     return list(prs.values())
 
 

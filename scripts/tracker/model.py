@@ -1592,6 +1592,33 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     return Move(move.who, f"#{number} {move.what}".strip(), move.rank, move.quiet) if len(open_prs) > 1 else move
 
 
+PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
+
+
+@dataclass
+class LinkedPr:
+    url: str
+    repo: str
+    number: str
+
+
+def linked_prs(t: Record) -> list[LinkedPr]:
+    """The PRs a ticket's `PR:` links point at."""
+    pages = (PR_PAGE.search(x.text) for x in t.links if x.label == "PR")
+    return [LinkedPr(m[0], m[1], m[2]) for m in pages if m]
+
+
+def unread_link_move(tr: Tracker, t: Record) -> Move | None:
+    """The move of a ticket whose `PR:` links `sync` has not read: nothing is known of those PRs, but they exist. A link
+    to a repo `sync` does not read says so, as a sync would not change it."""
+    repo = tr.repo_of(t).lower()
+    unread = [x for x in linked_prs(t) if x.repo.lower() != repo or x.number not in t.prs]
+    if not unread:
+        return None
+    here = any(x.repo.lower() == repo for x in unread)
+    return Move(YOU, "PR not synced" if here else f"PR in {unread[0].repo}", 10, quiet=True)
+
+
 def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
     """A ticket's move as one open PR's facts make it; empty facts, for a ticket with no open PR."""
     is_open = bool(tr.open_prs(t))
@@ -1632,7 +1659,8 @@ def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
         return Move(YOU, "draft", 9, quiet=True)
     if is_open:
         return Move(YOU, "no review requested", 9)
-    return Move(YOU, "PR closed", 10) if t.pr_state == "closed" else Move(YOU, "no PR yet", 10, quiet=True)
+    return unread_link_move(tr, t) or (Move(YOU, "PR closed", 10) if t.pr_state == "closed"
+                                       else Move(YOU, "no PR yet", 10, quiet=True))
 
 
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
