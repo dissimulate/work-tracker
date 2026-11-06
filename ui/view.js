@@ -14,6 +14,7 @@
 //   trackersDir()       optional: the trackers' folder, when it is not the default
 //   cli()               optional: how to start the CLI, when the host was told
 //   framed()            optional: true when the view stands as a card of its own among others, so it draws its frame
+//   titleBar(row, t)    optional: the view's header row as the window's title bar, when the window has none of its own
 //   agentAt()           optional: the focused agent, { address, machine, pid, cwd } with machine null when it is here;
 //                       null when the focus is on something else; undefined when it is on no terminal. With it the
 //                       view follows that agent's tracker, unless it was opened on a tracker
@@ -657,9 +658,11 @@ export function trackerView(host) {
     }
 
     bar(view, t) {
-      return h_flex().flex_none().h(SIZE.header).px(SPACE.page).gap(SPACE.md).items_center().border_b(1).border_color(t.border)
+      // In a title bar, a press on a control must not move the window. The stop is on a parent, so the control has the press first.
+      const control = el => host.titleBar ? h_flex().min_w(0).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(el) : el;
+      const row = h_flex().px(SPACE.page).gap(SPACE.md).items_center()
         .when(Boolean(view?.facts.status), el => el.child(chip(view.facts.status, view.facts.status, t)))
-        .child(Popover.new("switch").open(this.menu).overlay_closable(!this.moreOpen)
+        .child(control(Popover.new("switch").open(this.menu).overlay_closable(!this.moreOpen)
           .on_open_change((open, cx) => {
             if (open) this.menu = true;
             else this.closeMenu(cx);
@@ -669,13 +672,14 @@ export function trackerView(host) {
           .trigger(h_flex().id("switch-title").min_w(0).h(SIZE.line).px(SPACE.sm).mx(-SPACE.sm).gap(SPACE.sm).items_center().cursor_pointer().rounded(RADIUS.control).hover(s => s.bg(t.hover))
             .child(div().min_w(0).truncate().font_semibold().child([this.machine, view?.title ?? this.slug ?? "Trackers"].filter(Boolean).join(" / ")))
             .child(div().flex_none().text_size(TEXT.mark).text_color(t.dim).child(this.menu ? "▴" : "▾")))
-          .content(this.trackerMenu(t)))
+          .content(this.trackerMenu(t))))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(TEXT.tiny).text_color(t.dim)
           .child([view?.facts.owner, view?.facts.created, this.live].filter(Boolean).join(" · ") || " "))
-        .when(Boolean(view) && !view.archived, el => el.child(div().id("refresh").flex_none().text_size(TEXT.tiny).text_color(t.dim)
+        .when(Boolean(view) && !view.archived, el => el.child(control(div().id("refresh").flex_none().text_size(TEXT.tiny).text_color(t.dim)
           .when(!this.busy, box => box.cursor_pointer().hover(s => s.text_color(t.foreground))
             .on_click((_e, cx) => this.change(cx, ["--tracker", this.slug, "refresh"])))
-          .child("Refresh")));
+          .child("Refresh"))));
+      return host.titleBar ? host.titleBar(row, t) : row.flex_none().h(SIZE.header).border_b(1).border_color(t.border);
     }
 
     render() {

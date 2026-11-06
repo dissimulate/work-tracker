@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -13,9 +14,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 
@@ -2025,6 +2028,60 @@ class Ui(unittest.TestCase):
             self.assertIn("install-herdr-mod.sh", run("--tracker", s, "open", code=2))
         herdr.assert_not_called()
         self.assertFalse((home / "mods").exists())
+
+    def test_install_window_unpacks_the_pinned_archive_once(self):
+        tar = io.BytesIO()
+        with tarfile.open(fileobj=tar, mode="w:gz") as files:
+            entry = tarfile.TarInfo("gpui-shell-t/gpui-shell")
+            entry.size = len(b"built")
+            files.addfile(entry, io.BytesIO(b"built"))
+        packed = io.BytesIO()
+        with zipfile.ZipFile(packed, "w") as files:
+            files.writestr("gpui-shell-t/gpui-shell.exe", b"built")
+        cases = (("Linux", "x86_64", "gpui-shell-t.tar.gz", tar.getvalue(), False, "gpui-shell"),
+                 ("Windows", "AMD64", "gpui-shell-t.zip", packed.getvalue(), True, "gpui-shell.exe"))
+        for system_name, machine, name, archive, windows, binary in cases:
+            with self.subTest(name=name), mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), \
+                    mock.patch.object(ui, "WINDOWS", windows), \
+                    mock.patch.object(ui.platform, "system", lambda: system_name), \
+                    mock.patch.object(ui.platform, "machine", lambda: machine), \
+                    mock.patch.object(ui, "SHELL_ARCHIVES", {(system_name, machine.lower()): (
+                        name, hashlib.sha256(archive).hexdigest())}), \
+                    mock.patch.object(ui, "fetch", mock.Mock(return_value=archive)) as fetch:
+                self.assertIn(binary, run("install-window"))
+                self.assertEqual(ui.own_shell().name, binary)
+                self.assertEqual(ui.own_shell().read_bytes(), b"built")
+                run("install-window")
+                fetch.assert_called_once()
+                self.assertIn(f"/v{ui.GPUI_SHELL_VERSION}/{name}", fetch.call_args[0][0])
+
+    def test_install_window_installs_nothing_it_cannot_trust(self):
+        key = ("Linux", "x86_64")
+        with mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), mock.patch.object(ui, "WINDOWS", False), \
+                mock.patch.object(ui.platform, "system", lambda: key[0]), \
+                mock.patch.object(ui.platform, "machine", lambda: key[1]):
+            with mock.patch.object(ui, "fetch", mock.Mock(return_value=b"changed")):
+                self.assertIn("not the file", run("install-window", code=2))
+            with mock.patch.object(ui, "fetch", mock.Mock(side_effect=OSError("offline"))):
+                self.assertIn("offline", run("install-window", code=2))
+            with mock.patch.object(ui, "SHELL_ARCHIVES", {}), mock.patch.object(ui, "fetch") as fetch:
+                self.assertIn("no build", run("install-window", code=2))
+                fetch.assert_not_called()
+            self.assertFalse(ui.own_shell().parent.exists())
+
+    def test_open_window_skips_herdr_and_prefers_the_installed_shell(self):
+        s = self.tracker()
+        herdr = mock.Mock(return_value=True)
+        with mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), mock.patch.object(ui, "WINDOWS", False), \
+                mock.patch.object(ui, "open_in_herdr", herdr), \
+                mock.patch.object(ui.shutil, "which", lambda name: "/bin/false"):
+            shell = ui.own_shell()
+            shell.parent.mkdir(parents=True)
+            shell.write_text("#!/bin/sh\necho 'installed shell' >&2\nexit 3\n")
+            shell.chmod(0o755)
+            self.assertIn("installed shell", run("--tracker", s, "open", "--window", code=2))
+            herdr.assert_not_called()
+            self.assertIn("in Herdr", run("--tracker", s, "open"))
 
     def test_open_says_why_the_window_refused(self):
         s = self.tracker()

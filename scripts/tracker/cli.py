@@ -35,7 +35,7 @@ from .github import NAME as FORGE, match_pr, sync
 from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
     unarchive_tracker, watching)
 from .viewmodel import trackers_view, view_model
-from .ui import NO_HOST, open_ui
+from .ui import GPUI_SHELL_VERSION, NO_HOST, install_window, open_ui
 
 # ---------------------------------------------------------------- templates
 
@@ -1096,10 +1096,14 @@ def cmd_open(args):
     whole = args.id and not (here and here.lookup(args.id)) and (tracker_at(args.id) or archived_at(args.id))
     tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
     record_cli()  # a mod finds the CLI by this, also before any hook has run
-    host = open_ui(tr.slug, rec.id if rec else "")
+    host = open_ui(tr.slug, rec.id if rec else "", window=args.window)
     if not host:
         die(NO_HOST)
     print(f"opened {tr.slug}{f' {rec.id}' if rec else ''} in {host}")
+
+
+def cmd_install_window(args):
+    print(f"gpui-shell {GPUI_SHELL_VERSION} is in {install_window()}. `tracker open --window` opens the view.")
 
 
 def cmd_data(args):
@@ -1379,6 +1383,9 @@ def build_parser():
     sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open, else its own window")
     sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
                                              "archived one too)")
+    sp.add_argument("--window", action="store_true", help="its own window, also when Herdr is open")
+    add("install-window", cmd_install_window, f"download gpui-shell {GPUI_SHELL_VERSION} for this system, which the "
+                                              "UI's own window needs")
     add("refresh", cmd_refresh, "pull PR state now, and have the next session prompt read the issue fields again: a "
                                 "UI's Refresh")
     sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link",

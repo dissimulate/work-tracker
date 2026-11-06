@@ -1,6 +1,7 @@
 // The tracker in its own window, for `gpui-shell run --dir ui`: no Herdr needed.
 import os from "os";
 import { readFile } from "fs/promises";
+import { TitleBar } from "gpui-component";
 import { parseOpen } from "./model.js";
 import { trackerView } from "./view.js";
 
@@ -21,4 +22,7 @@ export default trackerView({
   sized: (el, set) => { set(window.viewport_size().width); return el; },
   start: () => parseOpen(process.env.TRACKER_OPEN),
   cli: () => JSON.parse(process.env.TRACKER_CLI || "null"), // `tracker open` says; run by hand, its hooks' record
+  // gpui-shell's window draws no title bar. This one moves the window, keeps clear of the macOS buttons, and draws the
+  // buttons on Windows and Linux. It sets its own left inset, and its own height, which lines up with the macOS buttons.
+  titleBar: (row, t) => TitleBar.new().bg(t.background).border_color(t.border).child(row.flex_1().min_w(0).h_full().pl(0)),
 });

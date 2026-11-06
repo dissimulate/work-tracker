@@ -39,7 +39,8 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker actions` | your open actions (`--all`: the closed ones too) |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
 | `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
-| `tracker open [id]` | the live view: a tab in Herdr when Herdr is open, else its own window |
+| `tracker open [id]` | the live view: a tab in Herdr when Herdr is open, else its own window; `--window` for the window also when Herdr is open |
+| `tracker install-window` | download what the view's own window needs, once |
 | `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the view; `tracker unarchive <slug>` brings it back |
 | `tracker delete <slug>` | move a tracker's folder, archived or not, to the system's trash (only in a terminal; refused while a session or a watch is on it) |
 | `tracker issue` | the tickets whose issue fields (priority, size, due day, when the issue was created) are to read, with their issue links and how to record them; with issue updates on, also the updates to write to each issue |
@@ -59,7 +60,7 @@ Add this folder to a [personal or repo marketplace](https://developers.openai.co
 - Python 3.9 or later, standard library only: `python3`, or on Windows `python` or `py`. The macOS system Python works.
 - `git`.
 - Optional: the GitHub CLI `gh`, logged in. Without it there is no PR state (in review, merged, reviews, checks) and no "whose move".
-- Optional, for the live view: [Herdr](https://herdr.dev) with the mod installed (run `scripts/install-herdr-mod.sh` in the plugin's folder, and again after each plugin update), or [`gpui-shell`](https://github.com/longbridge/gpui-kit/releases) 0.9.0 on your PATH. Without either, the text views (`tracker index`, `tracker context <id>`) show the same facts. `gpui-shell` is third-party and not yet stable: use that version.
+- Optional, for the live view: [Herdr](https://herdr.dev) with the mod installed (run `scripts/install-herdr-mod.sh` in the plugin's folder, and again after each plugin update), or its own window: run `tracker install-window` once. It downloads [`gpui-shell`](https://github.com/longbridge/gpui-kit/releases) 0.9.0 to `$TRACKER_HOME/.gpui-shell/`, for macOS, x86-64 Linux or x86-64 Windows, and checks the file's hash. That version on your PATH also works. Without Herdr or `gpui-shell`, the text views (`tracker index`, `tracker context <id>`) show the same facts. `gpui-shell` is third-party and not yet stable: use that version.
 
 ## How it works
 
@@ -118,7 +119,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 `tracker open [id]` shows the tracker, and opens the record `id` names. The view has no server: it runs the `tracker` CLI for all it reads and changes (`tracker data`, `tracker list --json`), when the tracker's files change and at least every 15 s in Herdr, every 3 s in its own window.
 
-- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `scripts/install-herdr-mod.sh` installs or updates the mod, and nothing else does. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. A layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button. A view with no tracker asked for follows the focused agent: it shows the tracker that agent's session is linked to, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes; the tab of `tracker open` stays on its tracker. An agent on another Herdr machine has its tracker on that machine: the view runs that machine's CLI through Herdr, its switcher lists that machine's trackers, and its bar names the machine. That machine needs this plugin version and a session that has used a tracker there, which records the CLI. Its tracker updates every 15 s, not at once, and an evidence link opens on that machine's screen. With no Herdr window open, or no mod installed, `tracker open` runs `gpui-shell run --dir <plugin>/ui`, a new window each time, and says why if `gpui-shell` refuses at once. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
+- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `scripts/install-herdr-mod.sh` installs or updates the mod, and nothing else does. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. A layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button. A view with no tracker asked for follows the focused agent: it shows the tracker that agent's session is linked to, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes; the tab of `tracker open` stays on its tracker. An agent on another Herdr machine has its tracker on that machine: the view runs that machine's CLI through Herdr, its switcher lists that machine's trackers, and its bar names the machine. That machine needs this plugin version and a session that has used a tracker there, which records the CLI. Its tracker updates every 15 s, not at once, and an evidence link opens on that machine's screen. With no Herdr window open, no mod installed, or `--window`, `tracker open` runs `gpui-shell run --dir <plugin>/ui`, a new window each time, and says why if `gpui-shell` refuses at once. It uses the `gpui-shell` of `tracker install-window` first, then the one on your PATH. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
 - **Tracker menu** (top left) lists every tracker, the archived ones in a closed section at the bottom. A tracker's ⋯ has Archive (Unarchive) and Delete, both off while an agent session or a watch is on the tracker.
   - Archive moves the tracker to `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it. It still opens, read-only. `tracker init` refuses its slug.
   - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the view shows why, until you press that line or make another change.
@@ -176,7 +177,7 @@ Environment variables. All are optional.
 8. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). A ticket's PRs are those from its branch and its `PR:` links, all equal, in its `prs` list; `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
 9. `watcher`: `tracker watch` and the user's grant; archiving and deleting a tracker
 10. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
-11. `ui`: where the UI in `ui/` runs: `tracker open`
+11. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`
 12. `hooks`
 13. `cli`
 

@@ -6,6 +6,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Added
 
+- `tracker install-window` downloads what the view's own window needs, on macOS, x86-64 Linux and x86-64 Windows, with no change to your PATH. `tracker open --window` opens that window also when Herdr is open.
+- The view's own window has a title bar: drag the header to move the window, and the window's buttons no longer cover the header.
 - A ticket can have several PRs, all equal. `tracker sync` reads those from the ticket's branch and its `PR:` links; the ticket counts as merged only once none is open, and its move is the most urgent of its open PRs'.
 - A session's status comes from the tracker's hooks on any host, and adds "needs you" while any of its agents asks for a permission or an answer. In the view, each Current row's dot is red for that, green while working, yellow while idle, and a grey ring with no session. `tracker watch` reports an agent that has asked for 30 s.
 - The view's colours mean one thing each, on any host and in any part: red needs you, yellow waits on someone else, green is moving, blue can start, grey has nothing to do. Closed tickets are now grey, and a `todo` ticket shows its blocked or stacked colour everywhere. A move of `draft` or `no PR yet` is still yours, but is grey: red is for a move that has stopped to wait for you.
