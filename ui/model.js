@@ -1,11 +1,11 @@
 // What the view works out from `tracker data`, with no UI in it: which rows show, in what order, and the graph's
 // geometry. Runs on any JavaScript engine: node runs its tests (model.test.js), QuickJS runs it in a host.
 
-const GATES = ["ready", "blocked"]; // matched on the gate's tag, not the status
-
-export function filterRows(tickets, filter) {
-  return tickets.filter(t => filter === "all" || (filter === "active" ? !t.closed
-    : GATES.includes(filter) ? t.gate.tag === filter : t.stage === filter));
+// The rows any of the filters keeps, each a status or `blocked`, which a ticket's dependencies decide; with none on,
+// every row. A ticket that can stack on work under way still waits, so it counts as blocked.
+export function filterRows(tickets, filters) {
+  const blocked = t => !t.closed && ["blocked", "stack"].includes(t.gate.state);
+  return filters.length ? tickets.filter(t => filters.some(f => (f === "blocked" ? blocked(t) : t.stage === f))) : tickets;
 }
 
 // The numbers in a value compare as numbers ("T-2" before "T-10"). QuickJS's localeCompare takes no `numeric` option.
@@ -41,9 +41,9 @@ export function nextSort(sort, key) {
 export const MEANINGS = {
   "needs-you": ["blocked", "you", "overdue", "error", "agent-waiting"],
   held: ["in-review", "open", "stack", "today", "in-use", "agent-idle"], // waits on someone or something else
-  moving: ["in-progress", "active", "agent-busy"],
+  moving: ["in-progress", "active", "agent-busy", "mark-done"],
   "can-start": ["ready"],
-  quiet: ["todo", "planning", "paused", "done", "merged", "closed", "dropped", "them", "your-work", "no-ticket", "agent-none"],
+  quiet: ["todo", "planning", "paused", "done", "closed", "dropped", "them", "your-work", "no-ticket", "agent-none", "mark-dropped"],
 };
 const MEANING_OF = new Map(Object.entries(MEANINGS).flatMap(([meaning, statuses]) => statuses.map(s => [s, meaning])));
 export const meaningOf = status => MEANING_OF.get(status) ?? "quiet";
@@ -201,13 +201,22 @@ export function idWidth(ids, size) {
   return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.605);
 }
 
-// A README's Goal and Scope as rows for a compact grid: each `## Heading` a label and its text, whose `### Heading` is
-// a bold line, since a heading's size would take a row of its own.
-export function briefParts(body) {
-  return String(body ?? "").split(/^## +/m).map(part => part.trim()).filter(Boolean).map(part => {
+// A record's or a README's text in parts: each `## Heading` a label and its text, whose `### Heading` is a bold line,
+// since a heading's size would be too big beside a label. Text before the first heading has no label. A heading with
+// nothing under it is no part.
+export function bodyParts(body) {
+  const [lead, ...parts] = String(body ?? "").split(/^## +/m);
+  return [{ label: "", text: lead }, ...parts.map(part => {
     const [label, ...rest] = part.split("\n");
-    return { label: label.trim(), text: rest.join("\n").replace(/^### +(.+)$/gm, "\n**$1**\n").replace(/\n{3,}/g, "\n\n").trim() };
-  });
+    return { label: label.trim(), text: rest.join("\n") };
+  })].map(({ label, text }) => ({ label, text: text.replace(/^### +(.+)$/gm, "\n**$1**\n").replace(/\n{3,}/g, "\n\n").trim() }))
+    .filter(part => part.text);
+}
+
+// The width of a column of text in the UI font, in px: room for its longest value. No host measures text for a script:
+// this font's letters average about 0.48 of its size, so 0.55 leaves room for a wide word.
+export function fitWidth(texts, size) {
+  return Math.ceil(Math.max(0, ...[...texts].map(x => String(x ?? "").length)) * size * 0.55);
 }
 
 export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -215,11 +224,5 @@ export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${Strin
 // What the live line says: when the data was read, when GitHub was, and the issue fields' state.
 export function liveLine(view, now) {
   return [`live ${hhmm(now)}`, view.synced ? `PRs from GitHub ${hhmm(new Date(view.synced * 1000))}` : "", view.issues]
-    .filter(Boolean).join(" · ");
-}
-
-// The heading of Current: how many, how many are your move, how many agents.
-export function nowTitle({ busy, yours, agents }) {
-  return [`${busy}`, yours ? `${yours} your move` : "", agents ? `${agents} agent${agents > 1 ? "s" : ""}` : ""]
     .filter(Boolean).join(" · ");
 }

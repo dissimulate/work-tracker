@@ -204,7 +204,7 @@ def cmd_set(args):
         if k == "status":
             allowed = STATUSES[rec.kind]
             if v not in allowed:
-                hint = "; in-review and merged come from the ticket's PR" if v in STAGES else ""
+                hint = "; in-review comes from the ticket's PR" if v in STAGES else ""
                 die(f"status must be one of {'|'.join(allowed)}{hint}")
         if k in ("next", "summary") and rec.kind == "ticket":
             fit(k, v)
@@ -1196,7 +1196,7 @@ def build_parser():
                                  "links, the user's open actions, one line per ticket, whose move each ticket under "
                                  "way waits on, what can start and the critical path, then open decisions")
     sp.add_argument("--status", help=f"comma list of stages ({'|'.join(STAGES)})")
-    sp.add_argument("--active", action="store_true", help="hide closed tickets (merged, done, dropped)")
+    sp.add_argument("--active", action="store_true", help="hide closed tickets (done, dropped)")
     sp.add_argument("--group")
     sp = add("here", cmd_here, "the brief for this branch: its handoff, work the tracker may not show yet, its "
                                "tickets under way with what they build on, or what can start")

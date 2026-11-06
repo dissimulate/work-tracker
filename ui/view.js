@@ -19,13 +19,12 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, briefParts, filterRows, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, moveStatus, nextSort, nowTitle, parseOpen,
+import { agentStatus, bodyParts, filterRows, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sortRows } from "./model.js";
-import { button, card, cards, chip, COLUMN, dropdown, RADIUS, SIZE, SPACE, TEXT, tone } from "./style.js";
+import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
 const SCHEMA = 4; // viewmodel.VIEW_SCHEMA
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
-const DETAIL_MIN = 900; // the opened record sits beside the page from this width, else in its place
 const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 
@@ -33,9 +32,11 @@ export function trackerView(host, first = null) {
   return class TrackerView extends View {
     init(_props, cx) {
       const start = host.start();
-      this.filter = "all";
+      this.filters = new Set(); // the sequence's filters that are on
       this.sort = { key: "step", desc: false };
       this.focusId = null; // the hovered row, whose chains the graph shows
+      this.keys = cx.focus_handle(); // takes Escape while a record is open
+      this.hoveredPanel = null; // the part of the page under the pointer, whose arrow is brighter
       this.selected = first?.selected ?? start.id;
       this.width = 0;
       this.panels = new Map(); // what the user opened or closed: it stays so as the data changes
@@ -101,8 +102,8 @@ export function trackerView(host, first = null) {
           for (;;) {
             const { slug, id } = parseOpen(await host.nextOpen());
             if (slug && (slug !== this.slug || this.machine)) this.show(slug, cx, null);
-            if (id) this.selected = id;
-            cx.notify();
+            if (id) this.select(id, cx);
+            else cx.notify();
           }
         });
       }
@@ -227,7 +228,7 @@ export function trackerView(host, first = null) {
       this.moreOpen = null;
       this.doomed = null;
       this.selected = null;
-      this.filter = "all";
+      this.filters.clear();
       this.view = null;
       this.shown = "";
       cx.notify();
@@ -263,7 +264,13 @@ export function trackerView(host, first = null) {
     }
 
     select(id, cx) {
-      this.selected = this.selected === id ? null : id;
+      this.selected = id;
+      this.keys.focus();
+      cx.notify();
+    }
+
+    closeRecord(cx) {
+      this.selected = null;
       cx.notify();
     }
 
@@ -279,25 +286,26 @@ export function trackerView(host, first = null) {
     panel(key, head, start, body, t) {
       const open = this.isOpen(key, start);
       return v_flex().w_full().flex_none()
-        .child(h_flex().id(`panel-${key}`).w_full().min_h(SIZE.line).gap(SPACE.sm).items_center().cursor_pointer().rounded(RADIUS.control)
-          .hover(s => s.bg(t.hover))
+        .child(h_flex().id(`panel-${key}`).w_full().min_h(SIZE.line).gap(SPACE.sm).items_center().cursor_pointer()
+          .on_hover((hovered, cx) => {
+            const now = hovered ? key : this.hoveredPanel === key ? null : this.hoveredPanel;
+            if (now !== this.hoveredPanel) { this.hoveredPanel = now; cx.notify(); }
+          })
           .on_click((_e, cx) => { this.panels.set(key, !open); cx.notify(); })
-          .child(div().w(SIZE.arrow).flex_none().text_size(TEXT.mark).text_color(t.dim).child(open ? "▾" : "▸"))
+          .child(div().w(SIZE.arrow).flex_none().text_size(TEXT.mark).text_color(this.hoveredPanel === key ? t.foreground : t.dim).child(open ? "▾" : "▸"))
           .child(h_flex().flex_1().min_w(0).gap(SPACE.sm).items_center().child(head)))
         .when(open, el => el.child(body()));
     }
 
-    // A section of the page: its heading, with the count, opens and closes it.
-    section(key, title, count, start, body, t) {
+    // A section of the page: its heading opens and closes it.
+    section(key, title, start, body, t) {
       return div().w_full().flex_none().px(SPACE.page).pt(SPACE.lg).child(this.panel(`sec-${key}`,
-        div().text_size(TEXT.title).font_medium().child(count ? `${title} · ${count}` : title), start,
+        div().text_size(TEXT.title).font_medium().child(title), start,
         () => v_flex().w_full().pl(SPACE.indent).pt(SPACE.md).pb(SPACE.xxs).gap(SPACE.hair).child(body()), t));
     }
 
-    named(name, meta, t, metaColor = t.dim) {
-      return h_flex().flex_1().min_w(0).gap(SPACE.md).items_center()
-        .child(div().min_w(0).truncate().font_medium().child(name))
-        .when(Boolean(meta), el => el.child(div().flex_none().text_size(TEXT.tiny).text_color(metaColor).child(meta)));
+    named(name) {
+      return div().flex_1().min_w(0).truncate().font_medium().child(name);
     }
 
     // A record's id that opens it. `place` keeps the element's id the same from draw to draw, or a click is lost.
@@ -324,8 +332,8 @@ export function trackerView(host, first = null) {
         div().flex_1().min_w(0).truncate().child(a.title),
         ...(a.when ? [div().flex_none().text_size(TEXT.tiny).text_color(t.muted).child(a.when)] : []),
         ...(a.due ? [div().flex_none().text_size(TEXT.tiny).text_color(tone(a.due.late, t)).child(`Due: ${a.due.text}`)] : []),
-      ], t, buttons ? [["Done", "--done"], ["Drop", "--drop"]].map(([label, flag]) =>
-        button(`${label}-${a.id}`, label, t, cx => this.change(cx, ["--tracker", this.slug, "act", a.id, flag]),
+      ], t, buttons ? [["Done", "--done", "mark-done"], ["Drop", "--drop", "mark-dropped"]].map(([label, flag, status]) =>
+        chipButton(`${label}-${a.id}`, label, status, t, cx => this.change(cx, ["--tracker", this.slug, "act", a.id, flag]),
           { off: this.busy })) : []);
     }
 
@@ -341,7 +349,7 @@ export function trackerView(host, first = null) {
     // A PR by its number: with a page to open, a click opens it in the browser and not the row around it.
     prLink(place, pr, t) {
       const text = div().id(`pr-${place}-${pr.number}`).flex_none().child(`PR #${pr.number}`);
-      if (!pr.url) return text.text_color(t.muted);
+      if (!pr.url) return text;
       return text.text_color(t.accent).cursor_pointer().hover(s => s.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); this.follow(pr.url, cx); });
     }
@@ -354,13 +362,6 @@ export function trackerView(host, first = null) {
     }
 
     nowItem(item, t) {
-      const key = `now-${item.key}`;
-      const open = this.isOpen(key, false);
-      const more = () => v_flex().gap(SPACE.xxs)
-        .when(Boolean(item.line), el => el.child(div().text_color(t.muted).child(plainInline(item.line))))
-        .when(Boolean(item.fresh), el => el.child(div().text_size(TEXT.tiny).text_color(t.dim).child(item.fresh)))
-        .children(item.agents.map(a => div().text_size(TEXT.tiny).text_color(t.dim)
-          .child(`${a.word}, in ${a.cwd}`)));
       const head = h_flex().flex_1().min_w(0).gap(SPACE.sm).items_center().text_size(TEXT.small)
         .child(this.agentMark(item.agents, t))
         .when(item.kind !== "ticket", el => el.child(div().w(this.idColumn).flex_none()))
@@ -369,28 +370,66 @@ export function trackerView(host, first = null) {
           .child(chip(rowWord(item), rowStatus(item), t))
           .children((item.prs ?? []).map(pr => this.prLink(item.key, pr, t)))
           .when(Boolean(item.move), row => row.child(div().flex_1().min_w(0).truncate().text_right()
-            .text_color(tone(moveStatus(item.move), t)).child(item.move.text))))
+            .when(meaningOf(moveStatus(item.move)) !== "quiet", el => el.text_color(tone(moveStatus(item.move), t))).child(item.move.text))))
         // An agent on no ticket under way: the tickets it is on, each as a ticket's row starts, or says it has none.
         .when(item.kind === "agent", el => el
           .children((item.on ?? []).flatMap(x => [this.idLink(`on-${item.key}`, x.id, t, tone(rowStatus(x), t)), chip(rowWord(x), rowStatus(x), t)]))
           .when(!item.on?.length, row => row.child(chip("no-ticket", "no-ticket", t))))
-        .when(item.kind === "handoff", el => el.child(this.named(item.title, "", t, t.muted)));
-      // A card that opens where it is: with nothing more to show, it does not take a click.
-      const expands = Boolean(item.line || item.fresh || item.agents.length);
-      return card(key, [head], t, { click: expands ? cx => { this.panels.set(key, !open); cx.notify(); } : null,
-        more: open && expands ? more : null });
+        .when(item.kind === "handoff", el => el.child(this.named(item.title)));
+      // A ticket has its record to show; any other row, with nothing more to show, does not take a click.
+      const opens = item.kind === "ticket" || Boolean(item.line || item.agents.length);
+      return card(`now-${item.key}`, [head], t, { click: opens ? cx => this.select(item.key, cx) : null, selected: this.selected === item.key });
     }
 
-    // The columns that fit the sequence's width, each [key, label, width, the cell's text and colour].
-    columns(view, width, t) {
-      const cols = [["status", "Status", COLUMN.status, r => [rowWord(r), tone(rowStatus(r), t)]]];
-      if (width >= GROUP_MIN) cols.push(["group", "Group", COLUMN.group, r => [r.group, t.muted]]);
+    // What a Current row adds to its modal: how recent its commits are, and its sessions in their status's colour.
+    nowRows(item, t) {
+      return [
+        ...(item?.fresh ? [["commits", div().child(item.fresh)]] : []),
+        ...(item?.agents ?? []).map(a => ["session", div().text_color(tone(agentStatus([a]), t)).child(`${a.word}, in ${a.cwd}`)]),
+      ];
+    }
+
+    // A modal's rows of label and value.
+    grid(rows, t) {
+      return v_flex().flex_none().gap(SPACE.xs).children(rows.map(([label, value]) => this.labelled(label, value, t)));
+    }
+
+    // A modal's top row: what it opens, then Close.
+    modalHead(parts, t) {
+      return h_flex().flex_none().gap(SPACE.md).items_center().text_size(TEXT.small).children(parts)
+        .child(button("close", "Close", t, cx => this.closeRecord(cx)));
+    }
+
+    // A Current row with no record of its own, an agent on no ticket under way or a handoff, in a modal.
+    nowDetails(item, t) {
+      const title = item.kind === "handoff" ? item.title : "Agent";
+      const on = item.on ?? [];
+      const rows = [
+        ...(on.length ? [["on", h_flex().flex_wrap().gap(SPACE.sm).children(on.map(x => this.idLink(`modal-${item.key}`, x.id, t, tone(rowStatus(x), t))))]] : []),
+        ...this.nowRows(item, t),
+      ];
+      return modal("details", t, this.width, this.keys, cx => this.closeRecord(cx), [
+        this.modalHead([
+          ...(item.kind === "agent" ? [this.agentMark(item.agents, t)] : []),
+          div().flex_1().min_w(0).text_size(TEXT.title).font_medium().child(title),
+        ], t),
+        ...(rows.length ? [this.grid(rows, t)] : []),
+        ...(item.line ? [div().flex_none().w_full().child(this.md(`line-${item.key}`, item.line))] : []),
+      ]);
+    }
+
+    // The columns that fit the sequence's width, each [key, label, width, the cell's text and colour]: each as wide as
+    // its heading or its longest cell among these rows, and the ticket's title takes what is left.
+    columns(view, rows, width, t) {
+      const cols = [["status", "Status", r => [rowWord(r), tone(rowStatus(r), t)]]];
+      if (width >= GROUP_MIN) cols.push(["group", "Group", r => [r.group, t.muted]]);
       if (width >= LEVELS_MIN) {
-        view.scales.forEach(key => cols.push([key, key[0].toUpperCase() + key.slice(1), COLUMN.level, r => [r.levels[key], t.muted]]));
-        cols.push(["waits", "← Waits on", COLUMN.link, r => [r.waits.map(d => d.id + (d.done ? " ✓" : "")).join(", "), t.muted]]);
-        cols.push(["unblocks", "→ Unblocks", COLUMN.link, r => [r.unblocks.join(", "), t.muted]]);
+        view.scales.forEach(key => cols.push([key, key[0].toUpperCase() + key.slice(1), r => [r.levels[key], t.muted]]));
+        cols.push(["waits", "← Waits on", r => [r.waits.map(d => d.id + (d.done ? " ✓" : "")).join(", "), t.muted]]);
+        cols.push(["unblocks", "→ Unblocks", r => [r.unblocks.join(", "), t.muted]]);
       }
-      return cols;
+      const sized = (label, cell) => Math.max(fitWidth(rows.map(r => cell(r)[0]), TEXT.small), fitWidth([`${label} ↓`], TEXT.tiny));
+      return cols.map(([key, label, cell]) => [key, label, sized(label, cell), cell]);
     }
 
     heading(key, label, t, size) {
@@ -402,9 +441,8 @@ export function trackerView(host, first = null) {
     }
 
     row(r, cols, graphW, t) {
-      return h_flex().id(`row-${r.id}`).w_full().h(SIZE.row).pl(SPACE.lg).pr(SPACE.page).gap(SPACE.lg).items_center().text_size(TEXT.small).cursor_pointer()
+      return h_flex().id(`row-${r.id}`).w_full().h(SIZE.row).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.small).cursor_pointer()
         .when(this.selected === r.id, el => el.bg(t.selected))
-        .when(this.focusId === r.id && this.selected !== r.id, el => el.bg(t.hover))
         .on_hover((hovered, cx) => {
           const id = hovered ? r.id : this.focusId === r.id ? null : this.focusId;
           if (id !== this.focusId) { this.focusId = id; cx.notify(); }
@@ -412,11 +450,10 @@ export function trackerView(host, first = null) {
         .on_click((_e, cx) => this.select(r.id, cx))
         .child(div().w(graphW).flex_none())
         .child(this.idCell(r.id, tone(rowStatus(r), t), t))
-        .child(div().flex_1().min_w(0).truncate().text_color(r.closed ? t.muted : t.foreground).child(r.title))
-        .when(Boolean(r.pr), el => el.child(this.mono(div().flex_none().text_size(TEXT.tiny).text_color(t.dim).child(`PR ${r.pr}`))))
-        .children(cols.map(([, , w, cell]) => {
+        .child(div().flex_1().min_w(0).truncate().text_color(this.focusId === r.id ? t.foreground : r.closed ? t.dim : t.muted).child(r.title))
+        .children(cols.map(([, , w, cell], i) => {
           const [text, color] = cell(r);
-          return div().w(w).flex_none().truncate().text_color(color).child(text || " ");
+          return div().w(w).flex_none().truncate().when(i === cols.length - 1, el => el.text_right()).text_color(color).child(text || " ");
         }));
     }
 
@@ -444,18 +481,19 @@ export function trackerView(host, first = null) {
     }
 
     sequence(view, width, t) {
-      const rows = sortRows(filterRows(view.tickets, this.filter), this.sort);
+      // A filter whose button has gone with its last ticket no longer counts, or nothing could turn it off.
+      const rows = sortRows(filterRows(view.tickets, view.filters.map(([key]) => key).filter(key => this.filters.has(key))), this.sort);
       const layout = graphLayout(rows, SIZE.row, this.focusId);
-      const cols = this.columns(view, width, t);
+      const cols = this.columns(view, rows, width, t);
       const graphW = Math.max(layout.width, 28);
       return v_flex().w_full()
         .children(view.spans.map(line => div().text_size(TEXT.tiny).text_color(t.dim).child(line)))
-        .child(h_flex().flex_wrap().py(SPACE.xs).gap(SPACE.xxs).children(view.filters.map(([key, count]) =>
-          button(`f-${key}`, `${key} ${count}`, t, cx => { this.filter = key; cx.notify(); }, { on: this.filter === key }))))
-        .child(h_flex().h(SIZE.control).pl(SPACE.lg).pr(SPACE.page).gap(SPACE.lg).items_center().text_size(TEXT.tiny).border_b(1).border_color(t.border)
+        .child(h_flex().flex_wrap().pb(SPACE.md).gap(SPACE.xs).children(view.filters.map(([key, count]) =>
+          toggle(`f-${key}`, `${key} ${count}`, t, cx => { if (!this.filters.delete(key)) this.filters.add(key); cx.notify(); }, this.filters.has(key)))))
+        .child(h_flex().h(SIZE.control).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.tiny).border_b(1).border_color(t.border)
           .child(this.heading("step", "Step", t, el => el.w(graphW).flex_none()))
           .child(this.heading("ticket", "Ticket", t, el => el.flex_1().min_w(0)))
-          .children(cols.map(([key, label, w]) => this.heading(key, label, t, el => el.w(w).flex_none()))))
+          .children(cols.map(([key, label, w], i) => this.heading(key, label, t, el => el.w(w).flex_none().when(i === cols.length - 1, last => last.text_right())))))
         .child(div().relative().w_full().h(SIZE.row * rows.length).flex_none()
           .children(rows.map(r => this.row(r, cols, graphW, t)))
           .child(this.graph(layout, t)));
@@ -463,17 +501,17 @@ export function trackerView(host, first = null) {
 
     reference(view, t) {
       const { decisions, actions, more, log } = view.reference;
-      const part = (key, name, meta, body) => this.panel(key,
-        h_flex().flex_1().min_w(0).text_size(TEXT.small).child(this.named(name, meta, t)), false,
+      const part = (key, name, body) => this.panel(key,
+        h_flex().flex_1().min_w(0).text_size(TEXT.small).child(this.named(name)), false,
         () => v_flex().w_full().pl(SPACE.indent).pt(SPACE.xs).gap(SPACE.hair).child(body()), t);
       return v_flex().w_full().gap(SPACE.hair)
-        .when(decisions.length > 0, el => el.child(part("closed-decisions", "Closed decisions", String(decisions.length),
+        .when(decisions.length > 0, el => el.child(part("closed-decisions", "Closed decisions",
           () => cards(decisions.map(d => this.decisionRow(d, t))))))
-        .when(actions.length > 0, el => el.child(part("closed-actions", "Closed actions", `${actions.length}, newest first`,
+        .when(actions.length > 0, el => el.child(part("closed-actions", "Closed actions",
           () => cards(actions.map(a => this.actionRow(a, false, t))))))
-        .when(Boolean(more), el => el.child(part("more", "More about this work", more?.headings.join(", "),
+        .when(Boolean(more), el => el.child(part("more", "More about this work",
           () => this.md("reference-more", more.body))))
-        .child(part("log", "Log", `${log.length} entries, newest first`, () => (log.length
+        .child(part("log", "Log", () => (log.length
           ? this.md("reference-log", log.map(x => `- ${x}`).join("\n"))
           : div().text_size(TEXT.small).text_color(t.dim).child("Empty."))));
     }
@@ -489,27 +527,27 @@ export function trackerView(host, first = null) {
           .child(button("unarchive", "Unarchive", t, cx => this.change(cx, ["unarchive", view.slug], { list: true }), { off: this.busy }))));
       return v_flex().id("page").flex_1().min_w(0).h_full().pb(SPACE.page).overflow_y_scrollbar()
         .child(top)
-        .when(Boolean(brief), el => el.child(this.section("brief", brief, 0, false,
+        .when(Boolean(brief), el => el.child(this.section("brief", brief, false,
           () => v_flex().pb(SPACE.xs).gap(SPACE.xs)
-            .children(briefParts(view.goal?.body).map((x, i) => this.labelled(x.label, this.md(`goal-${i}`, x.text), t)))
+            .children(bodyParts(view.goal?.body).map((x, i) => this.labelled(x.label, this.md(`goal-${i}`, x.text), t)))
             // A run of links under one label names it once.
             .children(view.links.map((x, i) => this.labelled(x.label === view.links[i - 1]?.label ? "" : x.label,
               this.linkText(`context-${i}`, x, t), t))), t)))
-        .when(view.actions.length > 0, el => el.child(this.section("actions", "Your actions", view.actions.length, true,
+        .when(view.actions.length > 0, el => el.child(this.section("actions", "Your actions", true,
           () => cards(view.actions.map(a => this.actionRow(a, !view.archived, t))), t)))
-        .when(now.items.length > 0 || Boolean(now.idle) || Boolean(now.watch), el => el.child(this.section("now", "Current",
-          nowTitle(now), true, () => cards(now.items.map(item => this.nowItem(item, t)))
+        .when(now.items.length > 0 || Boolean(now.idle) || Boolean(now.watch), el => el.child(this.section("now", "Current", true,
+          () => cards(now.items.map(item => this.nowItem(item, t)))
             .when(Boolean(now.idle), box => box.child(h_flex().flex_wrap().gap(SPACE.sm).min_h(SIZE.line).items_center().text_size(TEXT.small).text_color(t.dim)
               .child(div().child(`Nothing in progress.${now.idle.ready.length ? " Ready:" : ""}`))
               .children(now.idle.ready.map(id => this.idLink("idle", id, t)))))
             .when(Boolean(now.watch), box => box.child(div().text_size(TEXT.tiny).text_color(now.watch.running ? t.muted : t.dim).child(now.watch.text))), t)))
-        .child(this.section("seq", "Sequence", `${view.open} open of ${view.total}`, true, () => this.sequence(view, width - 46, t), t))
-        .when(problems.length > 0, el => el.child(this.section("check", "Check", problems.length, false,
+        .child(this.section("seq", "Sequence", true, () => this.sequence(view, width - 46, t), t))
+        .when(problems.length > 0, el => el.child(this.section("check", "Check", false,
           () => v_flex().gap(SPACE.hair).text_size(TEXT.small).children(problems.map(x => div().child(x))), t)))
-        .child(this.section("decisions", "Open decisions", view.decisions.length, true, () => (view.decisions.length
+        .child(this.section("decisions", "Open decisions", true, () => (view.decisions.length
           ? cards(view.decisions.map(d => this.decisionRow(d, t)))
           : div().text_size(TEXT.small).text_color(t.dim).child("None.")), t))
-        .child(this.section("reference", "Reference", 0, false, () => this.reference(view, t), t));
+        .child(this.section("reference", "Reference", false, () => this.reference(view, t), t));
     }
 
     labelled(label, value, t) {
@@ -528,35 +566,40 @@ export function trackerView(host, first = null) {
         const color = tone(d.tone, t);
         const text = d.id + (d.done ? " ✓" : "");
         return d.ref ? this.mono(div().id(`dep-${place}-${d.id}`).cursor_pointer().text_color(color)
-          .on_click((_e, cx) => { this.selected = d.id; cx.notify(); }).child(text))
+          .on_click((_e, cx) => this.select(d.id, cx)).child(text))
           : this.mono(div().text_color(color).child(d.title ? `${text} (${plainInline(d.title)})` : text));
       }));
     }
 
-    // What a record shows when it opens: one grid of its lead lines, what it waits on and what waits on it, its facts
+    // What a record shows when it opens, in a modal: one grid of its lead lines, what it waits on and what waits on it, its facts
     // and links, then its body.
-    details(view, id, wide, t) {
+    details(view, id, t) {
       const r = view.records[id];
       const rows = [
+        ...(r.gate.text && r.gate.state !== "ready" ? [["gate", div().child(r.gate.text)]] : []),
         ...(r.time.length ? [["time", div().child(r.time.map(x => `${x.name} ${x.text}`).join(" · "))]] : []),
         ...(r.line ? [[r.line.label, this.md(`line-${r.id}`, r.line.text)]] : []),
         ...(r.move ? [["move", div().text_color(tone(moveStatus(r.move), t)).child(r.move.text)]] : []),
+        ...r.prs.map(pr => ["PR", h_flex().flex_wrap().gap(SPACE.sm).items_center()
+          .child(this.prLink(`modal-${r.id}`, pr, t))
+          .when(Boolean(pr.state), el => el.child(div().text_color(t.muted).child(pr.state)))
+          .when(Boolean(pr.text), el => el.child(div().text_color(t.muted).child(plainInline(pr.text))))]),
         ...r.deps.map(d => [d.label, d.items ? this.refs(`${r.id}-${d.label}`, d.items, t) : div().child(d.text)]),
         ...r.facts.map(f => [f.label, f.code ? this.mono(div()).child(f.text) : div().child(f.text)]),
         ...r.links.map((x, i) => [x.label, this.linkText(`link-${r.id}-${i}`, x, t)]),
+        ...this.nowRows(view.now?.items.find(item => item.key === id), t),
       ];
-      return v_flex().id("details").h_full().min_h(0).overflow_y_scrollbar().px(SPACE.page).py(SPACE.lg).gap(SPACE.md)
-        .when(wide, el => el.w(SIZE.detail).flex_none().border_l(1).border_color(t.border))
-        .when(!wide, el => el.flex_1().min_w(0))
-        .child(h_flex().flex_none().gap(SPACE.md).items_center().text_size(TEXT.small)
-          .child(this.mono(div().flex_none().text_color(t.muted).child(r.id)))
-          .child(chip(rowWord(r), rowStatus(r), t))
-          .when(Boolean(r.gate.text) && r.gate.state !== "ready", el => el.child(div().min_w(0).truncate().text_color(t.dim).child(r.gate.text)))
-          .child(div().flex_1())
-          .child(button("close", "Close", t, cx => { this.selected = null; cx.notify(); })))
-        .child(div().flex_none().text_size(TEXT.title).font_medium().child(r.title))
-        .child(v_flex().flex_none().gap(SPACE.xs).children(rows.map(([label, value]) => this.labelled(label, value, t))))
-        .when(Boolean(r.body), el => el.child(div().flex_none().w_full().child(this.md(`body-${r.id}`, r.body))));
+      return modal("details", t, this.width, this.keys, cx => this.closeRecord(cx), [
+        this.modalHead([
+          this.mono(div().flex_none().text_color(t.muted).child(r.id)),
+          chip(rowWord(r), rowStatus(r), t),
+          div().flex_1().min_w(0).text_size(TEXT.title).font_medium().child(r.title),
+        ], t),
+        this.grid(rows, t),
+        ...bodyParts(r.body).map((x, i) => v_flex().flex_none().w_full().mt(SPACE.xs).gap(SPACE.xs)
+          .when(Boolean(x.label), el => el.child(div().text_size(TEXT.title).font_medium().child(x.label)))
+          .child(this.md(`body-${r.id}-${i}`, x.text))),
+      ]);
     }
 
     menuRow(x, archived, t) {
@@ -565,7 +608,7 @@ export function trackerView(host, first = null) {
       return v_flex().w_full()
         .child(h_flex().w_full().h(SIZE.line).gap(SPACE.sm).items_center().rounded(RADIUS.control).when(x.slug === this.slug, el => el.bg(t.selected))
           .child(h_flex().id(`tracker-${x.slug}`).flex_1().min_w(0).h_full().px(SPACE.sm).gap(SPACE.md).items_center().cursor_pointer().rounded(RADIUS.control)
-            .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.show(x.slug, cx))
+            .text_color(t.muted).hover(s => s.text_color(t.foreground)).on_click((_e, cx) => this.show(x.slug, cx))
             .child(div().min_w(0).flex_1().truncate().text_size(TEXT.small).child(x.title))
             .when(Boolean(x.in_use), el => el.child(div().flex_none().text_size(TEXT.tiny).text_color(tone("in-use", t)).child(`in use by ${x.in_use}`)))
             .child(div().flex_none().text_size(TEXT.tiny).text_color(t.dim).child(x.slug)))
@@ -642,7 +685,7 @@ export function trackerView(host, first = null) {
 
     render() {
       const t = host.colors();
-      const root = host.sized(v_flex().id("tracker").size_full().min_h(0).overflow_hidden().bg(t.background)
+      const root = host.sized(v_flex().id("tracker").relative().size_full().min_h(0).overflow_hidden().bg(t.background)
         .text_color(t.foreground).text_size(TEXT.body).when(Boolean(host.framed?.()), el => el.rounded(RADIUS.frame).border_1().border_color(t.border)), (width, cx) => {
         if (Math.abs(width - this.width) > 1) { this.width = width; cx?.notify(); }
       });
@@ -658,12 +701,12 @@ export function trackerView(host, first = null) {
         return root.child(div().p(SPACE.page).text_size(TEXT.small).text_color(t.dim)
           .child(this.slug ? "Loading…" : "No tracker open: pick one above, or ask the agent to make one."));
       }
-      const wide = this.width >= DETAIL_MIN;
-      const open = Boolean(this.selected && view.records[this.selected]);
-      const body = h_flex().flex_1().min_h(0).w_full().items_start();
-      if (!open || wide) body.child(this.page(view, open ? this.width - SIZE.detail : this.width, t));
-      if (open) body.child(this.details(view, this.selected, wide, t));
-      return root.child(body);
+      return root.child(h_flex().flex_1().min_h(0).w_full().items_start().child(this.page(view, this.width, t)))
+        .when(Boolean(this.selected), el => {
+          if (view.records[this.selected]) return el.child(this.details(view, this.selected, t));
+          const item = view.now?.items.find(x => x.key === this.selected);
+          return item ? el.child(this.nowDetails(item, t)) : el;
+        });
     }
   };
 }

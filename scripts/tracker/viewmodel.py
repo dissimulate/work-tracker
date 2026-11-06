@@ -8,20 +8,15 @@ import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
-    branch_entry, day_text, due_date, level, level_name, linked_prs, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
+    branch_entry, day_text, due_date, level, level_name, is_pr_link, linked_prs, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
     Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .github import pr_url
-from .views import dep_facts, duration, pr_label, span_lines, stage_counts
+from .views import dep_facts, duration, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
 VIEW_SCHEMA = 4  # a UI that reads another number asks to be updated
-
-
-def gate_tag(g: Gate) -> str:
-    """The filter a gate puts a record in: `ready`, `blocked` (a ticket that can stack too), or none."""
-    return "ready" if g.state == "ready" else "" if g.state in ("", "blocks") else "blocked"
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -38,9 +33,8 @@ def dep_tone(d: Dep) -> str:
 def filter_counts(tr: Tracker) -> list[tuple[str, int]]:
     """The sequence's filters in the order they show, each with how many tickets it keeps."""
     counts = stage_counts(tr)
-    n = {"all": len(tr.tickets), "active": sum(1 for t in tr.tickets if not t.closed), "ready": len(tr.ready()),
-         "blocked": sum(1 for t in tr.tickets if not t.closed and tr.blockers(t)), **counts}
-    return [(f, n[f]) for f in ("all", "active", "ready", "blocked", *(s for s in STAGES if s in counts))]
+    blocked = sum(1 for t in tr.tickets if not t.closed and tr.blockers(t))
+    return [("blocked", blocked), *((s, counts[s]) for s in STAGES if s in counts)]
 
 
 def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -115,14 +109,15 @@ def dep_view(d: Dep) -> dict:
 
 
 def pr_views(tr: Tracker, t: Record) -> list[dict]:
-    """A ticket's PRs, each once: the ones `sync` follows, then each of its `PR:` links to a PR's page, also one in a
-    repo `sync` does not read."""
+    """A ticket's PRs, each once: the ones `sync` follows, with their state, then each of its `PR:` links to a PR's page,
+    also one in a repo `sync` does not read. `text`: what its link says of it."""
     prs = {}
-    for n in t.prs:
+    for n, state in t.prs.items():
         url = pr_url(tr.repo_of(t), n)
-        prs[url or str(n)] = {"number": str(n), "url": url}
+        prs[url or str(n)] = {"number": str(n), "url": url, "state": state or "", "text": ""}
     for link in linked_prs(t):
-        prs.setdefault(link.url, {"number": link.number, "url": link.url})
+        pr = prs.setdefault(link.url, {"number": link.number, "url": link.url, "state": "", "text": ""})
+        pr["text"] = link.text
     return list(prs.values())
 
 
@@ -151,14 +146,15 @@ def record_view(tr: Tracker, r: Record) -> dict:
     return {
         "id": r.id, "kind": r.kind, "title": str(r.get("title")), "status": str(r.get("status", "open")),
         "stage": r.stage, "state": ticket_state(tr, r) if r.kind == "ticket" else r.stage, "closed": r.closed,
-        "gate": {"state": g.state, "text": g.text(), "tag": gate_tag(g)},
+        "gate": {"state": g.state, "text": g.text()},
         "time": time_view(r) if r.kind == "ticket" else [],
         "line": {"label": word, "text": str(line)} if line else None,
         "move": move_view(move),
+        "prs": pr_views(tr, r) if r.kind == "ticket" else [],
         "deps": deps,
         "facts": [{"label": k.removesuffix("_at"), "text": show_value(k, r.get(k)), "code": k in ("branch", "base")}
                   for k in FACTS if r.get(k)],
-        "links": link_views(r.links),
+        "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
         "body": strip_comments(without_section(r.body, "Links")).strip(),
     }
 
@@ -170,10 +166,9 @@ def ticket_view(tr: Tracker, t: Record, order: int, step: int, links: list[str])
     unblocks = [o.id for o in tr.waiting_on(t.id)]
     return {
         "id": t.id, "title": str(t.get("title")), "stage": t.stage, "closed": t.closed, "state": ticket_state(tr, t),
-        "gate": {"state": tr.gate(t).state, "text": tr.gate(t).text(), "tag": gate_tag(tr.gate(t))},
+        "gate": {"state": tr.gate(t).state, "text": tr.gate(t).text()},
         "order": order, "step": step, "links": links,
         "group": str(t.get("group", "")), "levels": {key: level_name(t, key) for key in SCALES},
-        "pr": pr_label(t) if t.prs else "",
         "waits": [dep_view(d) for d in waits], "unblocks": unblocks,
         "sort": {"step": order, "ticket": t.id,
                  "status": list(STAGES).index(t.stage) if t.stage in STAGES else len(STAGES),

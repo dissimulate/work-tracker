@@ -54,7 +54,7 @@ class Match:
 
     def summary(self) -> str:
         """`SS-2 in-progress; also SS-1 done`: every ticket on the branch in one line, the focus first. More than
-        SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 merged`."""
+        SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 dropped`."""
         rest = [t for t in self.tickets if t not in self.focus]
         closed = [t for t in rest if t.closed]
         also = [f"{t.id} {t.stage}" for t in rest if t not in closed or len(closed) <= SUMMARY_CLOSED_NAMED]

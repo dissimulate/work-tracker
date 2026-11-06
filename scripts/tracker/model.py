@@ -48,7 +48,7 @@ NO_STAGE = Stage()  # of an unknown status (`check` reports it)
 # kind's, is one entry here: `set`, `check`, `tracker rules` and every closed, dropped or started test follow from it.
 LIFECYCLES = {
     "ticket": {"todo": Stage(todo=True), "in-progress": Stage(in_flight=True),
-               "in-review": Stage(in_flight=True, derived=True), "merged": Stage(closed=True, derived=True),
+               "in-review": Stage(in_flight=True, derived=True),
                "done": Stage(closed=True), "dropped": Stage(closed=True, dropped=True)},
     "decision": {"open": Stage(), "closed": Stage(closed=True)},
     "action": {"open": Stage(), "done": Stage(closed=True), "dropped": Stage(closed=True, dropped=True)},
@@ -57,7 +57,7 @@ LIFECYCLES = {
 STAGES = LIFECYCLES["ticket"]
 # The statuses a command sets, per kind; a ticket's PR adds the others
 STATUSES = {kind: tuple(s for s, x in stages.items() if not x.derived) for kind, stages in LIFECYCLES.items()}
-PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # PRs' state -> stage of started work
+PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "done"}  # PRs' state -> stage of started work
 PR_STATES = ("open", "draft", "merged", "closed")  # the state of a ticket's PRs together: the first any of them has
 OPEN_PR = {"draft", "open"}  # the states of a PR not yet merged or closed
 OPEN_STAGES = {s for s, x in STAGES.items() if not x.closed}
@@ -613,7 +613,7 @@ class Kind:
 
 KINDS = {
     "ticket": Kind("tickets", "", "new", ("Plan", "Carry forward", "Links"), ("Plan", "Carry forward", "Links"),
-                   rule=f"Carry forward ≤ {MERGED_CARRY_FORWARD_MAX} bullets once merged or done. Ids: letters, "
+                   rule=f"Carry forward ≤ {MERGED_CARRY_FORWARD_MAX} bullets once done. Ids: letters, "
                         "digits, `.`, `_`, `-`."),
     "decision": Kind("decisions", "D", "decide", ("Question", "Options", "Resolution"), ("Question",), "Resolution",
                      frozenset({"ticket"}), "## Resolution holds one dated line per answer, `YYYY-MM-DD (who): "
@@ -1400,7 +1400,7 @@ def resolution(d: Record) -> str:
 
 # ---------------------------------------------------------------- dependencies
 # A ticket's `depends_on` is the one place an order or a blocker is written, always on the ticket that waits. Each
-# item is a ticket (satisfied once it is merged, done or dropped), a decision or a user's action (satisfied once
+# item is a ticket (satisfied once it is done or dropped), a decision or a user's action (satisfied once
 # closed), or any other id: an external blocker, satisfied only when it is removed, and named by a `- Blocker:` line
 # in the ticket's ## Links that says where it is and why it blocks. An open PR based on another ticket's branch also
 # waits on that ticket: that comes from the PR's `base`, not depends_on. Blockers, "unblocks", steps, the critical
@@ -1600,12 +1600,17 @@ class LinkedPr:
     url: str
     repo: str
     number: str
+    text: str
 
 
 def linked_prs(t: Record) -> list[LinkedPr]:
     """The PRs a ticket's `PR:` links point at."""
-    pages = (PR_PAGE.search(x.text) for x in t.links if x.label == "PR")
-    return [LinkedPr(m[0], m[1], m[2]) for m in pages if m]
+    pages = ((PR_PAGE.search(x.text), x.text) for x in t.links if x.label == "PR")
+    return [LinkedPr(m[0], m[1], m[2], text) for m, text in pages if m]
+
+
+def is_pr_link(link: Link) -> bool:
+    return link.label == "PR" and bool(PR_PAGE.search(link.text))
 
 
 def unread_link_move(tr: Tracker, t: Record) -> Move | None:

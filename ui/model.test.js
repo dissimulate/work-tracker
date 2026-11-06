@@ -1,22 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { GRAPH, MEANINGS, agentStatus, briefParts, filterRows, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
-  naturalCompare, nextSort, nowTitle, parseOpen, plainInline, rowStatus, rowWord, sortRows } from "./model.js";
+import { GRAPH, MEANINGS, agentStatus, bodyParts, filterRows, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sortRows } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
-  id, step, links, state: "ready", stage: "todo", closed: false, gate: { tag: "ready" }, order: step, sort: {}, ...extra,
+  id, step, links, state: "ready", stage: "todo", closed: false, gate: { state: "ready" }, order: step, sort: {}, ...extra,
 });
 
-test("filters: all, active, gates and stages", () => {
-  const rows = [row("T-1", 1, [], { closed: true, stage: "done", gate: { tag: "" } }),
-    row("T-2", 2, [], { gate: { tag: "blocked" } }), row("T-3", 3)];
-  const ids = f => filterRows(rows, f).map(r => r.id);
-  assert.deepEqual(ids("all"), ["T-1", "T-2", "T-3"]);
-  assert.deepEqual(ids("active"), ["T-2", "T-3"]);
-  assert.deepEqual(ids("blocked"), ["T-2"]);
-  assert.deepEqual(ids("ready"), ["T-3"]);
+test("filters: none is all, and several keep what any of them keeps", () => {
+  const rows = [row("T-1", 1, [], { stage: "done", closed: true, gate: { state: "" } }), row("T-2", 2, [], { stage: "in-review", gate: { state: "" } }),
+    row("T-3", 3), row("T-4", 4, [], { gate: { state: "blocked" } }), row("T-5", 5, [], { gate: { state: "stack" } })];
+  const ids = (...f) => filterRows(rows, f).map(r => r.id);
+  assert.deepEqual(ids(), ["T-1", "T-2", "T-3", "T-4", "T-5"]);
+  assert.deepEqual(ids("blocked"), ["T-4", "T-5"]);
+  assert.deepEqual(ids("blocked", "done"), ["T-1", "T-4", "T-5"]);
   assert.deepEqual(ids("done"), ["T-1"]);
+  assert.deepEqual(ids("done", "in-review"), ["T-1", "T-2"]);
 });
 
 test("numbers compare as numbers", () => {
@@ -104,14 +104,12 @@ test("tracker open's request", () => {
   assert.deepEqual(parseOpen(undefined), { slug: null, id: null });
 });
 
-test("the live line and Current's heading say only what is there", () => {
+test("the live line says only what is there", () => {
   const now = new Date(2026, 0, 1, 9, 5);
   assert.equal(hhmm(now), "09:05");
   assert.equal(liveLine({ synced: 0, issues: "" }, now), "live 09:05");
   assert.equal(liveLine({ synced: 0, issues: "issues read 09:00" }, now), "live 09:05 · issues read 09:00");
   assert.match(liveLine({ synced: now / 1000, issues: "" }, now), /· PRs from GitHub 09:05$/);
-  assert.equal(nowTitle({ busy: 2, yours: 1, agents: 2 }), "2 · 1 your move · 2 agents");
-  assert.equal(nowTitle({ busy: 1, yours: 0, agents: 1 }), "1 · 1 agent");
 });
 
 test("a view that follows says why it shows no tracker", () => {
@@ -122,11 +120,22 @@ test("a view that follows says why it shows no tracker", () => {
 });
 
 test("a README's Goal and Scope become labelled rows, with their sub-headings as bold lines", () => {
-  assert.deepEqual(briefParts("## Goal\n\nDo it.\n\n## Scope\n\n### In\n- a\n- b\n### Out\n- c"), [
+  assert.deepEqual(bodyParts("## Goal\n\nDo it.\n\n## Scope\n\n### In\n- a\n- b\n### Out\n- c"), [
     { label: "Goal", text: "Do it." },
     { label: "Scope", text: "**In**\n\n- a\n- b\n\n**Out**\n\n- c" },
   ]);
-  assert.deepEqual(briefParts(""), []);
+  assert.deepEqual(bodyParts(""), []);
+  assert.deepEqual(bodyParts("## Plan\n\n\n\n## Carry forward"), []);
+  assert.deepEqual(bodyParts("## Plan\n\n## Carry forward\n\n- a fact"), [{ label: "Carry forward", text: "- a fact" }]);
+  assert.deepEqual(bodyParts("- a note\n\n## Plan\n\nDo it."), [{ label: "", text: "- a note" }, { label: "Plan", text: "Do it." }]);
+});
+
+test("a column of text fits its longest value", () => {
+  assert.equal(fitWidth(["todo", "in-progress"], 10), fitWidth(["in-progress"], 10));
+  assert.ok(fitWidth(["waiting"], 12) < fitWidth(["in-progress"], 12));
+  assert.ok(fitWidth(["in-progress"], 12) >= 11 * 12 * 0.48);
+  assert.equal(fitWidth([], 12), 0);
+  assert.equal(fitWidth([null, ""], 12), 0);
 });
 
 test("an id column fits the longest id, within limits", () => {
@@ -143,7 +152,7 @@ test("a status has one meaning, and an unknown one is quiet", () => {
   assert.equal(meaningOf("in-review"), "held");
   assert.equal(meaningOf("in-progress"), "moving");
   assert.equal(meaningOf("ready"), "can-start");
-  assert.equal(meaningOf("merged"), "quiet");
+  assert.equal(meaningOf("done"), "quiet");
   assert.equal(meaningOf("a tracker's own"), "quiet");
   assert.equal(meaningOf(undefined), "quiet");
 });

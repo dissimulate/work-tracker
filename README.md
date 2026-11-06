@@ -89,7 +89,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 ### Tickets, branches and sessions
 
-- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review` and `merged`.
+- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review`, and once merged makes it `done`.
 - `depends_on` sets the order and the blockers. What is ready or blocked, and the branch a ticket can start from (stacked on work under way), are computed.
 - The branch names the session's tickets: each ticket whose `branch` it is, a `tracker use <id>` choice, a ticket id or Issue id in the branch name, or the branch's PR.
 - Many sessions can share one tracker. `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.
@@ -130,7 +130,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
   - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, amber while in review, the theme's done colour once closed.
   - Hover a row to see only what its ticket waits on and unblocks.
   - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. A narrow view leaves out Priority, Size, Waits on and Unblocks, then Group.
-- **A record** (a ticket, decision or action) opens beside the page when you click it, or in its place when the view is narrow: what it waits on and unblocks, its facts and links, its body. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
+- **A record** (a ticket, decision or action) opens in a modal over the page when you click it, and a press outside it or Escape closes it: what it waits on and unblocks, its facts and links, its body. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
 - **Wait time** runs from when a ticket's issue was created (`issue_created_at`) to when the ticket started (`started_at`, which its first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`). Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days. An opened ticket gives its own. A ticket has none when it was dropped, lacks either exact time (one started before 0.29), or ends before it starts (its issue was created after the work started).
 - **Reference** (bottom): the closed decisions and actions, the rest of the README, the log.
 

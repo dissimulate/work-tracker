@@ -324,7 +324,7 @@ class Moves(unittest.TestCase):
                   pull(12, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z"),
                   pull(20, branch="other", state="MERGED", merged_at="2026-10-02T06:30:00Z")]
         tr, one = synced()
-        self.assertEqual((one.stage, one.get("merged_at")), ("merged", "2026-10-03T06:30:00Z"))
+        self.assertEqual((one.stage, one.get("merged_at")), ("done", "2026-10-03T06:30:00Z"))
         fake = answers(prs)
         with mock.patch.object(github, "gh", fake):
             run(*t, "sync")
@@ -370,7 +370,7 @@ class Moves(unittest.TestCase):
         with mock.patch.object(github, "gh", answers([pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")])):
             run(*t, "sync")
         one = model.Tracker(model.HOME / s).lookup("S-1")
-        self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "merged", "2026-10-01T06:30:00Z"))
+        self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "done", "2026-10-01T06:30:00Z"))
 
     def test_sync_with_only_a_closed_pr_keeps_it(self):
         s = slug()
@@ -478,7 +478,7 @@ class Moves(unittest.TestCase):
         self.assertEqual(set(model.Tracker(model.HOME / s).prs), {"a/x#11", "a/x#12"})
         # Of the session's own tickets, only a move that becomes its own and a ticket's end are news.
         own = {"S-1": {"role": "own", "stage": "in-progress", "move": "rev — review requested", "mine": False}}
-        for now, said_ in (({"stage": "in-review"}, []), ({"stage": "merged"}, ["S-1 is now merged"]),
+        for now, said_ in (({"stage": "in-review"}, []), ({"stage": "done"}, ["S-1 is now done"]),
                            ({"stage": "in-progress", "move": "you — checks failing", "mine": True},
                             ["S-1 move now: you — checks failing"])):
             self.assertEqual(session.changes_since(tr, own, {"S-1": {"role": "own", **now}}), said_)
@@ -1444,7 +1444,7 @@ class SequenceSort(unittest.TestCase):
         self.assertEqual([rows["T-3"]["sort"][k] for k in keys], [1, "T-3", "", 0, 1, 1])
         self.assertEqual([rows["T-5"]["sort"][k] for k in keys], [2, "T-5", "", 0, 1, 0])
         self.assertEqual([rows["T-10"]["sort"][k] for k in keys], [3, "T-10", "ui", 0, 0, 0])
-        self.assertEqual([rows["T-4"]["sort"][k] for k in keys], [4, "T-4", "api", 5, 0, 0])
+        self.assertEqual([rows["T-4"]["sort"][k] for k in keys], [4, "T-4", "api", 4, 0, 0])
         self.assertEqual(set(rows["T-2"]["sort"]), {*keys, *model.SCALES})
 
         # What the ticket waits on, and what it unblocks.
@@ -1672,7 +1672,7 @@ class IssueFields(unittest.TestCase):
         self.assertEqual(self.updates(s), ["T-1: status in-review", "T-3: status in-progress"])
         self.write(t, "T-1")
         tr.lookup("T-1").save({"pr_state": "merged"})
-        self.assertEqual(self.updates(s), ["T-1: status merged", "T-3: status in-progress"])
+        self.assertEqual(self.updates(s), ["T-1: status done", "T-3: status in-progress"])
 
     def test_written_records_what_was_listed_not_what_changed_since(self):
         s, t = self.tracker()
@@ -1883,8 +1883,14 @@ class Ui(unittest.TestCase):
         path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\npr: 7\npr_state: open", 1))
         tracker = model.tracker_at(s)
         self.assertEqual(viewmodel.pr_views(tracker, tracker.lookup("T-1")), [
-            {"number": "7", "url": "https://github.com/acme/app/pull/7"},
-            {"number": "8", "url": "https://github.com/acme/app/pull/8"}])
+            {"number": "7", "url": "https://github.com/acme/app/pull/7", "state": "open",
+             "text": "[Same as synced](https://github.com/acme/app/pull/7)"},
+            {"number": "8", "url": "https://github.com/acme/app/pull/8", "state": "",
+             "text": "[Part two](https://github.com/acme/app/pull/8) — the rest"}])
+        # In an opened ticket each PR has one row: not its link as well. A link to anything else stays a link.
+        opened = viewmodel.record_view(tracker, tracker.lookup("T-1"))
+        self.assertEqual([x["number"] for x in opened["prs"]], ["7", "8"])
+        self.assertEqual([x["text"] for x in opened["links"]], ["[Not a PR page](https://example.com/7)"])
 
     def test_attached_finds_the_tracker_of_an_agents_process(self):
         s = self.tracker()
