@@ -109,7 +109,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 | PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
 | PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
-| PostToolUse (any tool) | Ends that mark, in a shell check that starts no Python otherwise. |
+| PostToolUse, PostToolUseFailure (any tool), SubagentStop | Ends that agent's mark, in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
 | Stop | Logs the commits no other hook saw. |
 | StopFailure | Marks the session idle after a failed turn. |
 | SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
@@ -118,16 +118,16 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 `tracker open [id]` shows the tracker, and opens the record `id` names. The view has no server: it runs the `tracker` CLI for all it reads and changes (`tracker data`, `tracker list --json`), when the tracker's files change and at least every 15 s in Herdr, every 3 s in its own window.
 
-- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `scripts/install-herdr-mod.sh` installs or updates the mod, and nothing else does. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. A layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button. A view with no tracker asked for follows the focused agent: it shows the tracker that agent's session is linked to, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes; the tab of `tracker open` stays on its tracker. An agent on another Herdr machine has its tracker on that machine: the view runs that machine's CLI through Herdr, its switcher lists that machine's trackers, and its bar names the machine. That machine needs this plugin version and a session that has used a tracker there, which records the CLI. Its tracker updates every 15 s, not at once, and an evidence link opens on that machine's screen. With no Herdr window open, or no mod installed, `tracker open` runs `gpui-shell run --dir <plugin>/ui`. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
+- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `scripts/install-herdr-mod.sh` installs or updates the mod, and nothing else does. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. A layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button. A view with no tracker asked for follows the focused agent: it shows the tracker that agent's session is linked to, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes; the tab of `tracker open` stays on its tracker. An agent on another Herdr machine has its tracker on that machine: the view runs that machine's CLI through Herdr, its switcher lists that machine's trackers, and its bar names the machine. That machine needs this plugin version and a session that has used a tracker there, which records the CLI. Its tracker updates every 15 s, not at once, and an evidence link opens on that machine's screen. With no Herdr window open, or no mod installed, `tracker open` runs `gpui-shell run --dir <plugin>/ui`, a new window each time, and says why if `gpui-shell` refuses at once. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
 - **Tracker menu** (top left) lists every tracker, the archived ones in a closed section at the bottom. A tracker's ⋯ has Archive (Unarchive) and Delete, both off while an agent session or a watch is on the tracker.
   - Archive moves the tracker to `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it. It still opens, read-only. `tracker init` refuses its slug.
-  - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the view shows why.
+  - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the view shows why, until you press that line or make another change.
 - **Refresh** (top right) pulls PR state from GitHub at once, and has the agent read the issue fields again at your next message in a session on the tracker. The live line beside it says when they were last read.
 - **Your actions**: your open actions, soonest due first, with Done and Drop. A due day is red once past.
-- **Current**: the tickets under way (your move first), each branch's handoff, and the agent sessions on the tracker (a filled dot while one works). A session is busy from your message to its turn's end; an interrupted turn can show busy until the next event.
+- **Current**: the tickets under way (your move first), each branch's handoff, and the agent sessions on the tracker. Each row's dot says what its sessions do: red when one needs you, green while one works, yellow while they are idle, a grey ring with none. A session is busy from your message to its turn's end. An interrupted turn can show busy until the next event, and a prompt you end with Esc can show "needs you" until then.
 - **Sequence**: the tickets in dependency order, depth first so a chain stays together, dropped tickets last. The Step column draws the dependency graph:
-  - a dot per ticket, by the theme: ready, green in progress, amber in review or when it can stack on work under way, red when blocked, a ring in the theme's done colour when closed, a grey ring when dropped. The ticket's id takes the same colour.
-  - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, amber while in review, the theme's done colour once closed.
+  - a dot per ticket: blue when ready, green in progress, yellow in review or when it can stack on work under way, red when blocked, a grey ring when closed or dropped. The ticket's id takes the same colour.
+  - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, yellow while in review, grey once closed.
   - Hover a row to see only what its ticket waits on and unblocks.
   - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. A narrow view leaves out Priority, Size, Waits on and Unblocks, then Group.
 - **A record** (a ticket, decision or action) opens in a modal over the page when you click it, and a press outside it or Escape closes it: what it waits on and unblocks, its facts and links, its body. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
@@ -136,12 +136,12 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 ### Watch
 
-- `tracker watch [name]` prints each change as one line; `!` marks what needs you. One watcher per tracker.
+- `tracker watch [name]` prints each change as one line; `!` marks what needs you, also an agent that has asked for a permission or an answer for 30 s. One watcher per tracker.
 - Only you start it: in a terminal, or with the watch skill ([Usage](#usage) step 5), which makes that session a read-only overseer. The CLI refuses `watch` in an agent session without that grant, and every write in a session with it.
 
 ### Upgrading a tracker
 
-The `schema` key in a tracker's README names its format. When `tracker check` says the format is old, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up to `$TRACKER_HOME/.backups/` first).
+The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/` and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. A session that still runs the older plugin version does not read the new format: start it again.
 
 ### Settings
 

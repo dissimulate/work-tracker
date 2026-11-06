@@ -81,14 +81,13 @@ export function modal(id, t, viewWidth, keys, close, content) {
 // A row as a rounded card: `head` is its row's parts, `click` makes the row take a click, and `after` holds controls at
 // the row's end with clicks of their own. A row's plain text brightens under the pointer: a part in a colour of its own
 // keeps it.
-export function card(id, head, t, { click = null, selected = false, after = [] } = {}) {
-  return v_flex().w_full().flex_none().rounded(RADIUS.card).bg(selected ? t.selected : faint(t.raised, ROW))
-    .child(h_flex().w_full().min_h(SIZE.card).items_center().rounded(RADIUS.card)
-      .child(h_flex().id(id).flex_1().min_w(0).min_h(SIZE.card).px(SPACE.xl).gap(SPACE.sm).items_center().rounded(RADIUS.card)
-        .text_size(TEXT.small).text_color(t.muted).when(after.length > 0, el => el.pr(0))
-        .when(Boolean(click), el => el.cursor_pointer().hover(s => s.text_color(t.foreground)).on_click((_e, cx) => click(cx)))
-        .children(head))
-      .when(after.length > 0, el => el.pr(SPACE.xl).gap(SPACE.sm).children(after)));
+export function card(id, head, t, { click = null, after = [] } = {}) {
+  return h_flex().w_full().flex_none().min_h(SIZE.card).items_center().rounded(RADIUS.card).bg(faint(t.raised, ROW))
+    .child(h_flex().id(id).flex_1().min_w(0).min_h(SIZE.card).px(SPACE.xl).gap(SPACE.sm).items_center().rounded(RADIUS.card)
+      .text_size(TEXT.small).text_color(t.muted).when(after.length > 0, el => el.pr(0))
+      .when(Boolean(click), el => el.cursor_pointer().hover(s => s.text_color(t.foreground)).on_click((_e, cx) => click(cx)))
+      .children(head))
+    .when(after.length > 0, el => el.pr(SPACE.xl).gap(SPACE.sm).children(after));
 }
 
 // A list of cards. Text on a card that the page would draw dim takes t.muted: dim is too faint on t.raised.

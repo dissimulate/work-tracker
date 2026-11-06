@@ -8,8 +8,8 @@ import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
-    branch_entry, day_text, due_date, level, level_name, is_pr_link, linked_prs, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
-    Record, Tracker)
+    branch_entry, day_text, due_date, level, level_name, is_pr_link, linked_prs, sequence, show_value, sort_key, span,
+    whose_move, Dep, Move, Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .github import pr_url
@@ -109,14 +109,14 @@ def dep_view(d: Dep) -> dict:
 
 
 def pr_views(tr: Tracker, t: Record) -> list[dict]:
-    """A ticket's PRs, each once: the ones `sync` follows, with their state, then each of its `PR:` links to a PR's page,
-    also one in a repo `sync` does not read. `text`: what its link says of it."""
+    """A ticket's PRs, each once (GitHub's repo names ignore case): the ones `sync` follows, with their state, then each
+    of its `PR:` links to a PR's page, also one in a repo `sync` does not read. `text`: what its link says of it."""
     prs = {}
     for n, state in t.prs.items():
         url = pr_url(tr.repo_of(t), n)
-        prs[url or str(n)] = {"number": str(n), "url": url, "state": state or "", "text": ""}
+        prs[url.lower() or str(n)] = {"number": str(n), "url": url, "state": state or "", "text": ""}
     for link in linked_prs(t):
-        pr = prs.setdefault(link.url, {"number": link.number, "url": link.url, "state": "", "text": ""})
+        pr = prs.setdefault(link.url.lower(), {"number": link.number, "url": link.url, "state": "", "text": ""})
         pr["text"] = link.text
     return list(prs.values())
 
@@ -127,8 +127,7 @@ def link_views(items: list[Link]) -> list[dict]:
 
 def time_view(t: Record) -> list[dict]:
     """A ticket's wait and cycle time (SPANS), those it has."""
-    return [{"name": name, "text": duration(x), "about": SPANS[name][2]}
-            for name in SPANS if (x := span(t, name)) is not None]
+    return [{"name": name, "text": duration(x)} for name in SPANS if (x := span(t, name)) is not None]
 
 
 def record_view(tr: Tracker, r: Record) -> dict:
@@ -144,15 +143,15 @@ def record_view(tr: Tracker, r: Record) -> dict:
     move = whose_move(tr, r) if r.kind == "ticket" else None
     word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     return {
-        "id": r.id, "kind": r.kind, "title": str(r.get("title")), "status": str(r.get("status", "open")),
-        "stage": r.stage, "state": ticket_state(tr, r) if r.kind == "ticket" else r.stage, "closed": r.closed,
+        "id": r.id, "title": str(r.get("title")), "stage": r.stage,
+        "state": ticket_state(tr, r) if r.kind == "ticket" else r.stage,
         "gate": {"state": g.state, "text": g.text()},
         "time": time_view(r) if r.kind == "ticket" else [],
         "line": {"label": word, "text": str(line)} if line else None,
         "move": move_view(move),
         "prs": pr_views(tr, r) if r.kind == "ticket" else [],
         "deps": deps,
-        "facts": [{"label": k.removesuffix("_at"), "text": show_value(k, r.get(k)), "code": k in ("branch", "base")}
+        "facts": [{"label": k.removesuffix("_at"), "text": show_value(k, r.get(k)), "code": k == "branch"}
                   for k in FACTS if r.get(k)],
         "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
         "body": strip_comments(without_section(r.body, "Links")).strip(),
@@ -185,7 +184,7 @@ def action_view(tr: Tracker, a: Record) -> dict:
     return {"id": a.id, "title": str(a.get("title")), "status": str(a.get("status", "open")), "closed": a.closed,
             "gate": tr.gate(a).text(),
             "when": day_text(a.get("closed_at")) if a.closed else "",
-            "due": {"day": due.isoformat(), "text": due_text(due), "late": late} if due and not a.closed else None}
+            "due": {"text": due_text(due), "late": late} if due and not a.closed else None}
 
 
 def decision_view(tr: Tracker, d: Record) -> dict:
@@ -206,7 +205,8 @@ def now_view(tr: Tracker) -> dict:
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:
-        return [{"busy": x.status == "busy", "waiting": x.status == "waiting", "word": agent_word(x), "cwd": x.cwd} for x in sessions]
+        return [{"busy": x.status == "busy", "waiting": x.status == "waiting", "word": agent_word(x), "cwd": x.cwd}
+                for x in sessions]
 
     def turn(t: Record) -> tuple:
         move = moves[t.id]
@@ -217,14 +217,14 @@ def now_view(tr: Tracker) -> dict:
     for t in sorted((t for t in tr.tickets if t.id in moves), key=turn):
         b = str(t.get("branch") or "")
         mark = branch_entry(marks, tr.repo_of(t), b)
-        fresh = f"commits logged {ago(mark['at'])}" if isinstance(mark, dict) else ""
+        fresh = f"commits logged {ago(mark['at'])}" if mark else ""
         move = moves[t.id]
-        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "state": ticket_state(tr, t), "prs": pr_views(tr, t), "fresh": fresh,
-                      "move": move_view(move),
+        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "state": ticket_state(tr, t),
+                      "prs": pr_views(tr, t), "fresh": fresh, "move": move_view(move),
                       "line": f"next: {t.get('next')}" if t.get("next") else "", "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():
-        items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""), "agents": []})
-    busy = len(items)
+        items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""),
+                      "agents": []})
     for x, m in live:
         if not m.active:
             on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in m.focus]
@@ -237,8 +237,7 @@ def now_view(tr: Tracker) -> dict:
     if w:
         watch = {"running": w["running"], "text": f"Watched by {w['who']} since {clock(w['since'])}" if w["running"]
                  else f"Watch by {w['who']} ended {clock(w['ended'])}"}
-    return {"items": items, "busy": busy, "yours": sum(bool(m and m.mine) for m in moves.values()), "agents": len(live),
-            "idle": idle, "watch": watch}
+    return {"items": items, "idle": idle, "watch": watch}
 
 
 def issue_state(tr: Tracker) -> str:
@@ -268,7 +267,7 @@ def reference_view(tr: Tracker) -> dict:
     log = [ln[2:] for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
     return {"decisions": [decision_view(tr, d) for d in tr.decisions if d.closed],
             "actions": [action_view(tr, a) for a in closed],
-            "more": {"headings": headings(extra), "body": extra} if headings(extra) else None,
+            "more": {"body": extra} if headings(extra) else None,
             "log": log[::-1]}
 
 
@@ -279,16 +278,15 @@ def view_model(tr: Tracker) -> dict:
     links = drawn_links(seq.waits)
     goal = strip_comments(section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")).strip()
     return {
-        "schema": VIEW_SCHEMA, "slug": tr.slug, "title": tr.title, "archived": tr.archived, "root": str(tr.root),
+        "schema": VIEW_SCHEMA, "slug": tr.slug, "title": tr.title, "archived": tr.archived,
         "facts": {k.removesuffix("_at"): show_value(k, tr.meta[k]) if tr.meta.get(k) else ""
-                  for k in ("status", "owner", "repo", "created_at")},
+                  for k in ("status", "owner", "created_at")},
         "synced": int(tr.raw_state().get("last_sync", 0)), "sync_every": LIVE_SYNC_S, "issues": issue_state(tr),
         "links": link_views(tr.context), "goal": {"headings": headings(goal), "body": goal} if goal else None,
         "check": {"errors": errors, "warnings": warnings},
         "actions": [action_view(tr, a) for a in tr.open_actions()],
         "now": now_view(tr),
         "scales": list(SCALES), "filters": filter_counts(tr), "spans": span_lines(tr),
-        "open": sum(1 for t in tr.tickets if not t.closed), "total": len(tr.tickets),
         "tickets": [ticket_view(tr, t, i, seq.step[t.id], links[t.id])
                     for i, t in enumerate(graph_order(tr, seq.waits, seq.step))],
         "decisions": [decision_view(tr, d) for d in tr.open_decisions()],

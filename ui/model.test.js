@@ -93,6 +93,11 @@ test("a link reaches a record, an evidence file or the web, and nothing else", (
   }
 });
 
+test("a link whose text is no valid escape reaches nothing", () => {
+  assert.equal(linkTarget("#100%"), null);
+  assert.equal(linkTarget("evidence/50%.txt"), null);
+});
+
 test("a row's text has no Markdown marks", () => {
   assert.equal(plainInline("Run `make` on **all** of *it*: [the doc](https://x.y) a*b"),
     "Run make on all of it: the doc a*b");

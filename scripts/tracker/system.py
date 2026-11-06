@@ -17,22 +17,21 @@ PYTHON = [sys.executable, "-I", "-X", "utf8"]
 CLI_START = "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()"
 CLI = [*PYTHON, "-c", CLI_START, str(PACKAGE.parent)]
 # What the CLI and `gh` need of the environment. A UI's host can start programs with none (gpui-shell does).
-CLI_ENV = ("TRACKER_HOME", "HOME", "USERPROFILE", "SYSTEMROOT", "PATH", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_HOST")
+CLI_ENV = ("TRACKER_HOME", "TRACKER_SYNC", "CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE", "SYSTEMROOT", "PATH",
+           "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_HOST")
 
 
-def env_int(names: str | tuple[str, ...], default: int, least: int = 0) -> int:
-    """A whole-number setting from the first of `names` that is set, and at least `least`. A value that is not a
-    whole number gives `default`, with a warning on stderr: a typo in a setting stops no command and no hook."""
-    for name in (names,) if isinstance(names, str) else names:
-        text = os.environ.get(name, "").strip()
-        if not text:
-            continue
-        try:
-            return max(least, int(text))
-        except ValueError:
-            print(f"work-tracker: {name}={text!r} is not a whole number; using {default}", file=sys.stderr)
-            return default
-    return default
+def env_int(name: str, default: int, least: int = 0) -> int:
+    """A whole-number setting, at least `least`. A value that is not a whole number gives `default`, with a warning on
+    stderr: a typo in a setting stops no command and no hook."""
+    text = os.environ.get(name, "").strip()
+    if not text:
+        return default
+    try:
+        return max(least, int(text))
+    except ValueError:
+        print(f"work-tracker: {name}={text!r} is not a whole number; using {default}", file=sys.stderr)
+        return default
 
 
 def spawn(*args: str) -> None:

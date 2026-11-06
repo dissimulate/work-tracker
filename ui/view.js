@@ -28,7 +28,7 @@ const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which thos
 const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 
-export function trackerView(host, first = null) {
+export function trackerView(host) {
   return class TrackerView extends View {
     init(_props, cx) {
       const start = host.start();
@@ -37,32 +37,28 @@ export function trackerView(host, first = null) {
       this.focusId = null; // the hovered row, whose chains the graph shows
       this.keys = cx.focus_handle(); // takes Escape while a record is open
       this.hoveredPanel = null; // the part of the page under the pointer, whose arrow is brighter
-      this.selected = first?.selected ?? start.id;
+      this.selected = start.id;
       this.width = 0;
       this.panels = new Map(); // what the user opened or closed: it stays so as the data changes
-      this.menu = Boolean(first?.menu); // the tracker menu
-      this.moreOpen = first?.moreOpen ?? null; // the tracker menu's row with its Archive and Delete out
-      this.archivedOpen = Boolean(first?.menu);
-      this.doomed = first?.doomed ?? null; // the tracker the delete question asks about
-      this.error = "";
+      this.menu = false; // the tracker menu
+      this.moreOpen = null; // the tracker menu's row with its Archive and Delete out
+      this.archivedOpen = false;
+      this.doomed = null; // the tracker the delete question asks about
+      this.error = ""; // why the data cannot be read: gone once it can
+      this.refused = ""; // why a change the user asked for did not happen: stays until they act again
       this.busy = false;
-      this.view = first?.view ?? null;
-      this.trackers = first?.trackers ?? null;
-      this.slug = first?.view?.slug ?? start.slug;
+      this.view = null;
+      this.trackers = null;
+      this.slug = start.slug;
       this.machine = null; // where this tracker lives: another machine when the agent followed runs there
       this.clis = new Map(); // per machine, how to start the CLI
       this.shown = "";
       this.live = "";
-      this.follows = !first && Boolean(host.agentAt) && !start.slug;
-      this.notice = first?.notice ?? ""; // why a view that follows shows no tracker
+      this.follows = Boolean(host.agentAt) && !start.slug;
+      this.notice = ""; // why a view that follows shows no tracker
       this.agentAddress = undefined; // the agent followed
       this.followed = undefined; // that agent and its tracker: when they change, a tracker picked by hand gives way
       this.following = false;
-      if (first) { // a check of the drawing: its data is given, and every part opens
-        ["sec-check", "sec-reference", "sec-brief", "closed-decisions", "closed-actions", "more", "log"]
-          .forEach(key => this.panels.set(key, true));
-        return;
-      }
       const dir = this.dir = host.trackersDir?.() ?? `${host.home()}/.claude/trackers`;
       cx.spawn(async cx => {
         await this.findCli(null);
@@ -224,6 +220,7 @@ export function trackerView(host, first = null) {
       this.machine = machine;
       this.slug = slug;
       this.notice = "";
+      this.refused = "";
       this.menu = false;
       this.moreOpen = null;
       this.doomed = null;
@@ -239,19 +236,18 @@ export function trackerView(host, first = null) {
     change(cx, args, { list = false, then = null } = {}) {
       if (this.busy) return;
       this.busy = true;
+      this.refused = "";
       cx.notify();
       cx.spawn(async cx => {
-        let refused = "";
         try {
           await this.tracker(...args);
           then?.();
         } catch (e) {
-          refused = String(e.message ?? e);
+          this.refused = String(e.message ?? e);
         }
         this.busy = false;
         if (list) await this.listTrackers(cx);
         await this.load(cx);
-        this.error = refused || this.error;
         cx.notify();
       });
     }
@@ -319,9 +315,9 @@ export function trackerView(host, first = null) {
       return this.mono(div().w(this.idColumn).flex_none().truncate().text_color(color ?? t.muted).child(content));
     }
 
-    // A record's card: it opens beside the page.
+    // A record's card: it opens in a modal.
     recordRow(id, children, t, after = []) {
-      return card(`record-${id}`, children, t, { click: cx => this.select(id, cx), selected: this.selected === id, after });
+      return card(`record-${id}`, children, t, { click: cx => this.select(id, cx), after });
     }
 
     actionRow(a, buttons, t) {
@@ -378,7 +374,7 @@ export function trackerView(host, first = null) {
         .when(item.kind === "handoff", el => el.child(this.named(item.title)));
       // A ticket has its record to show; any other row, with nothing more to show, does not take a click.
       const opens = item.kind === "ticket" || Boolean(item.line || item.agents.length);
-      return card(`now-${item.key}`, [head], t, { click: opens ? cx => this.select(item.key, cx) : null, selected: this.selected === item.key });
+      return card(`now-${item.key}`, [head], t, { click: opens ? cx => this.select(item.key, cx) : null });
     }
 
     // What a Current row adds to its modal: how recent its commits are, and its sessions in their status's colour.
@@ -442,7 +438,6 @@ export function trackerView(host, first = null) {
 
     row(r, cols, graphW, t) {
       return h_flex().id(`row-${r.id}`).w_full().h(SIZE.row).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.small).cursor_pointer()
-        .when(this.selected === r.id, el => el.bg(t.selected))
         .on_hover((hovered, cx) => {
           const id = hovered ? r.id : this.focusId === r.id ? null : this.focusId;
           if (id !== this.focusId) { this.focusId = id; cx.notify(); }
@@ -525,7 +520,7 @@ export function trackerView(host, first = null) {
         .when(view.archived, el => el.child(h_flex().mt(SPACE.sm).gap(SPACE.md).items_center().text_size(TEXT.small).text_color(t.muted)
           .child(div().flex_1().min_w(0).child("Archived: out of every list and hook, its PRs never synced."))
           .child(button("unarchive", "Unarchive", t, cx => this.change(cx, ["unarchive", view.slug], { list: true }), { off: this.busy }))));
-      return v_flex().id("page").flex_1().min_w(0).h_full().pb(SPACE.page).overflow_y_scrollbar()
+      return v_flex().id("page").w_full().flex_1().min_h(0).pb(SPACE.page).overflow_y_scrollbar()
         .child(top)
         .when(Boolean(brief), el => el.child(this.section("brief", brief, false,
           () => v_flex().pb(SPACE.xs).gap(SPACE.xs)
@@ -692,6 +687,10 @@ export function trackerView(host, first = null) {
       const view = this.view;
       root.child(this.bar(view, t));
       if (this.error) root.child(div().flex_none().px(SPACE.page).py(SPACE.sm).text_size(TEXT.small).text_color(tone("error", t)).child(this.error));
+      if (this.refused) {
+        root.child(div().id("refused").flex_none().px(SPACE.page).py(SPACE.sm).text_size(TEXT.small).text_color(tone("error", t)).cursor_pointer()
+          .on_click((_e, cx) => { this.refused = ""; cx.notify(); }).child(this.refused));
+      }
       if (this.notice && !view) {
         return root.child(v_flex().p(SPACE.page).gap(SPACE.xs).text_size(TEXT.small).text_color(t.dim)
           .child(div().child(this.notice))
@@ -701,7 +700,7 @@ export function trackerView(host, first = null) {
         return root.child(div().p(SPACE.page).text_size(TEXT.small).text_color(t.dim)
           .child(this.slug ? "Loading…" : "No tracker open: pick one above, or ask the agent to make one."));
       }
-      return root.child(h_flex().flex_1().min_h(0).w_full().items_start().child(this.page(view, this.width, t)))
+      return root.child(this.page(view, this.width, t))
         .when(Boolean(this.selected), el => {
           if (view.records[this.selected]) return el.child(this.details(view, this.selected, t));
           const item = view.now?.items.find(x => x.key === this.selected);

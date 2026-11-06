@@ -16,7 +16,7 @@ Use the command prefix from the session's `[work-tracker]` hook when supplied. I
 ## Loop
 
 1. Run `tracker watch $ARGUMENTS --once` with the host's background command tool. If it returns a process handle, wait for its output with the host's process tool. The command waits until something changes, prints one line per ticket, agent or check, then exits. The first run prints the state now. Exit 3 lists trackers: ask the user which one.
-2. Read the batch. Each line starts with the time; `!` marks what needs the user: a move that became theirs (a review came back, checks fail, ready to merge), an agent idle and waiting on them, a new `check` error, a failing GitHub sync.
+2. Read the batch. Each line starts with the time; `!` marks what needs the user: a move that became theirs (a review came back, checks fail, ready to merge), an agent that asks them for a permission or an answer, an agent idle and waiting on them, a new `check` error, a failing GitHub sync.
 3. Judge the batch as a whole, then act:
    - the user must act now: one notification under 200 characters that leads with the action, such as "S-3: changes requested by rev; agent api idle 12 min, waits on you". Use the host's notification tool when available; otherwise reply in chat.
    - worth knowing, not urgent: one short line in your reply

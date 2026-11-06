@@ -9,13 +9,15 @@ const COLORS = {
   hover: "#23252b", selected: "#2c2f38", accent: "#6fb3ea", working: "#e8b35f", blocked: "#ee7d7d", ansi2: "#7ecf86",
 };
 
+const FONTS = { darwin: "Menlo", win32: "Consolas" }; // each platform's own monospace font
+
 export default trackerView({
-  home: () => process.env.HOME ?? os.homedir(),
+  home: () => os.homedir(),
   readText: async path => { try { return await readFile(path, "utf8"); } catch { return null; } },
   run: (command, args) => process.run(command, args),
   changed: cx => cx.sleep(3000), // no folder watch here: an unchanged answer draws nothing
   colors: () => COLORS,
-  font: () => "Menlo",
+  font: () => FONTS[os.platform()] ?? "DejaVu Sans Mono",
   sized: (el, set) => { set(window.viewport_size().width); return el; },
   start: () => parseOpen(process.env.TRACKER_OPEN),
   cli: () => JSON.parse(process.env.TRACKER_CLI || "null"), // `tracker open` says; run by hand, its hooks' record

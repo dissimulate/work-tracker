@@ -171,9 +171,11 @@ export function graphLayout(rows, rowHeight, focusId = null) {
 // `javascript:`, `file:` or an app's own scheme.
 export function linkTarget(url) {
   if (/^https?:\/\//i.test(url)) return { kind: "web", url }; // all that cx.open_url takes
-  if (url.startsWith("#")) return { kind: "record", id: decodeURIComponent(url.slice(1)) };
-  const file = /^evidence\/(.+)$/.exec(url)?.[1];
-  return file ? { kind: "evidence", file: decodeURIComponent(file) } : null;
+  const decoded = text => { try { return decodeURIComponent(text); } catch { return null; } }; // `100%` is no escape
+  const id = url.startsWith("#") ? decoded(url.slice(1)) : null;
+  if (id) return { kind: "record", id };
+  const file = decoded(/^evidence\/(.+)$/.exec(url)?.[1] ?? "");
+  return file ? { kind: "evidence", file } : null;
 }
 
 // A one-line row's text: Markdown's marks off, a link by its text. An opened record draws the Markdown.

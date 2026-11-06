@@ -17,6 +17,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
+from .contract import upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -377,16 +378,18 @@ def run_hook(event: str) -> None:
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
     try:
+        upgrade_trackers()
         sid = where(data)[1]
         os.environ["TRACKER_SESSION"] = sid  # command_context, session_id() and spawned commands read it
-        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle", "session-end": "ended",
-                  "waiting": "waiting", "resumed": "busy"}.get(event)
+        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle",
+                  "session-end": "ended", "waiting": "waiting", "resumed": "busy"}.get(event)
         if event == "session-end" and not data.get("agent_id"):
             session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
         HOOKS[event](data)
         # A subagent's turn is not the session's, but its wait on the user is.
-        if status and event != "session-end" and (not data.get("agent_id") or event in ("waiting", "resumed")):
-            session_activity(sid, status)
+        asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
+        if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
+            session_activity(sid, status, asker)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         print(f"work-tracker hook {event} failed: {exc}", file=sys.stderr)
         sys.exit(0)

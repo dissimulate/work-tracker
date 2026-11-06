@@ -5,7 +5,6 @@ The `tracker` command line: one function per command, and the parser."""
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import re
 import shutil
@@ -25,10 +24,10 @@ from .model import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE
     unknown_dep, utc_now, Busy, Record, Tracker)
 from .system import open_with_system
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker, in_repos, locate,
-    mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve, save_session,
-    session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
-from .contract import check, migrate, rules_lines
+from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
+    in_repos, locate, mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve,
+    save_session, session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
+from .contract import check, rules_lines, upgrade_trackers
 from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief,
     context_lines, dep_lines, history_lines, index_lines, issue_update_request, levels_text, order_lines, span_lines,
     start_text, updates_told)
@@ -474,7 +473,8 @@ def section_named(rec: Record, word: str, new: bool = False) -> str:
 def require_links(tr: Tracker, text: str) -> None:
     items, bad = parse_links(text)
     if bad or not items:
-        die("a link line is `- Label: [title](url) — why it matters`" + (f", not: {short(bad[0], 80)}" if bad else ""))
+        die("a link line is `- Label: [title](url) — why it matters`"
+            + (f", not: {short(bad[0], 80)}" if bad else ""))
     for x in items:
         if x.label not in tr.labels:
             die(f"label '{x.label}' is not one of {', '.join(tr.labels)} (`tracker set tracker labels=...` adds one)")
@@ -795,24 +795,6 @@ def cmd_actions(args):
 
 def cmd_rules(args):
     print("\n".join(rules_lines(find_tracker(args))))
-
-
-def cmd_migrate(args):
-    tr = resolve(args)
-    plan = migrate(tr, apply=False)
-    if not plan:
-        print("nothing to migrate")
-        return
-    print("\n".join(plan))
-    if args.dry_run:
-        return
-    backup = HOME / ".backups" / f"{tr.slug}-{dt.datetime.now():%Y%m%d-%H%M%S}"
-    shutil.copytree(tr.root, backup, ignore=shutil.ignore_patterns(".DS_Store", "*.tmp"))  # Finder's, half-writes
-    migrate(Tracker(tr.root), apply=True)
-    append_log(tr, f"Migrated to the current tracker rules ({len(plan)} changes; backup {backup})", [])
-    print(f"\nmigrated · backup: {backup}")
-    errors, warnings = check(Tracker(tr.root))
-    print(f"check: {len(errors)} errors, {len(warnings)} warnings" + (" — run `tracker check`" if errors else ""))
 
 
 def problem_lines(tr: Tracker) -> list[str]:
@@ -1149,7 +1131,8 @@ def cmd_evidence(args):
     shows in its folder. The agent reads evidence itself, and has no reason to put a window on the user's screen."""
     if agent_session()[0]:
         die("only the user opens evidence this way: read the file instead", REFUSED)
-    tr = resolve(args)
+    slug = getattr(args, "tracker", None)
+    tr = (slug and archived_at(slug)) or resolve(args)  # an archived tracker still opens in a UI
     folder = (tr.root / EVIDENCE_DIR).resolve()
     path = folder.joinpath(*Path(args.file).parts).resolve()
     if not path.is_relative_to(folder) or not path.is_file():
@@ -1175,8 +1158,9 @@ def build_parser():
                                      "session's from `tracker start`, or the repo's only tracker)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name, fn, help_):
-        sp = sub.add_parser(name, help=help_, description=help_)
+    def add(name, fn, help_, listed=True):
+        """A command; `listed=False`: one a UI runs, which `tracker --help` leaves out."""
+        sp = sub.add_parser(name, **({"help": help_} if listed else {}), description=help_)
         sp.add_argument("--tracker", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         sp.set_defaults(fn=fn)
         return sp
@@ -1323,9 +1307,6 @@ def build_parser():
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
     add("check", cmd_check, "validate the tracker; exit 1 on errors")
-    sp = add("migrate", cmd_migrate, "bring a tracker made by an older version to the current rules "
-                                     "(backs it up to $TRACKER_HOME/.backups first)")
-    sp.add_argument("--dry-run", action="store_true", help="only list the changes")
     sp = add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open "
                                "PRs' reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
@@ -1390,9 +1371,9 @@ def build_parser():
                                    "Refuses while an agent session or a watch is on it, and in an agent session")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
-    sp = add("data", cmd_data, "a tracker's sequence as JSON, for a UI")
+    sp = add("data", cmd_data, "all a UI shows of a tracker, as JSON", listed=False)
     sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
-    sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI")
+    sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI", listed=False)
     sp.add_argument("--pid", type=int, required=True, help="the agent's process id")
     sp.add_argument("--cwd", default="", help="its folder: finds a host that keeps no process file")
     sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open, else its own window")
@@ -1400,12 +1381,13 @@ def build_parser():
                                              "archived one too)")
     add("refresh", cmd_refresh, "pull PR state now, and have the next session prompt read the issue fields again: a "
                                 "UI's Refresh")
-    sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link")
+    sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link",
+             listed=False)
     sp.add_argument("file", help="its path under evidence/")
     return p, sub
 
 
-WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate", "synced", "pause", "step", "use",
+WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "synced", "pause", "step", "use",
                   "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 
@@ -1413,8 +1395,8 @@ def with_check(run, args) -> None:
     """Run a write command, then print the tickets it left unblocked, the request for an issue update it made due,
     and the `check` problems it added to the tracker, and end with whether `check` found new problems: no
     `tracker check` needs to follow a write. Each write logs what the history needs, so no `tracker log` follows one
-    either. `migrate` checks for itself; `init` is not checked."""
-    tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
+    either. `init` is not checked."""
+    tr = find_tracker(args) if args.cmd != "init" else None
     before = set(problem_lines(tr)) if tr else set()
     blocked = {t.id for t in tr.tickets if tr.blockers(t)} if tr else set()
     due = issue_update_items(tr) if tr else set()
@@ -1537,6 +1519,7 @@ def main(argv=None):
     reclaim(args, argv, parser)
     no_id(args)
     stdin_text(args)
+    upgrade_trackers()
     if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive", "refresh")) and watching():
         die("this session watches trackers for the user (/work-tracker:watch): it writes nothing to them, and works "
             "on no tracker", REFUSED)

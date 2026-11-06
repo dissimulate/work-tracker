@@ -7,14 +7,16 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
-from .model import HOME, ROOT
+from .model import HOME, ROOT, die
 from .system import WINDOWS, cli_for_ui
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
 GPUI_SHELL_VERSION = "0.9.0"  # ui/gpui-shell.json's, the one the window is checked on
+WINDOW_START_S = 0.5  # gpui-shell refuses an app before it runs it: this long with no exit, the window is up
 NO_HOST = (f"the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed "
            f"({ROOT / 'scripts' / 'install-herdr-mod.sh'}), or gpui-shell {GPUI_SHELL_VERSION} on your PATH: "
            "https://github.com/longbridge/gpui-kit/releases. Without them, `tracker index` and `tracker context <id>` "
@@ -56,15 +58,25 @@ def open_in_herdr(slug: str, ident: str = "") -> bool:
 
 
 def open_in_window(slug: str, ident: str = "") -> bool:
-    """Open the UI's own window, which outlives this command. False when gpui-shell is not installed."""
+    """Open the UI's own window, which outlives this command. False when gpui-shell is not installed. When gpui-shell
+    refuses at once (a version it cannot run, a bad manifest), says why: the window itself reports nothing."""
     shell = shutil.which("gpui-shell")
     if not shell:
         return False
     detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
               else {"start_new_session": True})
     env = {**os.environ, "TRACKER_OPEN": f"{slug}/{ident}", "TRACKER_CLI": json.dumps(cli_for_ui())}
-    subprocess.Popen([shell, "run", "--dir", str(UI_DIR)], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, **detach)
+    with tempfile.TemporaryFile() as errors:  # a file: a pipe would break the window's stderr once this command ends
+        started = subprocess.Popen([shell, "run", "--dir", str(UI_DIR)], env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=errors, **detach)
+        try:
+            code = started.wait(WINDOW_START_S)
+        except subprocess.TimeoutExpired:
+            return True
+        if code:
+            errors.seek(0)
+            why = errors.read().decode(errors="replace").strip()
+            die(f"gpui-shell could not open the view (exit {code}){f': {why}' if why else ''}")
     return True
 
 

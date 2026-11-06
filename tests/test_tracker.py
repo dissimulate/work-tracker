@@ -204,10 +204,10 @@ class MachineState(unittest.TestCase):
     def setUp(self):
         self.root = model.HOME / slug()
         (self.root / "tickets").mkdir(parents=True)
-        (self.root / "README.md").write_text("---\ntitle: T\nrepo: [a/x, b/y]\n---\n")
+        (self.root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: [a/x, b/y]\n---\n")
         ticket(self.root, "T-1", status="done", branch="f1", repo="a/x")
         ticket(self.root, "T-2", status="in-progress", branch="f2", repo="a/x")
-        ticket(self.root, "T-3", status="in-progress", branch="f3", repo="a/x", pr="5", pr_state="open", base="f2")
+        ticket(self.root, "T-3", status="in-progress", branch="f3", repo="a/x", prs=["5:open"])
 
     def state(self, data: dict) -> dict:
         (self.root / ".state.json").write_text(json.dumps(data))
@@ -241,12 +241,14 @@ class MachineState(unittest.TestCase):
         self.assertEqual(state["last_sync"], now)
 
     def test_stacked_pr_waits_while_open(self):
+        self.state({"prs": {"a/x#5": {"base": "f2"}}})
         tr = model.Tracker(self.root)
         t3 = tr.lookup("T-3")
         self.assertEqual([d.ident for d in tr.deps(t3)], ["T-2"])
         self.assertEqual([t.id for t in tr.waiting_on("T-2")], ["T-3"])
-        t3.save({"base": "main"})  # the PR was retargeted
-        self.assertEqual(tr.deps(t3), [])
+        self.state({"prs": {"a/x#5": {"base": "main"}}})  # the PR was retargeted
+        tr = model.Tracker(self.root)
+        self.assertEqual(tr.deps(tr.lookup("T-3")), [])
 
 
 def pull(number: int, **facts) -> dict:
@@ -350,27 +352,51 @@ class Moves(unittest.TestCase):
         prs[1]["baseRefName"] = "main"  # retargeted
         self.assertEqual(waits(), [])
 
-    def test_older_tickets_read_as_one_pr_until_sync_or_migrate_lists_them(self):
+    def test_a_tickets_one_pr_becomes_its_list_and_its_base_a_fact_of_the_pr(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-0", "--title", "Base", "--branch", "main2")
+        run(*t, "set", "S-0", "status=in-progress")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        tr = model.Tracker(model.HOME / s)
+        tr.lookup("S-1").save({"pr": "11", "pr_state": "open", "base": "main2"})
+        tr.save_state({**tr.raw_state(), "prs": {"a/x#11": {"review": "changes", "changes": ["rev"]}},
+                       "reviews": {"old": 1}, "synced": {"a/x:f9": "abc123"}})
+        tr.readme.save({"schema": 3})
+
+        run(*t, "list")
+        tr = model.Tracker(model.HOME / s)
+        one = tr.lookup("S-1")
+        self.assertEqual((one.list("prs"), one.prs, one.stage), (["11:open"], {"11": "open"}, "in-review"))
+        self.assertFalse(one.meta.keys() & {"pr", "pr_state", "base"})
+        self.assertEqual([d.ident for d in tr.deps(one)], ["S-0"])  # still stacked, before any sync
+        self.assertNotIn("reviews", tr.raw_state())
+        self.assertEqual(tr.raw_state()["synced"]["a/x:f9"], {"head": "abc123", "at": 0})
+
+        merged = pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")
+        with mock.patch.object(github, "gh", answers([merged])):
+            run(*t, "sync")
+        one = model.Tracker(model.HOME / s).lookup("S-1")
+        self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "done", "2026-10-01T06:30:00Z"))
+
+    def test_a_closed_pr_that_a_link_names_stays_and_a_merged_ticket_is_read_no_more(self):
         s = slug()
         t = ("--tracker", s)
         run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
         run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
         run(*t, "set", "S-1", "status=in-progress")
-        one = model.Tracker(model.HOME / s).lookup("S-1")
-        old = 'status: in-progress\npr: 11\npr_state: open\nbase: main'
-        one.path.write_text(one.path.read_text().replace("status: in-progress", old, 1))
-        one = model.Tracker(model.HOME / s).lookup("S-1")
-        self.assertEqual((one.prs, one.stage), ({"11": "open"}, "in-review"))
-
-        contract.migrate(model.Tracker(model.HOME / s), True)
-        one = model.Tracker(model.HOME / s).lookup("S-1")
-        self.assertEqual((one.list("prs"), one.prs, one.stage), (["11:open"], {"11": "open"}, "in-review"))
-        self.assertFalse(one.meta.keys() & {"pr", "pr_state", "base"})
-
-        with mock.patch.object(github, "gh", answers([pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")])):
+        run(*t, "add", "S-1", "link", "PR: [First try](https://github.com/a/x/pull/1)")
+        prs = [pull(1, branch="other", state="CLOSED"), pull(2, branch="f1", state="MERGED",
+                                                            merged_at="2026-10-01T06:30:00Z")]
+        with mock.patch.object(github, "gh", answers(prs)):
             run(*t, "sync")
         one = model.Tracker(model.HOME / s).lookup("S-1")
-        self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "done", "2026-10-01T06:30:00Z"))
+        self.assertEqual((one.prs, one.stage), ({"1": "closed", "2": "merged"}, "done"))
+        with mock.patch.object(github, "gh") as gh:
+            run(*t, "sync")
+        gh.assert_not_called()
 
     def test_sync_with_only_a_closed_pr_keeps_it(self):
         s = slug()
@@ -378,7 +404,8 @@ class Moves(unittest.TestCase):
         run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
         run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
         run(*t, "set", "S-1", "status=in-progress")
-        with mock.patch.object(github, "gh", answers([pull(1, branch="f1", state="CLOSED"), pull(2, branch="f1", state="CLOSED")])):
+        closed = [pull(1, branch="f1", state="CLOSED"), pull(2, branch="f1", state="CLOSED")]
+        with mock.patch.object(github, "gh", answers(closed)):
             run(*t, "sync")
         tr = model.Tracker(model.HOME / s)
         one = tr.lookup("S-1")
@@ -402,7 +429,7 @@ class Moves(unittest.TestCase):
         root = model.HOME / slug()
         for d in ("tickets", "decisions"):
             (root / d).mkdir(parents=True)
-        (root / "README.md").write_text("---\ntitle: T\nrepo: a/x\n---\n")
+        (root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: a/x\n---\n")
         (root / "decisions" / "D-01.md").write_text("---\nid: D-01\ntitle: Store\nstatus: open\nowner: Ryan\n---\n")
         facts = {1: {"merge": "conflict", "checks": "failing"}, 2: {"checks": "failing"},
                  3: {"review": "changes", "changes": ["rev"], "reviewed": 100, "pushed": 50, "threads": 2},
@@ -413,7 +440,7 @@ class Moves(unittest.TestCase):
                  10: {"draft": True}, 12: {}}  # 12: read, and nothing stops it
         (root / ".state.json").write_text(json.dumps({"prs": {f"a/x#{n}": f for n, f in facts.items()}}))
         for n in [*facts, 11]:
-            ticket(root, f"M-{n}", status="in-progress", pr=str(n), pr_state="draft" if n == 10 else "open")
+            ticket(root, f"M-{n}", status="in-progress", prs=[f"{n}:{'draft' if n == 10 else 'open'}"])
         ticket(root, "M-6", status="in-progress", depends_on=["D-01"])
         ticket(root, "M-13", status="in-progress", depends_on=["EXT-1"])
         with open(root / "tickets" / "M-13.md", "a") as f:
@@ -460,7 +487,6 @@ class Moves(unittest.TestCase):
             self.assertIn("move: rev — review requested", run(*t, "context", "S-1"))
             now = viewmodel.now_view(tr)
             self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True, "quiet": True})
-            self.assertEqual((now["busy"], now["yours"]), (2, 1))
 
             seen = session.watch(tr, [tr.lookup("S-1")])
             prs[0] = pull(11, branch="f1", decision="APPROVED", reviews=[
@@ -482,8 +508,6 @@ class Moves(unittest.TestCase):
                            ({"stage": "in-progress", "move": "you — checks failing", "mine": True},
                             ["S-1 move now: you — checks failing"])):
             self.assertEqual(session.changes_since(tr, own, {"S-1": {"role": "own", **now}}), said_)
-        self.assertEqual(session.changes_since(tr, {"S-1": ["own", "todo", ""]}, {"S-1": {"role": "own", **now}}),
-                         [])  # an older version's entry is no baseline
 
 
     def test_stale_sync_refreshes_in_the_background(self):
@@ -509,10 +533,11 @@ class Starts(unittest.TestCase):
         root = model.HOME / s
         for d in ("tickets", "decisions"):
             (root / d).mkdir(parents=True)
-        (root / "README.md").write_text("---\ntitle: T\nrepo: a/x\n---\n")
+        (root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: a/x\n---\n")
         (root / "decisions" / "D-01.md").write_text("---\nid: D-01\ntitle: Store\nstatus: open\n---\n")
         ticket(root, "A-1", status="in-progress", branch="fa")
-        ticket(root, "A-2", status="in-progress", branch="fb", pr="7", pr_state="open", base="fa")  # on A-1's branch
+        ticket(root, "A-2", status="in-progress", branch="fb", prs=["7:open"])  # on A-1's branch
+        (root / ".state.json").write_text(json.dumps({"prs": {"a/x#7": {"base": "fa"}}}))
         ticket(root, "A-3", status="in-progress", branch="fa")
         ticket(root, "A-4", status="in-progress", branch="fc")
         ticket(root, "S-1", depends_on=["A-1"])
@@ -529,7 +554,7 @@ class Starts(unittest.TestCase):
 
         ready = run("--tracker", s, "ready")
         self.assertIn("S-1  —  S-1 — stack on fa (A-1 in-progress; you: no PR yet)\n", ready)
-        self.assertIn("S-2  —  S-2 — stack on fb (A-2 in-review, #7)\n", ready)  # its PR's review not read yet
+        self.assertIn("S-2  —  S-2 — stack on fb (A-2 in-review, #7; you: no review requested)\n", ready)
         self.assertIn("S-4  —  S-4 — A-1 (fa) and A-4 (fc) are on separate branches: stack on one, or wait", ready)
         self.assertIn("R-1  —  R-1 · unblocks W-1\n", ready)
         self.assertEqual([x.split()[0] for x in ready.splitlines()], ["R-1", "S-1", "S-2", "S-3", "S-4"])
@@ -607,7 +632,6 @@ class LiveSessions(unittest.TestCase):
         self.assertFalse(spare_item.keys() & {"title", "meta", "line"})
         self.assertEqual(spare_item["on"], [{"id": "L-2", "stage": "todo", "state": "ready"}])
         self.assertEqual(spare_item["agents"][0]["word"], "idle since Tue 09:05")
-        self.assertEqual(now["agents"], 2)
         self.assertNotRegex(json.dumps(now), "agent-[cde]")
 
 
@@ -963,34 +987,95 @@ class Writes(unittest.TestCase):
 
 
 class Upgrade(unittest.TestCase):
-    def test_migrate_brings_an_older_format_up_to_date(self):
+    def old_tracker(self, schema=3) -> tuple[str, tuple[str, str]]:
         s = slug()
         run("init", s, "--title", "Old", "--owner", "me")
-        readme = model.HOME / s / "README.md"
-        readme.write_text(readme.read_text().replace(f"schema: {model.SCHEMA}\n", ""))
-        self.assertIn("run `tracker migrate`", run("--tracker", s, "check"))
+        model.Tracker(model.HOME / s).readme.save({"schema": schema})
+        return s, ("--tracker", s)
+
+    def test_any_command_migrates_every_older_tracker_once(self):
+        s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
+        other, _ = self.old_tracker(schema=model.SCHEMA)
+        model.tracker_at(s).readme.save({"schema": 3})
+        model.tracker_at(other).readme.save({"schema": 2})
         (model.HOME / s / ".DS_Store").write_text("finder")
-        run("--tracker", s, "migrate")
-        self.assertNotIn("migrate", run("--tracker", s, "check"))
-        backup = next((model.HOME / ".backups").glob(f"{s}-*"))
-        self.assertTrue((backup / "README.md").exists())
+        (model.HOME / ".viewer.json").write_text("{}")
+        leftover = session.SESSIONS_DIR / f"old{time.monotonic_ns()}.edits"
+        session.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        leftover.write_text("1")
+        run("list")
+        for name in (s, other):
+            self.assertEqual(model.tracker_at(name).schema, model.SCHEMA)
+        self.assertFalse((model.HOME / ".viewer.json").exists())
+        self.assertFalse(leftover.exists())
+        backup = model.HOME / ".backups" / f"{s}-schema3"
+        self.assertEqual(re.search(r"schema: (\d+)", (backup / "README.md").read_text())[1], "3")
         self.assertFalse((backup / ".DS_Store").exists())  # the backup holds the tracker, not Finder's files
+        log = (model.HOME / s / "log.md").read_text()
+        self.assertEqual(log.count(f"Migrated to tracker format {model.SCHEMA}"), 1)
+        self.assertIn(str(backup), log)
+        run("list")
+        self.assertEqual((model.HOME / s / "log.md").read_text(), log)  # once
+        self.assertNotIn("older", run(*t, "check"))
+
+    def test_a_hook_migrates_too_and_an_archived_tracker(self):
+        s, _ = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
+        archived, _ = self.old_tracker(schema=model.SCHEMA)
+        run("archive", archived)
+        sid, work = f"sid{time.monotonic_ns()}", repo("feat/U-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        model.tracker_at(s).readme.save({"schema": 3})
+        model.archived_at(archived).readme.save({"schema": 3})
+        hook("stop", sid, work)
+        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
+        self.assertEqual(model.archived_at(archived).schema, model.SCHEMA)
+
+    def test_a_tracker_that_fails_stays_says_why_and_stops_nothing(self):
+        s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
+        healthy, _ = self.old_tracker(schema=model.SCHEMA)
+        model.tracker_at(s).readme.save({"schema": 3})
+        model.tracker_at(healthy).readme.save({"schema": 3})
+        real = contract.migrate
+        calls = []
+
+        def fails_on_one(tr):
+            calls.append(tr.slug)
+            if tr.slug == s:
+                raise OSError("disk full")
+            real(tr)
+
+        with mock.patch.object(contract, "migrate", fails_on_one):
+            said = run("list")
+            self.assertIn("it could not migrate", run(*t, "check"))
+        self.assertIn("Old", said)
+        self.assertIn(f"could not migrate {s} to format {model.SCHEMA}: disk full", said)
+        self.assertEqual(model.tracker_at(healthy).schema, model.SCHEMA)
+        self.assertEqual(model.tracker_at(s).schema, 3)
+        self.assertIn(s, calls)
+        run("list")  # it tries again, on the first backup
+        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
+        self.assertEqual(len(list((model.HOME / ".backups").glob(f"{s}-*"))), 1)
+
+    def test_a_readme_that_cannot_be_read_is_left_alone(self):
+        s, _ = self.old_tracker()
+        readme = model.HOME / s / "README.md"
+        readme.write_text("no frontmatter at all\n")
+        run("list")
+        self.assertEqual(readme.read_text(), "no frontmatter at all\n")
+        self.assertFalse((model.HOME / ".backups" / f"{s}-schema0").exists())
 
     def test_migrate_turns_priority_words_into_numbers(self):
-        s = slug()
-        t = ("--tracker", s)
-        run("init", s, "--title", "Old", "--owner", "me")
-        tr = model.Tracker(model.HOME / s)
-        tr.readme.save({"schema": 1})
+        s, t = self.old_tracker(schema=model.SCHEMA)
         words = {"T-1": "High", "T-2": "p0", "T-3": "Lowest", "T-4": "Someday"}
         for ident, word in words.items():
             run(*t, "new", ident, "--title", ident)
             run(*t, "add", ident, "link", f"Issue: [SC-{ident[2]} Story](https://issues.example/{ident[2]})")
             run(*t, "issue", ident)
             model.Tracker(model.HOME / s).lookup(ident).save({"priority": word})
-        self.assertIn("T-4: priority 'Someday' is not 0-4 — run `tracker migrate`", run(*t, "check", code=1))
+        self.assertIn("T-4: priority 'Someday' is not 0-4", run(*t, "check", code=1))
         self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
-        run(*t, "migrate")
+        model.Tracker(model.HOME / s).readme.save({"schema": 1})
+        run("list")
         tr = model.Tracker(model.HOME / s)
         self.assertEqual([tr.lookup(x).meta.get("priority") for x in words], ["1", "0", "4", None])
         # Read again: T-4 for its priority, and every open ticket for the size and due day format 3 reads
@@ -998,19 +1083,14 @@ class Upgrade(unittest.TestCase):
         self.assertNotIn("priority", run(*t, "check"))
 
     def test_migrate_to_format_3_reads_open_issues_again(self):
-        s = slug()
-        t = ("--tracker", s)
-        run("init", s, "--title", "Old", "--owner", "me")
+        s, t = self.old_tracker(schema=model.SCHEMA)
         for ident in ("T-1", "T-2"):
             run(*t, "new", ident, "--title", ident)
             run(*t, "add", ident, "link", f"Issue: [SC-{ident[2]} Story](https://issues.example/{ident[2]})")
             run(*t, "issue", ident)
         run(*t, "set", "T-2", "status=done")
         model.Tracker(model.HOME / s).readme.save({"schema": 2})
-        self.assertIn("issue fields to read again for size and due: T-1\n", run(*t, "migrate", "--dry-run"))
-        run(*t, "migrate")
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])  # not the closed T-2
-        self.assertNotIn("read again", run(*t, "migrate"))  # once
 
 
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
@@ -1049,8 +1129,18 @@ class Hooks(unittest.TestCase):
         self.assertEqual(status(), "busy")
         hook("waiting", sid, work, tool_name="AskUserQuestion", agent_id="sub")  # a subagent's wait is the session's
         self.assertEqual(status(), "waiting")
+        hook("resumed", sid, work, tool_name="Read", agent_id="other")  # another agent's tool: "sub" still asks
+        self.assertEqual(status(), "waiting")
+        hook("waiting", sid, work, tool_name="Bash")
+        hook("resumed", sid, work, tool_name="Bash", agent_id="sub")
+        self.assertEqual(status(), "waiting")  # the session's own wait holds
+        hook("resumed", sid, work, tool_name="Bash")
+        self.assertEqual(status(), "busy")
+        self.assertNotIn("asking", session.load_session(sid))
+        hook("waiting", sid, work, tool_name="Bash", agent_id="sub")
         hook("stop", sid, work)
-        self.assertEqual(status(), "idle")
+        self.assertEqual(status(), "idle")  # the turn ended, and with it every wait
+        self.assertNotIn("asking", session.load_session(sid))
         hook("prompt", sid, work, prompt="go")
         hook("stop-failure", sid, work)
         self.assertEqual(status(), "idle")
@@ -1256,7 +1346,8 @@ class Hooks(unittest.TestCase):
         native = session.CLAUDE_SESSIONS / f"{sid}.json"
         native.parent.mkdir(parents=True, exist_ok=True)
         native.write_text(json.dumps({"sessionId": sid, "pid": os.getpid(), "name": "native", "status": "busy"}))
-        self.assertEqual([(x.name, x.status) for x in session.live_sessions(s)], [("native", "idle")])  # its hooks say, not the file
+        # Its hooks say, not the file.
+        self.assertEqual([(x.name, x.status) for x in session.live_sessions(s)], [("native", "idle")])
         native.write_text(json.dumps({"sessionId": sid, "pid": -1}))
         self.assertEqual(session.live_sessions(s), [])  # a dead native process is not replaced by hook activity
         session.session_activity(sid, "idle")
@@ -1668,10 +1759,10 @@ class IssueFields(unittest.TestCase):
         self.write(t, "T-1", "T-3")
         run(*t, "set", "T-3", "status=in-progress")  # reopened: its old summary is not news
         tr = model.Tracker(model.HOME / s)
-        tr.lookup("T-1").save({"pr": "9", "pr_state": "open"})  # what `sync` writes: its PR is in review
+        tr.lookup("T-1").save({"prs": ["9:open"]})  # what `sync` writes: its PR is in review
         self.assertEqual(self.updates(s), ["T-1: status in-review", "T-3: status in-progress"])
         self.write(t, "T-1")
-        tr.lookup("T-1").save({"pr_state": "merged"})
+        tr.lookup("T-1").save({"prs": ["9:merged"]})
         self.assertEqual(self.updates(s), ["T-1: status done", "T-3: status in-progress"])
 
     def test_written_records_what_was_listed_not_what_changed_since(self):
@@ -1829,7 +1920,8 @@ class Ui(unittest.TestCase):
         subprocess.run([str(ROOT / "scripts/install-herdr-mod.sh")], check=True, capture_output=True,
                        env={**os.environ, "HERDR_APP_HOME": str(home)})
         target = home / "mods/work-tracker"
-        names = ["icon.svg", "main.js", "mod.json", "model.js", "style.js", "view.js"]  # not gpui-shell.json: Herdr would refuse it
+        # Not gpui-shell.json: Herdr would refuse it.
+        names = ["icon.svg", "main.js", "mod.json", "model.js", "style.js", "view.js"]
         self.assertEqual(sorted(x.name for x in target.iterdir()), names)
         for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
@@ -1880,13 +1972,16 @@ class Ui(unittest.TestCase):
         run(*t, "add", "T-1", "link", "PR: [Same as synced](https://github.com/acme/app/pull/7)")
         run(*t, "add", "T-1", "link", "PR: [Not a PR page](https://example.com/7)")
         path = model.tracker_at(s).lookup("T-1").path
-        path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\npr: 7\npr_state: open", 1))
+        path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\nprs: [7:open]", 1))
         tracker = model.tracker_at(s)
         self.assertEqual(viewmodel.pr_views(tracker, tracker.lookup("T-1")), [
             {"number": "7", "url": "https://github.com/acme/app/pull/7", "state": "open",
              "text": "[Same as synced](https://github.com/acme/app/pull/7)"},
             {"number": "8", "url": "https://github.com/acme/app/pull/8", "state": "",
              "text": "[Part two](https://github.com/acme/app/pull/8) — the rest"}])
+        run(*t, "add", "T-1", "link", "PR: [Other case](https://github.com/Acme/App/pull/7)")
+        tracker = model.tracker_at(s)
+        self.assertEqual([x["number"] for x in viewmodel.pr_views(tracker, tracker.lookup("T-1"))], ["7", "8"])
         # In an opened ticket each PR has one row: not its link as well. A link to anything else stays a link.
         opened = viewmodel.record_view(tracker, tracker.lookup("T-1"))
         self.assertEqual([x["number"] for x in opened["prs"]], ["7", "8"])
@@ -1931,6 +2026,35 @@ class Ui(unittest.TestCase):
         herdr.assert_not_called()
         self.assertFalse((home / "mods").exists())
 
+    def test_open_says_why_the_window_refused(self):
+        s = self.tracker()
+        folder = Path(tempfile.mkdtemp(dir=BASE))
+        shell = folder / "gpui-shell"
+        shell.write_text("#!/bin/sh\necho 'needs shell 9' >&2\nexit 3\n")
+        shell.chmod(0o755)
+        with mock.patch.object(ui, "open_in_herdr", lambda *a: False), \
+                mock.patch.object(ui.shutil, "which", lambda name: str(shell)):
+            said = run("--tracker", s, "open", code=2)
+            self.assertIn("exit 3", said)
+            self.assertIn("needs shell 9", said)
+            shell.write_text("#!/bin/sh\nexec sleep 2\n")  # still up when `open` stops waiting: the window runs
+            with mock.patch.object(ui, "WINDOW_START_S", 0.2):
+                self.assertIn("in gpui-shell", run("--tracker", s, "open"))
+
+    def test_a_ui_host_with_no_environment_keeps_the_settings_that_change_what_it_shows(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/c", "TRACKER_SYNC": "60", "SOME_TOKEN": "secret"}):
+            start = system.cli_for_ui()[5]
+        self.assertIn("'CLAUDE_CONFIG_DIR': '/c'", start)
+        self.assertIn("'TRACKER_SYNC': '60'", start)
+        self.assertNotIn("secret", start)
+
+    def test_commands_only_a_ui_runs_are_not_listed(self):
+        parser = cli.build_parser()[0]
+        listed = parser.format_help().split("positional arguments")[-1].split("options:")[0]
+        for name in ("data", "attached", "evidence"):
+            self.assertNotRegex(listed, rf"(?m)^\s+{name}\s")
+        self.assertRegex(listed, r"(?m)^\s+open\s")
+
     def test_every_status_has_a_meaning_in_the_ui(self):
         table = re.search(r"export const MEANINGS = \{(.*?)\n\};", (ROOT / "ui/model.js").read_text(), re.S).group(1)
         for kind, stages in model.LIFECYCLES.items():
@@ -1958,8 +2082,9 @@ class Ui(unittest.TestCase):
             have = 0
             self.assertEqual(run("--tracker", s, "open", "T-1"), f"opened {s} T-1 in Herdr\n")
             self.assertEqual(calls[-1][:2], ("do", "tab.new"))
-            self.assertEqual(json.loads(calls[-1][2]), {"name": f"tracker: {s}", "mod": "work-tracker",
-                                                        "props": {"slug": s, "open": "T-1", "trackers": str(model.HOME)}})
+            self.assertEqual(json.loads(calls[-1][2]),
+                             {"name": f"tracker: {s}", "mod": "work-tracker",
+                              "props": {"slug": s, "open": "T-1", "trackers": str(model.HOME)}})
             have = 1
             calls.clear()
             run("--tracker", s, "open", "T-1")
@@ -1973,6 +2098,7 @@ class Ui(unittest.TestCase):
                 self.assertIn("needs Herdr", run("--tracker", s, "open", code=2))
             with mock.patch.object(ui.shutil, "which", lambda name: "/bin/gpui-shell"), \
                     mock.patch.object(ui.subprocess, "Popen") as popen:
+                popen.return_value.wait.return_value = 0
                 self.assertEqual(run("--tracker", s, "open", "T-1"), f"opened {s} T-1 in gpui-shell\n")
             self.assertEqual(popen.call_args.args[0], ["/bin/gpui-shell", "run", "--dir", str(ROOT / "ui")])
             self.assertEqual(popen.call_args.kwargs["env"]["TRACKER_OPEN"], f"{s}/T-1")
@@ -2002,6 +2128,10 @@ class Ui(unittest.TestCase):
             with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
                 run(*t, "evidence", "run.txt", code=4)  # the user's click, not the agent's
             opened.assert_not_called()
+            run("archive", s)
+            run(*t, "evidence", "run.txt")  # an archived tracker still opens in a UI, its evidence too
+            opened.assert_called_once()
+            run(*t, "index", code=2)  # all else stays away from it
 
 
 class Spans(unittest.TestCase):
@@ -2017,7 +2147,7 @@ class Spans(unittest.TestCase):
             run(*t, "issue", ident, "--created", created)
         rec = model.Tracker(model.HOME / s).lookup(ident)
         rec.save({"status": status, **({"started_at": started} if started else {}),
-                  **({"pr": "9", "pr_state": "merged", "merged_at": merged} if merged else {})})
+                  **({"prs": ["9:merged"], "merged_at": merged} if merged else {})})
 
     def test_set_records_the_first_start(self):
         s = slug()
@@ -2100,8 +2230,8 @@ class Spans(unittest.TestCase):
         got = data(s)["records"]
 
         # The opened ticket's first line gives its times, those it has, then its summary.
-        self.assertEqual(got["S-1"]["time"], [{"name": "wait", "text": "2 h", "about": "issue created → started"},
-                                              {"name": "cycle", "text": "6 h", "about": "started → PR merged"}])
+        self.assertEqual(got["S-1"]["time"], [{"name": "wait", "text": "2 h"},
+                                              {"name": "cycle", "text": "6 h"}])
         self.assertEqual(got["S-2"]["time"], [])
         run("--tracker", s, "set", "S-1", "summary=Shipped the API")
         self.assertEqual(data(s)["records"]["S-1"]["line"], {"label": "summary", "text": "Shipped the API"})
@@ -2154,7 +2284,7 @@ class Watch(unittest.TestCase):
 
         # A review comes back: the move is the user's.
         tr = model.Tracker(self.root)
-        tr.lookup("W-1").save({"pr": "12", "pr_state": "open"})
+        tr.lookup("W-1").save({"prs": ["12:open"]})
         tr.save_state({**tr.raw_state(), "prs": {"#12": {"review": "changes", "changes": ["rev"]}}})
         lines = w.poll(now)
         self.assertRegex(lines[0], r"^\d\d:\d\d ! W-1: in-progress → in-review · move: you — changes requested by rev$")
@@ -2223,6 +2353,20 @@ class Watch(unittest.TestCase):
         self.assertIn("W-1: 3 agents on it: api, ui, web", told)
         extra.unlink()
         self.assertIn("agent web: ended on W-1", "".join(w.poll(late)))
+
+    def test_an_agent_that_asks(self):
+        run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
+        now, sid = time.time(), f"asks{time.monotonic_ns()}"
+        w = self.watcher()
+        w.claim(now)
+        session.save_session(sid, tracker=self.s, cwd=str(self.work),
+                             activity={"status": "waiting", "since": now, "at": now})
+        w.poll(now)  # it started; a prompt the user is at is no news
+        self.assertEqual(w.poll(now + watcher.ASKING_S - 1), [])
+        told = w.poll(now + watcher.ASKING_S)
+        self.assertEqual(len(told), 1)
+        self.assertRegex(told[0], r"! agent \w+: asks for a permission or an answer on W-1$")
+        self.assertEqual(w.poll(now + watcher.ASKING_S + 1), [])  # once per wait
 
     def test_github(self):
         s, now = slug(), time.time()
@@ -2474,8 +2618,8 @@ class Actions(unittest.TestCase):
         self.assertIn("A-03 (due 2020-01-02, overdue: ask the user whether it is done): Book the review",
                       run(*self.t, "index"))
         due = {a["id"]: a["due"] for a in data(self.s)["actions"]}
-        self.assertEqual(due, {"A-02": {"day": "2099-01-15", "text": "15 Jan 2099", "late": ""},
-                               "A-03": {"day": "2020-01-02", "text": "2 Jan 2020", "late": "overdue"},
+        self.assertEqual(due, {"A-02": {"text": "15 Jan 2099", "late": ""},
+                               "A-03": {"text": "2 Jan 2020", "late": "overdue"},
                                "A-01": None})  # A-01 has none, and shows no age instead
         run(*self.t, "act", "A-03", "--due", "none")
         self.assertEqual(self.tr().action("A-03").get("due"), "")
@@ -2637,7 +2781,8 @@ class Values(unittest.TestCase):
         self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(cli.check(self.tr())[0]))
         self.tr().lookup("T-1").save({"started_at": None, "status": "in-progress", "closed_at": "2026-09-01T00:00:00Z"})
         self.assertIn("T-1: closed_at, but its status in-progress is open", "\n".join(cli.check(self.tr())[1]))
-        run(*self.t, "migrate")
+        self.tr().readme.save({"schema": 3})
+        run("list")
         self.assertNotIn("closed_at", self.tr().lookup("T-1").meta)
 
     def test_any_record_can_have_a_due_day(self):
@@ -2672,9 +2817,7 @@ class Values(unittest.TestCase):
         tr.lookup("T-1").save({"issue_created": "2026-08-30T10:00:00Z"})
         readme = tr.readme
         readme.save({"created_at": None, "created": "2026-08-01", "schema": 2})
-        warnings = "\n".join(cli.check(self.tr())[1])
-        self.assertIn("frontmatter key 'updated' is retired — run `tracker migrate`", warnings)
-        run(*self.t, "migrate")
+        run("list")
         tr = self.tr()
         t, d, a = tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")
         self.assertEqual((t.get("updated_at"), t.get("issue_created_at")), ("2026-09-01", "2026-08-30T10:00:00Z"))

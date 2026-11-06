@@ -18,7 +18,8 @@ from .contract import check
 # ---------------------------------------------------------------- views
 
 def pr_label(t: Record) -> str:
-    return ", ".join(f"#{n}" + (f" {state}" if state and state != "merged" else "") for n, state in t.prs.items()) or "—"
+    return ", ".join(f"#{n}" + (f" {state}" if state and state != "merged" else "")
+                     for n, state in t.prs.items()) or "—"
 
 
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,

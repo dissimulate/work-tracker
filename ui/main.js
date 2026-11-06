@@ -2,7 +2,7 @@
 import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
 import { trackerView } from "./view.js";
 
-const AT_LEAST_MS = 15000; // agent sessions report outside the watched folder
+const AT_LEAST_MS = 15000; // a session that ends with no hook, and another machine's tracker, change nothing watched here
 
 export default trackerView({
   home,

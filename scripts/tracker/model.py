@@ -19,7 +19,7 @@ from functools import cached_property
 from pathlib import Path
 
 from .system import PACKAGE, WINDOWS, cli_for_ui, env_int
-from .markdown import (BULLET, bullets, format_value, frontmatter_problems, link_ident, parse_links, parse_meta,
+from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta,
     render_frontmatter, section, section_span, split_frontmatter, strip_comments, Link)
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
@@ -164,7 +164,7 @@ KEYS = {
         "started_at": ("auto", "when `set status=in-progress` first started it; none for one started before 0.29"),
         "closed_at": ("auto", "when its status closed it (done or dropped); a merged PR's time is merged_at"),
         "prs": ("sync", "its PRs, those from its branch and its `PR:` links, each as `<number>:<state>` (draft, open, "
-                        "merged or closed); a closed one is left out while another is not closed"),
+                        "merged or closed); a closed one no link names is left out while another is not closed"),
         "merged_at": ("sync", "when its last PR merged, once none is open"),
         "issue_created_at": ("issue", "when the ticket's issue was created in its issue tracker"),
     },
@@ -199,18 +199,15 @@ KEYS = {
         "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
                                  "decisions settled on it to the ticket's issue, with the issue tracker's tool "
                                  "(`tracker issue` says what is due); off or empty: the tracker never asks"),
-        "schema": ("auto", "the tracker's format version; `tracker migrate` brings an older one up to date"),
+        "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
 SCHEMA = 4  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
-# Keys an older format named otherwise, old: new; `migrate` renames them
+# Keys an older format named otherwise, old: new; `migrate` renames them, and removes those it retired
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
                 "action": {"opened": "created_at", "updated": "updated_at"},
                 "tracker": {"created": "created_at"}}
-# `migrate` removes them, or renames them
-RETIRED_KEYS = {kind: removed | set(RENAMED_KEYS[kind]) for kind, removed in
-                {"ticket": {"slice", "key", "pr", "pr_state", "base"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
@@ -467,7 +464,7 @@ def span(t: Record, name: str) -> int | None:
 
 def state_key(repo: str, branch: str) -> str:
     """A branch's key in .state.json: `owner/name:branch` (a git ref name holds no `:`). A bare branch, from a repo
-    with no GitHub remote or an older version, stands for that branch in any repo."""
+    with no GitHub remote, stands for that branch in any repo."""
     return f"{repo.lower()}:{branch}" if repo else branch
 
 
@@ -487,7 +484,7 @@ def branch_entry(entries: dict, repo: str, branch: str):
 
 
 def put_entry(entries: dict, repo: str, branch: str, value) -> None:
-    """Set a branch's entry (None removes it); an older bare key for the branch goes."""
+    """Set a branch's entry (None removes it); a bare key from before the repo had a remote goes."""
     entries.pop(branch, None)
     if value is None:
         entries.pop(state_key(repo, branch), None)
@@ -501,12 +498,9 @@ STALE_DECISION_DAYS = 14
 STALE_ACTION_DAYS = 7
 STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
-# While a UI or a watch shows the work live, it syncs this often. TRACKER_VIEWER_SYNC and TRACKER_WATCH_SYNC are the
-# names 0.30 gave it, one each: read until a release drops them.
-LIVE_SYNC_S = env_int(("TRACKER_SYNC", "TRACKER_VIEWER_SYNC", "TRACKER_WATCH_SYNC"), 120, least=30)
+LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
-MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
 
 
 def dated(text: str) -> str:
@@ -722,16 +716,14 @@ class Record:
 
     @property
     def prs(self) -> dict[str, str]:
-        """Its PRs in number order, each number's state. All are equal: what they say together is `pr_state`. A ticket
-        that `sync` and `migrate` have not yet brought to the list reads from its one `pr` and `pr_state`."""
+        """Its PRs in number order, each number's state. All are equal: what they say together is `pr_state`."""
         items = [str(x).partition(":") for x in self.list("prs")]
-        if not items and self.meta.get("pr"):
-            items = [(str(self.meta["pr"]), ":", str(self.meta.get("pr_state") or ""))]
         return {n: state for n, _, state in sorted(items, key=lambda x: (len(x[0]), x[0]))}
 
     @property
     def pr_state(self) -> str:
-        """The state of its PRs together: open while one is, then draft, merged, closed; merged only once none is open."""
+        """The state of its PRs together: open while one is, then draft, merged, closed; merged only once none is
+        open."""
         return next((x for x in PR_STATES if x in self.prs.values()), "")
 
     @property
@@ -750,8 +742,8 @@ class Record:
 
     @property
     def stage(self) -> str:
-        """Its status; a ticket's, once in progress, overlaid by its PRs' state (`pr_state`, PR_STAGE). A todo ticket on a branch
-        that holds a PR has not started, so the PR says nothing about it."""
+        """Its status; a ticket's, once in progress, overlaid by its PRs' state (`pr_state`, PR_STAGE). A todo ticket on
+        a branch that holds a PR has not started, so the PR says nothing about it."""
         status = str(self.get("status", STATUSES[self.kind][0]))
         return PR_STAGE.get(self.pr_state, status) if stage_of(self.kind, status).in_flight else status
 
@@ -876,14 +868,6 @@ def read_json(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def plugin_version() -> list[int]:
-    """This copy of the plugin's release, as numbers to compare: [] when its manifest names none."""
-    try:
-        return [int(x) for x in str(read_json(MANIFEST).get("version", "")).split(".")]
-    except ValueError:
-        return []
 
 
 def write_json(path: Path, data: dict, indent: int = 1) -> None:
@@ -1149,9 +1133,7 @@ class Tracker:
     def stacked_on(self, t: Record) -> list[Record]:
         """The tickets past todo on a branch that one of a ticket's open PRs is based on: that PR cannot merge before
         theirs. Computed from each PR's `base`, so it ends when the PR is retargeted."""
-        open_prs = self.open_prs(t)
-        bases = {r.get("base") for _, r in open_prs if r} | ({t.meta.get("base")} if open_prs else set())  # older format
-        bases.discard(None)
+        bases = {r["base"] for _, r in self.open_prs(t) if r and r.get("base")}
         return [o for o in self.tickets if o is not t and o.get("branch") in bases and not o.todo
                 and same_repo(self.repo_of(o), self.repo_of(t))]
 
@@ -1242,8 +1224,7 @@ class Tracker:
             on = [t for t in self.tickets if t.get("branch") == branch and same_repo(self.repo_of(t), repo)]
             if any(not t.closed for t in on) or any(k.endswith("@" + branch) for k in use):
                 return True
-            at = entry.get("at", 0) if isinstance(entry, dict) else 0
-            return now - at < STATE_KEEP_DAYS * 86400 and (part == "synced" or not on)
+            return now - entry.get("at", 0) < STATE_KEEP_DAYS * 86400 and (part == "synced" or not on)
 
         out = dict(state, use=use)
         for part in ("synced", "handoff"):
@@ -1755,7 +1736,6 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
         now = sorted(prs, key=lambda x: int(x["number"]))
         written = [f"{x['number']}:{x['state']}" for x in now]
         diff = {"prs": written} if list(map(str, t.list("prs"))) != written else {}
-        diff |= {k: None for k in ("pr", "pr_state", "base") if k in t.meta}  # the older format's
         if diff:
             t.change(diff)
             changes.append(f"{t.id}: PRs " + ", ".join(written))
@@ -1774,7 +1754,6 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
     state["last_sync"] = time.time()
     if facts is not None:
         state["prs"] = facts
-    state.pop("reviews", None)  # an older version's, in GitHub's own words
     tr.save_state(state)
     return changes
 

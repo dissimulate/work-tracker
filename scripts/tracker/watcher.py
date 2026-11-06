@@ -26,6 +26,7 @@ GRANTS = WATCH_DIR / "grants"
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
+ASKING_S = 30  # an agent that asks this long gets no answer soon: a prompt the user is at needs no notification
 BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing recorded: it may be stuck
 CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what changed while it was stopped
 REARM_S = 600  # a session's watch runs `--once` again and again: between two runs it still watches
@@ -105,8 +106,8 @@ def needs_you(fact: dict) -> bool:
 
 
 def waits(x: Live, now: float) -> bool:
-    """An agent idle so long that it waits on the user."""
-    return x.status != "busy" and bool(x.since) and now - x.since >= IDLE_S
+    """An agent that waits on the user: it has asked for a while, or been idle for long."""
+    return x.status != "busy" and bool(x.since) and now - x.since >= (ASKING_S if x.status == "waiting" else IDLE_S)
 
 
 def ticket_events(old: dict, new: dict) -> list[Event]:
@@ -341,8 +342,8 @@ class Watcher:
         return []
 
     def agents(self, tr: Tracker, now: float) -> list[Event]:
-        """The agent sessions on the tracker: each that starts or ends; each idle so long that it waits on the user,
-        or busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
+        """The agent sessions on the tracker: each that starts or ends; each that waits on the user (`waits`), or is
+        busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})
         agents, out = {}, []
@@ -361,7 +362,8 @@ class Watcher:
                 continue
             if waits(x, now):
                 told[spell] = x.since
-                out.append((key, True, f"idle {mins} min{where}: waits on you"))
+                out.append((key, True, f"asks for a permission or an answer{where}" if x.status == "waiting"
+                            else f"idle {mins} min{where}: waits on you"))
             elif x.status == "busy" and on and quiet >= BUSY_S:
                 told[spell] = x.since
                 out.append((key, False, f"busy {mins} min; nothing recorded for {', '.join(on)} in "

@@ -115,7 +115,6 @@ def save_session(sid: str, **fields) -> None:
         old = sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-SESSIONS_MAX]
         for f in old:
             f.unlink(missing_ok=True)
-            f.with_suffix(".edits").unlink(missing_ok=True)  # an older version's edit count
 
 
 def drop_session(sid: str) -> None:
@@ -326,10 +325,7 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
 # new_commits which commits count.
 
 def get_mark(tr: Tracker, cwd: str | Path, branch: str) -> dict | None:
-    mark = branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)
-    if isinstance(mark, str):  # older versions kept only the HEAD
-        return {"head": mark, "at": int(git(cwd, "show", "-s", "--format=%ct", mark) or 0)}
-    return mark
+    return branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)
 
 
 def set_mark(tr: Tracker, cwd: str | Path, branch: str, passed: tuple[int, str] | None = (0, "")) -> str:
@@ -342,8 +338,8 @@ def set_mark(tr: Tracker, cwd: str | Path, branch: str, passed: tuple[int, str] 
         state = tr.state()
         marks = state.setdefault("synced", {})
         if passed is None:
-            old = branch_entry(marks, cwd_repo(cwd), branch)
-            passed = (old.get("behind", 0), old.get("next", "")) if isinstance(old, dict) else (0, "")
+            old = branch_entry(marks, cwd_repo(cwd), branch) or {}
+            passed = (old.get("behind", 0), old.get("next", ""))
         # `at` to the ms: a file written after it is work the tracker may not show (`lag`).
         entry = {"head": head, "at": round(time.time(), 3)}
         if passed[0]:
@@ -532,7 +528,7 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
     out = []
     for ident, now in new.items():
         was = old.get(ident)
-        if was == now or was is not None and not isinstance(was, dict):  # an older version's is no baseline
+        if was == now:
             continue
         role = now["role"]
         if role == "decision":
@@ -626,8 +622,10 @@ def count_own(sid: str, m: Match, picked) -> None:
 
 
 # ---------------------------------------------------------------- live sessions
-# A session's status comes from its hooks, on any host: `busy` from a prompt or a tool after a wait, `waiting` while it
-# asks the user for a permission or an answer, `idle` from a stop. Claude Code also keeps one file per running `claude`
+# A session's status comes from its hooks, on any host: `busy` from a prompt or a tool after a wait, `waiting` while one
+# of its agents asks the user for a permission or an answer, `idle` from a stop. A prompt that the user ends with Esc
+# runs no hook, so `waiting` then holds until the next event: the process file says `idle` for a prompt too, so it
+# cannot tell. Claude Code also keeps one file per running `claude`
 # process: <config dir>/sessions/<pid>.json, with its pid, sessionId, cwd, name, status and when the status last changed
 # (statusUpdatedAt, epoch ms). That file says whether a session runs, once its hooks saw one (`native`) also after the
 # file is gone: a session that ended with no SessionEnd hook (its terminal closed; the hook cut short) leaves its last
@@ -659,19 +657,26 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
     return slugs.pop() if len(slugs) == 1 else ""
 
 
-def session_activity(sid: str, status: str) -> None:
+def session_activity(sid: str, status: str, asker: str | None = None) -> None:
     """Keep a tracked session's status from its hooks, and when the status last changed; and whether Claude Code
-    keeps a process file for it (`native`), until it is seen to."""
+    keeps a process file for it (`native`), until it is seen to. `asker`: for a wait that starts or ends, the agent it
+    concerns ("" for the session's own). The session stays `waiting` until each agent that asked goes on; any other
+    event ends the turn, and with it every wait."""
     entry = load_session(sid)
     if not entry.get("tracker"):
         return
+    asking = set(entry.get("asking", [])) if asker is not None else set()
+    if asker is not None:
+        (asking.add if status == "waiting" else asking.discard)(asker)
+        status = "waiting" if asking else status
     now = time.time()
     old = entry.get("activity", {})
     since = old.get("since", now) if old.get("status") == status else now
     native = entry.get("native") or None
     if not native and status != "ended":
         native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
-    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native)
+    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native,
+                 asking=sorted(asking) or None)
 
 
 @dataclass

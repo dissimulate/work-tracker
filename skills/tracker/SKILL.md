@@ -68,5 +68,4 @@ Completion: each ticket under way has a `next` true as of now (a `[work-tracker]
 ## New tracker, migration, import
 
 - **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill the README with `tracker put tracker <section> -`: Context first (every document linked from the parent issue or brief, as link lines), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>] [--priority <0-4>] [--size <1-5>] [--due <YYYY-MM-DD>]`; a group is only a label.
-- **Older format**: when `tracker check` says so, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up first).
 - **A plan from elsewhere**: plan text → Plan; facts later tickets rely on → Carry forward; open questions and blockers → decisions; dated notes → one log line each, with a link to the detail; measurement files → `attach`.

@@ -10,8 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from .model import (FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, linked_prs, locked, pr_key,
-    put_entry, set_branch, utc_seconds, Record, Tracker)
+from .model import (FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, linked_prs, locked,
+    pr_key, put_entry, set_branch, utc_seconds, Record, Tracker)
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
@@ -45,8 +45,6 @@ def gh(*args: str, fields: str | None = None, partial: bool = False):
         return None
 
 
-
-
 def pr_url(repo: str, number: object) -> str:
     """A PR's page, or "" when no repo says where it is."""
     return f"https://github.com/{repo}/pull/{number}" if repo else ""
@@ -54,15 +52,20 @@ def pr_url(repo: str, number: object) -> str:
 
 def named_prs(t: Record, repo: str) -> set[str]:
     """The numbers of the PRs a ticket names in this repo: the ones `sync` follows, and its `PR:` links."""
-    linked = (x.number for x in linked_prs(t) if x.repo.lower() == repo.lower())
-    return {n for n in (*t.prs, *linked) if n.isdigit()}
+    return {n for n in (*t.prs, *link_numbers(t, repo)) if n.isdigit()}
+
+
+def link_numbers(t: Record, repo: str) -> set[str]:
+    """The numbers of a ticket's `PR:` links in this repo."""
+    return {x.number for x in linked_prs(t) if x.repo.lower() == repo.lower()}
 
 
 def ticket_prs(prs: list[dict], t: Record, repo: str) -> list[dict]:
-    """A ticket's PRs: those it names, and those from its branch. The closed ones only while there are no others."""
-    named, own = named_prs(t, repo), own_prs(prs)
+    """A ticket's PRs: those it names, and those from its branch. A closed one only when a link names it, or while
+    there are no others: without the link, a closed PR is an attempt that a later PR replaced."""
+    named, linked, own = named_prs(t, repo), link_numbers(t, repo), own_prs(prs)
     mine = [p for p in prs if str(p["number"]) in named or p in own and p["headRefName"] == t.get("branch")]
-    return [p for p in mine if pr_state(p) != "closed"] or mine
+    return [p for p in mine if pr_state(p) != "closed" or str(p["number"]) in linked] or mine
 
 
 def own_prs(prs: list[dict]) -> list[dict]:
@@ -85,8 +88,8 @@ PR_FRAGMENT = """fragment F on PullRequest {
 
 def gh_prs(tr: Tracker, tickets: list[Record]) -> dict[str, list[dict] | None] | None:
     """The PRs the tickets can be on, per repo, from one GraphQL call: those a ticket names by their numbers, and while
-    it has no merged PR the newest BRANCH_PRS_MAX from its branch, each as PR_FRAGMENT reads it. None for a repo GitHub does not answer for, and in
-    place of all when gh fails. A PR GitHub does not find is left out."""
+    it has no merged PR the newest BRANCH_PRS_MAX from its branch, each as PR_FRAGMENT reads it. None for a repo GitHub
+    does not answer for, and in place of all when gh fails. A PR GitHub does not find is left out."""
     asked: dict[str, tuple[set[str], set[str]]] = {}  # repo: (PR numbers, branches)
     for t in tickets:
         numbers, branches = asked.setdefault(tr.repo_of(t), (set(), set()))
