@@ -21,7 +21,7 @@ import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
 import { agentStatus, bodyParts, filterRows, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sortRows } from "./model.js";
-import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
+import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
 const SCHEMA = 4; // viewmodel.VIEW_SCHEMA
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
@@ -297,7 +297,7 @@ export function trackerView(host) {
     section(key, title, start, body, t) {
       return div().w_full().flex_none().px(SPACE.page).pt(SPACE.lg).child(this.panel(`sec-${key}`,
         div().text_size(TEXT.title).font_medium().child(title), start,
-        () => v_flex().w_full().pl(SPACE.indent).pt(SPACE.md).pb(SPACE.xxs).gap(SPACE.hair).child(body()), t));
+        () => v_flex().w_full().pt(SPACE.md).pb(SPACE.xxs).gap(SPACE.hair).child(body()), t));
     }
 
     named(name) {
@@ -430,7 +430,7 @@ export function trackerView(host) {
 
     heading(key, label, t, size) {
       const on = this.sort.key === key && key !== "step";
-      return size(div().id(`sort-${key}`).cursor_pointer().truncate().text_color(on ? t.foreground : t.dim)
+      return size(div().id(`sort-${key}`).cursor_pointer().truncate().text_color(on ? t.foreground : t.muted)
         .hover(s => s.text_color(t.foreground))
         .on_click((_e, cx) => { this.sort = nextSort(this.sort, key); cx.notify(); })
         .child(label + (on ? (this.sort.desc ? " ↓" : " ↑") : "")));
@@ -485,7 +485,7 @@ export function trackerView(host) {
         .children(view.spans.map(line => div().text_size(TEXT.tiny).text_color(t.dim).child(line)))
         .child(h_flex().flex_wrap().pb(SPACE.md).gap(SPACE.xs).children(view.filters.map(([key, count]) =>
           toggle(`f-${key}`, `${key} ${count}`, t, cx => { if (!this.filters.delete(key)) this.filters.add(key); cx.notify(); }, this.filters.has(key)))))
-        .child(h_flex().h(SIZE.control).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.tiny).border_b(1).border_color(t.border)
+        .child(h_flex().h(SIZE.control).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.tiny).border_b(1).border_color(rule(t))
           .child(this.heading("step", "Step", t, el => el.w(graphW).flex_none()))
           .child(this.heading("ticket", "Ticket", t, el => el.flex_1().min_w(0)))
           .children(cols.map(([key, label, w], i) => this.heading(key, label, t, el => el.w(w).flex_none().when(i === cols.length - 1, last => last.text_right())))))
@@ -498,7 +498,7 @@ export function trackerView(host) {
       const { decisions, actions, more, log } = view.reference;
       const part = (key, name, body) => this.panel(key,
         h_flex().flex_1().min_w(0).text_size(TEXT.small).child(this.named(name)), false,
-        () => v_flex().w_full().pl(SPACE.indent).pt(SPACE.xs).gap(SPACE.hair).child(body()), t);
+        () => v_flex().w_full().pt(SPACE.xs).gap(SPACE.hair).child(body()), t);
       return v_flex().w_full().gap(SPACE.hair)
         .when(decisions.length > 0, el => el.child(part("closed-decisions", "Closed decisions",
           () => cards(decisions.map(d => this.decisionRow(d, t))))))
@@ -536,7 +536,7 @@ export function trackerView(host) {
               .child(div().child(`Nothing in progress.${now.idle.ready.length ? " Ready:" : ""}`))
               .children(now.idle.ready.map(id => this.idLink("idle", id, t)))))
             .when(Boolean(now.watch), box => box.child(div().text_size(TEXT.tiny).text_color(now.watch.running ? t.muted : t.dim).child(now.watch.text))), t)))
-        .child(this.section("seq", "Sequence", true, () => this.sequence(view, width - 46, t), t))
+        .child(this.section("seq", "Sequence", true, () => this.sequence(view, width - 2 * SPACE.page, t), t))
         .when(problems.length > 0, el => el.child(this.section("check", "Check", false,
           () => v_flex().gap(SPACE.hair).text_size(TEXT.small).children(problems.map(x => div().child(x))), t)))
         .child(this.section("decisions", "Open decisions", true, () => (view.decisions.length

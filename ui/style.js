@@ -6,7 +6,7 @@ import { meaningOf } from "./model.js";
 
 // A colour fainter than the theme's: a theme's colour is "#rrggbb", and two more digits are its alpha.
 const faint = (color, alpha) => `${String(color).slice(0, 7)}${alpha}`;
-const ROW = "73", FILL = "1f", HOVER = "12"; // alphas: a row's background, a toggle's while on and under the pointer
+const ROW = "73", FILL = "1f", HOVER = "12", RULE = "80"; // alphas: a row's background, a toggle's while on and under the pointer, a table's rule
 
 // Each meaning's colour, by the theme's names: red, yellow, the terminal's green, blue, grey. The theme's `working` and
 // `done` say nothing of a status here: an agent at work is green, and `done`'s colour differs from host to host.
@@ -16,7 +16,7 @@ export const tone = (status, t) => t[COLORS[meaningOf(status)]];
 
 // Every size the view draws with. The frame, the header and the text sizes are those of the other panels of a layout.
 export const TEXT = { title: 15, body: 13, small: 12, tiny: 11, mark: 10 };
-export const SPACE = { hair: 1, xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 13, page: 14, indent: 18 };
+export const SPACE = { hair: 1, xxs: 2, xs: 4, sm: 6, md: 8, lg: 10, xl: 13, page: 14 };
 export const RADIUS = { tag: 4, control: 5, card: 8, frame: 10 };
 export const SIZE = {
   header: 42, card: 40, row: 28, line: 26, control: 24, // heights
@@ -24,6 +24,9 @@ export const SIZE = {
   label: 76, modal: 620, // an opened record's labels and most width
   dropdown: 420, submenu: 260, menu: 320, // a dropdown's most width and height, and a dropdown's own dropdown's width
 };
+
+// The line under a table's headings.
+export const rule = t => faint(t.dim, RULE);
 
 // A status as a pill: its colour behind the text.
 const pill = (el, state, t) => el.flex_none().px(SPACE.sm).rounded(RADIUS.tag).text_size(TEXT.tiny).font_medium().bg(tone(state, t)).text_color(t.background);
@@ -44,7 +47,7 @@ export function button(id, label, t, click, { on = false, off = false } = {}) {
 
 // A button that stays on or off: a rounded border, filled in faintly while on.
 export function toggle(id, label, t, click, on) {
-  return h_flex().id(id).h(SIZE.control).px(SPACE.md).items_center().flex_none().rounded(SIZE.control / 2).border_1().border_color(t.border)
+  return h_flex().id(id).h(SIZE.control).px(SPACE.md).items_center().flex_none().rounded(RADIUS.tag).border_1().border_color(t.border)
     .text_size(TEXT.small).text_color(on ? t.foreground : t.muted).when(on, el => el.bg(faint(t.foreground, FILL)))
     .cursor_pointer().hover(s => s.bg(faint(t.foreground, HOVER))).on_click((_e, cx) => click(cx))
     .child(label);
