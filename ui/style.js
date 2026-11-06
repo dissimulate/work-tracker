@@ -2,15 +2,13 @@
 // by the theme's names (theme() in herdr.d.ts), so a part follows the host's light and dark themes.
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
+import { meaningOf } from "./model.js";
 
-// Each status's colour, by the theme's names: ready, in progress (the terminal's green), in review or waiting on work
-// under way, blocked, closed; any other, such as a tracker's planning or paused, grey. A theme chooses what its names
-// look like: in Bettr's, `done` is blue.
-const TONES = {
-  ready: "accent", active: "working", going: "working", stack: "working", "in-progress": "ansi2", "in-review": "working",
-  open: "working", done: "done", merged: "done", closed: "done", blocked: "blocked", you: "blocked",
-};
-export const tone = (state, t) => t[TONES[state]] ?? t.muted;
+// Each meaning's colour, by the theme's names: red, yellow, the terminal's green, blue, grey. The theme's `working` and
+// `done` say nothing of a status here: an agent at work is green, and `done`'s colour differs from host to host.
+const COLORS = { "needs-you": "blocked", held: "working", moving: "ansi2", "can-start": "accent", quiet: "muted" };
+// A status's colour: the only way the view colours one. model.js's MEANINGS says which statuses mean what.
+export const tone = (status, t) => t[COLORS[meaningOf(status)]];
 
 // Every size the view draws with. The frame, the header and the text sizes are those of the other panels of a layout.
 export const TEXT = { title: 15, body: 13, small: 12, tiny: 11, mark: 10 };

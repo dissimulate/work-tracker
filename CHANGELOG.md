@@ -8,6 +8,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 - A ticket can have several PRs, all equal. `tracker sync` reads those from the ticket's branch and its `PR:` links; the ticket counts as merged only once none is open, and its move is the most urgent of its open PRs'. Run `tracker migrate` on each tracker: its tickets' `pr`, `pr_state` and `base` become one `prs` list. Until then they still read correctly.
 - A session's status comes from the tracker's hooks on any host, and adds "needs you" while it asks for a permission or an answer. In the view, each Current row's dot is red for that, green while working, yellow while idle, and a grey ring with no session.
+- The view's colours mean one thing each, on any host and in any part: red needs you, yellow waits on someone else, green is moving, blue can start, grey has nothing to do. Closed tickets are now grey, and a `todo` ticket shows its blocked or stacked colour everywhere. A move of `draft` or `no PR yet` is still yours, but is grey: red is for a move that has stopped to wait for you.
 - `tracker refresh`: pull PR state now, and have the next session prompt read the issue fields again.
 - `tracker sync --live`: sync only if no sync ran lately.
 - `tracker evidence <file>`: open a file of the tracker's evidence on your screen.

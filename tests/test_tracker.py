@@ -459,7 +459,7 @@ class Moves(unittest.TestCase):
             self.assertIn("  you: draft — S-2\n  rev: review requested — S-1", index)
             self.assertIn("move: rev — review requested", run(*t, "context", "S-1"))
             now = viewmodel.now_view(tr)
-            self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True})
+            self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True, "quiet": True})
             self.assertEqual((now["busy"], now["yours"]), (2, 1))
 
             seen = session.watch(tr, [tr.lookup("S-1")])
@@ -605,7 +605,7 @@ class LiveSessions(unittest.TestCase):
         spare_item = now["items"][-1]
         self.assertEqual((spare_item["key"], spare_item["kind"]), (f"agent-agent-b{n}", "agent"))
         self.assertFalse(spare_item.keys() & {"title", "meta", "line"})
-        self.assertEqual(spare_item["on"], [{"id": "L-2", "stage": "todo"}])
+        self.assertEqual(spare_item["on"], [{"id": "L-2", "stage": "todo", "state": "ready"}])
         self.assertEqual(spare_item["agents"][0]["word"], "idle since Tue 09:05")
         self.assertEqual(now["agents"], 2)
         self.assertNotRegex(json.dumps(now), "agent-[cde]")
@@ -1891,6 +1891,12 @@ class Ui(unittest.TestCase):
             self.assertIn("install-herdr-mod.sh", run("--tracker", s, "open", code=2))
         herdr.assert_not_called()
         self.assertFalse((home / "mods").exists())
+
+    def test_every_status_has_a_meaning_in_the_ui(self):
+        table = re.search(r"export const MEANINGS = \{(.*?)\n\};", (ROOT / "ui/model.js").read_text(), re.S).group(1)
+        for kind, stages in model.LIFECYCLES.items():
+            for status in stages:
+                self.assertIn(f'"{status}"', table, kind)
 
     def test_the_ui_reads_this_schema(self):
         self.assertIn(f"const SCHEMA = {viewmodel.VIEW_SCHEMA};", (ROOT / "ui/view.js").read_text())

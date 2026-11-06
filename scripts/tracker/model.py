@@ -1567,6 +1567,7 @@ class Move:
     who: str  # YOU (also for an open action), the reviewers, "CI", a decision's owner (else its id) or a blocker's id
     what: str = ""  # why it is their move, as a state: "review requested", "checks failing"
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
+    quiet: bool = False  # your own work going on as planned, where nothing has stopped to wait for you
 
     @property
     def mine(self) -> bool:
@@ -1588,7 +1589,7 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     if not moves:
         return None
     number, move = min(moves, key=lambda x: (not x[1].mine, x[1].rank))
-    return Move(move.who, f"#{number} {move.what}".strip(), move.rank) if len(open_prs) > 1 else move
+    return Move(move.who, f"#{number} {move.what}".strip(), move.rank, move.quiet) if len(open_prs) > 1 else move
 
 
 def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
@@ -1628,10 +1629,10 @@ def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
             r.get("merge", ""), "ready to merge")
         return Move(YOU, f"{approved}; {state}", 8)
     if r.get("draft"):
-        return Move(YOU, "draft", 9)
+        return Move(YOU, "draft", 9, quiet=True)
     if is_open:
         return Move(YOU, "no review requested", 9)
-    return Move(YOU, "PR closed" if t.pr_state == "closed" else "no PR yet", 10)
+    return Move(YOU, "PR closed", 10) if t.pr_state == "closed" else Move(YOU, "no PR yet", 10, quiet=True)
 
 
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:

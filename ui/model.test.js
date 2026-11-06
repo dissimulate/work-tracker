@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GRAPH, briefParts, filterRows, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, naturalCompare, nextSort, nowTitle, parseOpen,
-  plainInline, sortRows } from "./model.js";
+import { readFileSync } from "node:fs";
+import { GRAPH, MEANINGS, agentStatus, briefParts, filterRows, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+  naturalCompare, nextSort, nowTitle, parseOpen, plainInline, rowStatus, rowWord, sortRows } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
   id, step, links, state: "ready", stage: "todo", closed: false, gate: { tag: "ready" }, order: step, sort: {}, ...extra,
@@ -133,4 +134,40 @@ test("an id column fits the longest id, within limits", () => {
   assert.ok(idWidth(["T-100"], 10) > idWidth(["T-10"], 10));
   assert.equal(idWidth([], 10), idWidth(["T"], 10));
   assert.equal(idWidth(["x".repeat(40)], 10), idWidth(["x".repeat(16)], 10));
+});
+
+test("a status has one meaning, and an unknown one is quiet", () => {
+  const all = Object.values(MEANINGS).flat();
+  assert.equal(new Set(all).size, all.length);
+  assert.equal(meaningOf("blocked"), "needs-you");
+  assert.equal(meaningOf("in-review"), "held");
+  assert.equal(meaningOf("in-progress"), "moving");
+  assert.equal(meaningOf("ready"), "can-start");
+  assert.equal(meaningOf("merged"), "quiet");
+  assert.equal(meaningOf("a tracker's own"), "quiet");
+  assert.equal(meaningOf(undefined), "quiet");
+});
+
+test("an agent dot and a move take a status from the same table", () => {
+  assert.equal(meaningOf(agentStatus([])), "quiet");
+  assert.equal(meaningOf(agentStatus([{}])), "held");
+  assert.equal(meaningOf(agentStatus([{}, { busy: true }])), "moving");
+  assert.equal(meaningOf(agentStatus([{ busy: true }, { waiting: true }])), "needs-you");
+  assert.equal(meaningOf(moveStatus({ mine: true })), "needs-you");
+  assert.equal(meaningOf(moveStatus({ mine: true, quiet: true })), "quiet");
+  assert.equal(meaningOf(moveStatus({ mine: false })), "quiet");
+});
+
+test("a row's word and colour agree wherever it shows", () => {
+  const ready = { state: "ready", stage: "todo" }, blocked = { state: "blocked", stage: "todo" };
+  const going = { state: "going", stage: "in-review" };
+  assert.deepEqual([rowWord(ready), rowStatus(ready)], ["ready", "ready"]);
+  assert.deepEqual([rowWord(blocked), rowStatus(blocked)], ["todo", "blocked"]);
+  assert.deepEqual([rowWord(going), rowStatus(going)], ["in-review", "in-review"]);
+});
+
+test("the view colours a status only through the table", () => {
+  const view = readFileSync(new URL("./view.js", import.meta.url), "utf8");
+  assert.deepEqual(view.match(/\bt\.(blocked|working|done|ansi2)\b/g), null);
+  assert.equal(view.match(/\bt\.accent\b/g)?.length, 1); // a PR's link, which is no status
 });

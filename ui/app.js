@@ -6,7 +6,7 @@ import { trackerView } from "./view.js";
 
 const COLORS = {
   background: "#17181c", foreground: "#e6e7ea", muted: "#a6a9b2", dim: "#6e717b", border: "#2c2e35", raised: "#23252b",
-  hover: "#23252b", selected: "#2c2f38", accent: "#6fb3ea", working: "#e8b35f", blocked: "#ee7d7d", done: "#7ecf86", ansi2: "#7ecf86",
+  hover: "#23252b", selected: "#2c2f38", accent: "#6fb3ea", working: "#e8b35f", blocked: "#ee7d7d", ansi2: "#7ecf86",
 };
 
 export default trackerView({

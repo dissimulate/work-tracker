@@ -19,11 +19,11 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { briefParts, rowStatus, filterRows, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, nextSort, nowTitle, parseOpen, plainInline,
-  sortRows } from "./model.js";
+import { agentStatus, briefParts, filterRows, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, moveStatus, nextSort, nowTitle, parseOpen,
+  plainInline, rowStatus, rowWord, sortRows } from "./model.js";
 import { button, card, cards, chip, COLUMN, dropdown, RADIUS, SIZE, SPACE, TEXT, tone } from "./style.js";
 
-const SCHEMA = 3; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 4; // viewmodel.VIEW_SCHEMA
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
 const DETAIL_MIN = 900; // the opened record sits beside the page from this width, else in its place
 const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
@@ -317,14 +317,13 @@ export function trackerView(host, first = null) {
     }
 
     actionRow(a, buttons, t) {
-      const color = a.due?.late === "overdue" ? t.blocked : a.due?.late === "today" ? t.working : t.muted;
       return this.recordRow(a.id, [
         this.idCell(a.id, t.muted, t),
         ...(a.closed ? [chip(a.status, a.status, t)] : []),
         ...(a.gate ? [chip(a.gate, "blocked", t)] : []),
         div().flex_1().min_w(0).truncate().child(a.title),
         ...(a.when ? [div().flex_none().text_size(TEXT.tiny).text_color(t.muted).child(a.when)] : []),
-        ...(a.due ? [div().flex_none().text_size(TEXT.tiny).text_color(color).child(`Due: ${a.due.text}`)] : []),
+        ...(a.due ? [div().flex_none().text_size(TEXT.tiny).text_color(tone(a.due.late, t)).child(`Due: ${a.due.text}`)] : []),
       ], t, buttons ? [["Done", "--done"], ["Drop", "--drop"]].map(([label, flag]) =>
         button(`${label}-${a.id}`, label, t, cx => this.change(cx, ["--tracker", this.slug, "act", a.id, flag]),
           { off: this.busy })) : []);
@@ -347,12 +346,11 @@ export function trackerView(host, first = null) {
         .on_click((_e, cx) => { cx.stop_propagation(); this.follow(pr.url, cx); });
     }
 
-    // A row's sessions: filled red while one needs the user, green while one works, yellow while one is idle, a grey
-    // ring with none.
+    // A row's sessions: a filled dot in their status's colour, a ring with none.
     agentMark(agents, t) {
       const mark = div().flex_none().size(SIZE.dot).rounded(SIZE.dot / 2).mr(SPACE.xs);
-      if (!agents.length) return mark.border(1).border_color(t.muted);
-      return mark.bg(agents.some(a => a.waiting) ? t.blocked : agents.some(a => a.busy) ? t.ansi2 : t.working);
+      const color = tone(agentStatus(agents), t);
+      return agents.length ? mark.bg(color) : mark.border(1).border_color(color);
     }
 
     nowItem(item, t) {
@@ -367,15 +365,15 @@ export function trackerView(host, first = null) {
         .child(this.agentMark(item.agents, t))
         .when(item.kind !== "ticket", el => el.child(div().w(this.idColumn).flex_none()))
         .when(item.kind === "ticket", el => el
-          .child(this.idLink("now", item.id, t, tone(item.stage, t)).w(this.idColumn).truncate())
-          .child(chip(item.stage, item.stage, t))
+          .child(this.idLink("now", item.id, t, tone(rowStatus(item), t)).w(this.idColumn).truncate())
+          .child(chip(rowWord(item), rowStatus(item), t))
           .children((item.prs ?? []).map(pr => this.prLink(item.key, pr, t)))
           .when(Boolean(item.move), row => row.child(div().flex_1().min_w(0).truncate().text_right()
-            .text_color(tone(item.move.mine ? "you" : "them", t)).child(item.move.text))))
+            .text_color(tone(moveStatus(item.move), t)).child(item.move.text))))
         // An agent on no ticket under way: the tickets it is on, each as a ticket's row starts, or says it has none.
         .when(item.kind === "agent", el => el
-          .children((item.on ?? []).flatMap(x => [this.idLink(`on-${item.key}`, x.id, t, tone(x.stage, t)), chip(x.stage, x.stage, t)]))
-          .when(!item.on?.length, row => row.child(chip("no-ticket", "none", t))))
+          .children((item.on ?? []).flatMap(x => [this.idLink(`on-${item.key}`, x.id, t, tone(rowStatus(x), t)), chip(rowWord(x), rowStatus(x), t)]))
+          .when(!item.on?.length, row => row.child(chip("no-ticket", "no-ticket", t))))
         .when(item.kind === "handoff", el => el.child(this.named(item.title, "", t, t.muted)));
       // A card that opens where it is: with nothing more to show, it does not take a click.
       const expands = Boolean(item.line || item.fresh || item.agents.length);
@@ -385,7 +383,7 @@ export function trackerView(host, first = null) {
 
     // The columns that fit the sequence's width, each [key, label, width, the cell's text and colour].
     columns(view, width, t) {
-      const cols = [["status", "Status", COLUMN.status, r => (r.gate.state === "ready" ? ["ready", t.accent] : [r.stage, tone(rowStatus(r), t)])]];
+      const cols = [["status", "Status", COLUMN.status, r => [rowWord(r), tone(rowStatus(r), t)]]];
       if (width >= GROUP_MIN) cols.push(["group", "Group", COLUMN.group, r => [r.group, t.muted]]);
       if (width >= LEVELS_MIN) {
         view.scales.forEach(key => cols.push([key, key[0].toUpperCase() + key.slice(1), COLUMN.level, r => [r.levels[key], t.muted]]));
@@ -527,7 +525,7 @@ export function trackerView(host, first = null) {
 
     refs(place, items, t) {
       return h_flex().flex_wrap().gap(SPACE.sm).children(items.map(d => {
-        const color = tone(d.tone === "stack" ? "going" : d.tone, t);
+        const color = tone(d.tone, t);
         const text = d.id + (d.done ? " ✓" : "");
         return d.ref ? this.mono(div().id(`dep-${place}-${d.id}`).cursor_pointer().text_color(color)
           .on_click((_e, cx) => { this.selected = d.id; cx.notify(); }).child(text))
@@ -539,11 +537,10 @@ export function trackerView(host, first = null) {
     // and links, then its body.
     details(view, id, wide, t) {
       const r = view.records[id];
-      const word = r.gate.state === "ready" ? "ready" : r.stage;
       const rows = [
         ...(r.time.length ? [["time", div().child(r.time.map(x => `${x.name} ${x.text}`).join(" · "))]] : []),
         ...(r.line ? [[r.line.label, this.md(`line-${r.id}`, r.line.text)]] : []),
-        ...(r.move ? [["move", div().text_color(r.move.mine ? t.blocked : t.muted).child(r.move.text)]] : []),
+        ...(r.move ? [["move", div().text_color(tone(moveStatus(r.move), t)).child(r.move.text)]] : []),
         ...r.deps.map(d => [d.label, d.items ? this.refs(`${r.id}-${d.label}`, d.items, t) : div().child(d.text)]),
         ...r.facts.map(f => [f.label, f.code ? this.mono(div()).child(f.text) : div().child(f.text)]),
         ...r.links.map((x, i) => [x.label, this.linkText(`link-${r.id}-${i}`, x, t)]),
@@ -553,7 +550,7 @@ export function trackerView(host, first = null) {
         .when(!wide, el => el.flex_1().min_w(0))
         .child(h_flex().flex_none().gap(SPACE.md).items_center().text_size(TEXT.small)
           .child(this.mono(div().flex_none().text_color(t.muted).child(r.id)))
-          .child(chip(word, word, t))
+          .child(chip(rowWord(r), rowStatus(r), t))
           .when(Boolean(r.gate.text) && r.gate.state !== "ready", el => el.child(div().min_w(0).truncate().text_color(t.dim).child(r.gate.text)))
           .child(div().flex_1())
           .child(button("close", "Close", t, cx => { this.selected = null; cx.notify(); })))
@@ -570,7 +567,7 @@ export function trackerView(host, first = null) {
           .child(h_flex().id(`tracker-${x.slug}`).flex_1().min_w(0).h_full().px(SPACE.sm).gap(SPACE.md).items_center().cursor_pointer().rounded(RADIUS.control)
             .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.show(x.slug, cx))
             .child(div().min_w(0).flex_1().truncate().text_size(TEXT.small).child(x.title))
-            .when(Boolean(x.in_use), el => el.child(div().flex_none().text_size(TEXT.tiny).text_color(t.working).child(`in use by ${x.in_use}`)))
+            .when(Boolean(x.in_use), el => el.child(div().flex_none().text_size(TEXT.tiny).text_color(tone("in-use", t)).child(`in use by ${x.in_use}`)))
             .child(div().flex_none().text_size(TEXT.tiny).text_color(t.dim).child(x.slug)))
           // No Popover here: a press in this surface is outside the menu's, so the menu stays open meanwhile
           // (overlay_closable), and a press outside this one closes both.
@@ -651,7 +648,7 @@ export function trackerView(host, first = null) {
       });
       const view = this.view;
       root.child(this.bar(view, t));
-      if (this.error) root.child(div().flex_none().px(SPACE.page).py(SPACE.sm).text_size(TEXT.small).text_color(t.blocked).child(this.error));
+      if (this.error) root.child(div().flex_none().px(SPACE.page).py(SPACE.sm).text_size(TEXT.small).text_color(tone("error", t)).child(this.error));
       if (this.notice && !view) {
         return root.child(v_flex().p(SPACE.page).gap(SPACE.xs).text_size(TEXT.small).text_color(t.dim)
           .child(div().child(this.notice))

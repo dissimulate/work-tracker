@@ -36,9 +36,29 @@ export function nextSort(sort, key) {
   return key === "step" ? { key, desc: false } : { key, desc: sort.key === key && !sort.desc };
 }
 
+// What each status says to the user: the one table of them. A meaning has one colour (style.js), wherever a status
+// shows: a pill, a dot, a line or text. A status not here, such as a tracker's unknown one, is quiet.
+export const MEANINGS = {
+  "needs-you": ["blocked", "you", "overdue", "error", "agent-waiting"],
+  held: ["in-review", "open", "stack", "today", "in-use", "agent-idle"], // waits on someone or something else
+  moving: ["in-progress", "active", "agent-busy"],
+  "can-start": ["ready"],
+  quiet: ["todo", "planning", "paused", "done", "merged", "closed", "dropped", "them", "your-work", "no-ticket", "agent-none"],
+};
+const MEANING_OF = new Map(Object.entries(MEANINGS).flatMap(([meaning, statuses]) => statuses.map(s => [s, meaning])));
+export const meaningOf = status => MEANING_OF.get(status) ?? "quiet";
+
+// A row's sessions as one status: the most urgent of them.
+export const agentStatus = agents => (!agents.length ? "agent-none" : agents.some(a => a.waiting) ? "agent-waiting"
+  : agents.some(a => a.busy) ? "agent-busy" : "agent-idle");
+// A move: yours to act on, your own work going on as planned, or someone else's.
+export const moveStatus = move => (!move.mine ? "them" : move.quiet ? "your-work" : "you");
+
 const HOLLOW = new Set(["closed", "dropped"]);
 // What gives a row its colour: its state, and for work under way its stage, which tells in progress from in review.
 export const rowStatus = t => (t.state === "going" ? t.stage : t.state);
+// What a row's status says in words: its stage, as a ticket that can start says so.
+export const rowWord = t => (t.state === "ready" ? "ready" : t.stage);
 const lineTone = t => (HOLLOW.has(t.state) ? "closed" : t.state === "going" ? t.stage : "blocked");
 
 export const GRAPH = {

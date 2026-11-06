@@ -8,7 +8,7 @@ import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
 from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
-    branch_entry, day_text, due_date, level, level_name, sequence, show_value, sort_key, span, whose_move, Dep, Gate,
+    branch_entry, day_text, due_date, level, level_name, sequence, show_value, sort_key, span, whose_move, Dep, Gate, Move,
     Record, Tracker)
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
@@ -16,7 +16,7 @@ from .github import PR_PAGE, pr_url
 from .views import dep_facts, duration, pr_label, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
-VIEW_SCHEMA = 3  # a UI that reads another number asks to be updated
+VIEW_SCHEMA = 4  # a UI that reads another number asks to be updated
 
 
 def gate_tag(g: Gate) -> str:
@@ -104,6 +104,10 @@ def due_text(d: dt.date) -> str:
     return f"{d.day} {d:%b}" + (f" {d.year}" if d.year != dt.date.today().year else "")
 
 
+def move_view(move: Move | None) -> dict | None:
+    return {"text": move.text(), "mine": move.mine, "quiet": move.quiet} if move else None
+
+
 def dep_view(d: Dep) -> dict:
     """A dependency: `ref` when it names a record here; `title`, an external blocker's reason."""
     return {"id": d.ident, "done": d.done, "tone": dep_tone(d), "ref": bool(d.rec),
@@ -148,10 +152,11 @@ def record_view(tr: Tracker, r: Record) -> dict:
     word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     return {
         "id": r.id, "kind": r.kind, "title": str(r.get("title")), "status": str(r.get("status", "open")),
-        "stage": r.stage, "closed": r.closed, "gate": {"state": g.state, "text": g.text(), "tag": gate_tag(g)},
+        "stage": r.stage, "state": ticket_state(tr, r) if r.kind == "ticket" else r.stage, "closed": r.closed,
+        "gate": {"state": g.state, "text": g.text(), "tag": gate_tag(g)},
         "time": time_view(r) if r.kind == "ticket" else [],
         "line": {"label": word, "text": str(line)} if line else None,
-        "move": {"text": move.text(), "mine": move.mine} if move else None,
+        "move": move_view(move),
         "deps": deps,
         "facts": [{"label": k.removesuffix("_at"), "text": show_value(k, r.get(k)), "code": k in ("branch", "base")}
                   for k in FACTS if r.get(k)],
@@ -221,15 +226,15 @@ def now_view(tr: Tracker) -> dict:
         mark = branch_entry(marks, tr.repo_of(t), b)
         fresh = f"commits logged {ago(mark['at'])}" if isinstance(mark, dict) else ""
         move = moves[t.id]
-        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "prs": pr_views(tr, t), "fresh": fresh,
-                      "move": {"text": move.text(), "mine": move.mine} if move else None,
+        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "state": ticket_state(tr, t), "prs": pr_views(tr, t), "fresh": fresh,
+                      "move": move_view(move),
                       "line": f"next: {t.get('next')}" if t.get("next") else "", "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():
         items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""), "agents": []})
     busy = len(items)
     for x, m in live:
         if not m.active:
-            on = [{"id": t.id, "stage": t.stage} for t in m.focus]
+            on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in m.focus]
             items.append({"key": f"agent-{x.sid}", "kind": "agent", "on": on, "agents": agent_views([x])})
     idle = None
     if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":
