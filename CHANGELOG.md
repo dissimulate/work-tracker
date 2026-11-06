@@ -14,7 +14,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Changed
 
-- The live view is now native: a tab in Herdr, or its own window through `gpui-shell`. `tracker open` shows it. It needs Herdr or `gpui-shell` 0.9.0; without them `tracker open` says so, and `tracker index` and `tracker context <id>` still show the same facts.
+- The live view is now native: a tab in Herdr, or its own window through `gpui-shell`. `tracker open` shows it. It needs Herdr with the mod installed (`scripts/install-herdr-mod.sh`, and again after each plugin update) or `gpui-shell` 0.9.0; without them `tracker open` says so, and `tracker index` and `tracker context <id>` still show the same facts.
 - A record opens beside the page, not inside its row.
 - Links in a record open only `http` and `https`: a `mailto:` link no longer opens.
 

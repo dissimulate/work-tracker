@@ -1,4 +1,5 @@
 {
   "place": "none",
-  "title": "Tracker"
+  "title": "Tracker",
+  "panel": { "width": 900 }
 }

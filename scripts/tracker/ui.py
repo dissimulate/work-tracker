@@ -14,27 +14,15 @@ from .system import WINDOWS, cli_for_ui
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
-# Only these: Herdr also reads a gpui-shell.json in a mod's folder, and refuses what its older runtime does not know.
-MOD_FILES = ("main.js", "mod.json", "model.js", "view.js")
 GPUI_SHELL_VERSION = "0.9.0"  # ui/gpui-shell.json's, the one the window is checked on
-NO_HOST = (f"the tracker's UI needs Herdr (https://herdr.dev) open, or gpui-shell {GPUI_SHELL_VERSION} on your PATH: "
+NO_HOST = (f"the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed "
+           f"({ROOT / 'scripts' / 'install-herdr-mod.sh'}), or gpui-shell {GPUI_SHELL_VERSION} on your PATH: "
            "https://github.com/longbridge/gpui-kit/releases. Without them, `tracker index` and `tracker context <id>` "
            "show the same facts as text.")
 
 
 def herdr_home() -> Path:
     return Path(os.environ.get("HERDR_APP_HOME") or Path.home() / ".config" / "herdr-app")
-
-
-def install_mod(home: Path) -> Path:
-    """Copy the UI into Herdr's mods, so a new version of the plugin brings a new version of the mod. Only what changed:
-    a new file reloads a mod that runs, and it would lose what the user opened."""
-    target = home / "mods" / MOD_NAME
-    target.mkdir(parents=True, exist_ok=True)
-    for name in MOD_FILES:
-        if not (target / name).exists() or (target / name).read_bytes() != (UI_DIR / name).read_bytes():
-            shutil.copyfile(UI_DIR / name, target / name)
-    return target
 
 
 def herdr(*args: str) -> dict | None:
@@ -51,11 +39,10 @@ def herdr(*args: str) -> dict | None:
 
 
 def open_in_herdr(slug: str, ident: str = "") -> bool:
-    """Show the tracker in its tab: the one it has, or a new one. False when Herdr cannot."""
-    window = herdr("ls")
+    """Show the tracker in its tab: the one it has, or a new one. False when Herdr cannot, or has no mod to show it."""
+    window = herdr("ls") if (herdr_home() / "mods" / MOD_NAME).is_dir() else None
     if window is None:
         return False
-    install_mod(herdr_home())
     name = f"tracker: {slug}"
     for space in window.get("spaces", []):
         for tab in space.get("tabs", []):

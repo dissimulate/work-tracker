@@ -59,7 +59,7 @@ Add this folder to a [personal or repo marketplace](https://developers.openai.co
 - Python 3.9 or later, standard library only: `python3`, or on Windows `python` or `py`. The macOS system Python works.
 - `git`.
 - Optional: the GitHub CLI `gh`, logged in. Without it there is no PR state (in review, merged, reviews, checks) and no "whose move".
-- Optional, for the live view: [Herdr](https://herdr.dev), or [`gpui-shell`](https://github.com/longbridge/gpui-kit/releases) 0.9.0 on your PATH. Without either, the text views (`tracker index`, `tracker context <id>`) show the same facts. `gpui-shell` is third-party and not yet stable: use that version.
+- Optional, for the live view: [Herdr](https://herdr.dev) with the mod installed (run `scripts/install-herdr-mod.sh` in the plugin's folder, and again after each plugin update), or [`gpui-shell`](https://github.com/longbridge/gpui-kit/releases) 0.9.0 on your PATH. Without either, the text views (`tracker index`, `tracker context <id>`) show the same facts. `gpui-shell` is third-party and not yet stable: use that version.
 
 ## How it works
 
@@ -115,7 +115,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 
 `tracker open [id]` shows the tracker, and opens the record `id` names. The view has no server: it runs the `tracker` CLI for all it reads and changes (`tracker data`, `tracker list --json`), when the tracker's files change and at least every 15 s in Herdr, every 3 s in its own window.
 
-- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` installs or updates the mod, and shows the tab if it is there. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. With no Herdr window open, `tracker open` runs `gpui-shell run --dir <plugin>/ui`. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
+- **Hosts**: in Herdr, a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `scripts/install-herdr-mod.sh` installs or updates the mod, and nothing else does. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`. A layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button. With no Herdr window open, or no mod installed, `tracker open` runs `gpui-shell run --dir <plugin>/ui`. The UI is one codebase (`ui/view.js`): the two differ only in `ui/main.js` and `ui/app.js`. While it shows, the view syncs PR state every 2 min.
 - **Tracker menu** (top left) lists every tracker, the archived ones in a closed section at the bottom. A tracker's ⋯ has Archive (Unarchive) and Delete, both off while an agent session or a watch is on the tracker.
   - Archive moves the tracker to `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it. It still opens, read-only. `tracker init` refuses its slug.
   - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the view shows why.
@@ -157,7 +157,7 @@ Environment variables. All are optional.
 
 - The rules for a change (tests, lint, changelog, release, the format's contract, the agent's texts) are in [CLAUDE.md](CLAUDE.md).
 - Run from a checkout in Claude Code: `claude --plugin-dir <path to this folder>`, then `/reload-plugins` after an edit. In Codex, install through the marketplace. Codex caches an installed copy by version: to try a change, raise the manifest version in your checkout, run `codex plugin add work-tracker@<marketplace-name>` again, and put the version back before you commit.
-- The UI: `herdr-app check ui` needs `ui/gpui-shell.json` out of the way (Herdr refuses it), so `tracker open` installs the mod, then `herdr-app check ~/.config/herdr-app/mods/work-tracker`. For the window: `gpui-shell check --dir ui`. A check draws only the first frame, so look at the view too. `ui/model.js` holds what can be tested without a UI: `node --test ui/`.
+- The UI: `herdr-app check ui` needs `ui/gpui-shell.json` out of the way (Herdr refuses it), so run `scripts/install-herdr-mod.sh`, then `herdr-app check ~/.config/herdr-app/mods/work-tracker`. For the window: `gpui-shell check --dir ui`. A check draws only the first frame, so look at the view too. `ui/model.js` holds what can be tested without a UI: `node --test ui/`.
 
 ### Code
 

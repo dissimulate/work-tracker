@@ -135,7 +135,7 @@ export function trackerView(host, first = null) {
         if (text !== this.shown) {
           const view = JSON.parse(text);
           if (view.schema !== SCHEMA) {
-            throw new Error(`The tracker plugin gives data ${view.schema}; this UI reads ${SCHEMA}: run \`tracker open\``);
+            throw new Error(`The tracker plugin gives data ${view.schema}; this UI reads ${SCHEMA}: run the plugin's scripts/install-herdr-mod.sh`);
           }
           this.shown = text;
           this.view = view;

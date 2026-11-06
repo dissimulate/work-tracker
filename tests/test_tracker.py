@@ -1683,16 +1683,25 @@ class Ui(unittest.TestCase):
         run("--tracker", s, "new", "T-1", "--title", "One")
         return s
 
-    def test_the_mod_gets_only_its_own_files(self):
+    def test_the_install_script_gives_the_mod_only_its_own_files(self):
         home = Path(tempfile.mkdtemp(dir=BASE))
-        target = ui.install_mod(home)
-        self.assertEqual(sorted(x.name for x in target.iterdir()), sorted(ui.MOD_FILES))
-        for name in ui.MOD_FILES:
+        subprocess.run([str(ROOT / "scripts/install-herdr-mod.sh")], check=True, capture_output=True,
+                       env={**os.environ, "HERDR_APP_HOME": str(home)})
+        target = home / "mods/work-tracker"
+        names = ["icon.svg", "main.js", "mod.json", "model.js", "view.js"]  # not gpui-shell.json: Herdr would refuse it
+        self.assertEqual(sorted(x.name for x in target.iterdir()), names)
+        for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
-        before = (target / "view.js").stat().st_mtime_ns
-        ui.install_mod(home)  # a new file would reload a mod that runs
-        self.assertEqual((target / "view.js").stat().st_mtime_ns, before)
-        self.assertNotIn("gpui-shell.json", ui.MOD_FILES)  # Herdr would read it, and refuse what it does not know
+
+    def test_open_does_not_install_the_mod(self):
+        s = self.tracker()
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        herdr = mock.Mock(return_value={"spaces": []})
+        with mock.patch.object(ui, "herdr", herdr), mock.patch.object(ui, "herdr_home", lambda: home), \
+                mock.patch.object(ui.shutil, "which", lambda name: None):
+            self.assertIn("install-herdr-mod.sh", run("--tracker", s, "open", code=2))
+        herdr.assert_not_called()
+        self.assertFalse((home / "mods").exists())
 
     def test_the_ui_reads_this_schema(self):
         self.assertIn(f"const SCHEMA = {viewmodel.VIEW_SCHEMA};", (ROOT / "ui/view.js").read_text())
@@ -1710,13 +1719,13 @@ class Ui(unittest.TestCase):
                 return {"spaces": [{"tabs": [{"id": "tb1", "name": f"tracker: {s}"}] * have}]}
             return {"ok": True}
         home = Path(tempfile.mkdtemp(dir=BASE))
+        (home / "mods/work-tracker").mkdir(parents=True)
         with mock.patch.object(ui, "herdr", herdr), mock.patch.object(ui, "herdr_home", lambda: home):
             have = 0
             self.assertEqual(run("--tracker", s, "open", "T-1"), f"opened {s} T-1 in Herdr\n")
             self.assertEqual(calls[-1][:2], ("do", "tab.new"))
             self.assertEqual(json.loads(calls[-1][2]), {"name": f"tracker: {s}", "mod": "work-tracker",
                                                         "props": {"slug": s, "open": "T-1", "trackers": str(model.HOME)}})
-            self.assertTrue((home / "mods/work-tracker/view.js").exists())
             have = 1
             calls.clear()
             run("--tracker", s, "open", "T-1")
