@@ -1688,7 +1688,7 @@ class Ui(unittest.TestCase):
         subprocess.run([str(ROOT / "scripts/install-herdr-mod.sh")], check=True, capture_output=True,
                        env={**os.environ, "HERDR_APP_HOME": str(home)})
         target = home / "mods/work-tracker"
-        names = ["icon.svg", "main.js", "mod.json", "model.js", "view.js"]  # not gpui-shell.json: Herdr would refuse it
+        names = ["icon.svg", "main.js", "mod.json", "model.js", "style.js", "view.js"]  # not gpui-shell.json: Herdr would refuse it
         self.assertEqual(sorted(x.name for x in target.iterdir()), names)
         for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())

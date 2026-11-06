@@ -15,7 +15,7 @@ from .contract import check
 from .views import dep_facts, duration, pr_label, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
-VIEW_SCHEMA = 2  # a UI that reads another number asks to be updated
+VIEW_SCHEMA = 3  # a UI that reads another number asks to be updated
 STALE_MARK_S = 86400  # a branch whose commits were last logged longer ago than this shows that age in its row
 
 
@@ -274,8 +274,8 @@ def view_model(tr: Tracker) -> dict:
     goal = strip_comments(section_block(tr.readme_body, "Goal") + section_block(tr.readme_body, "Scope")).strip()
     return {
         "schema": VIEW_SCHEMA, "slug": tr.slug, "title": tr.title, "archived": tr.archived, "root": str(tr.root),
-        "facts": " · ".join(f"{k.removesuffix('_at')}: {show_value(k, tr.meta[k])}"
-                            for k in ("status", "owner", "repo", "created_at") if tr.meta.get(k)),
+        "facts": {k.removesuffix("_at"): show_value(k, tr.meta[k]) if tr.meta.get(k) else ""
+                  for k in ("status", "owner", "repo", "created_at")},
         "synced": int(tr.raw_state().get("last_sync", 0)), "sync_every": LIVE_SYNC_S, "issues": issue_state(tr),
         "links": link_views(tr.context), "goal": {"headings": headings(goal), "body": goal} if goal else None,
         "check": {"errors": errors, "warnings": warnings},

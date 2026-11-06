@@ -5,5 +5,5 @@ set -eu
 ui="$(cd "$(dirname "$0")/../ui" && pwd)"
 target="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/work-tracker"
 mkdir -p "$target"
-cp "$ui/icon.svg" "$ui/main.js" "$ui/mod.json" "$ui/model.js" "$ui/view.js" "$target/"
+cp "$ui/icon.svg" "$ui/main.js" "$ui/mod.json" "$ui/model.js" "$ui/style.js" "$ui/view.js" "$target/"
 echo "installed the work-tracker mod in $target"

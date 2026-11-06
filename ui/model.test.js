@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GRAPH, filterRows, followNotice, graphLayout, hhmm, linkTarget, liveLine, naturalCompare, nextSort, nowTitle, parseOpen,
+import { GRAPH, briefParts, filterRows, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, naturalCompare, nextSort, nowTitle, parseOpen,
   plainInline, sortRows } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
@@ -75,10 +75,11 @@ test("graph: a focused row keeps its chains in colour, through any chain, and gr
 });
 
 test("graph: a link takes the state of the ticket waited on", () => {
-  const tone = state => graphLayout([row("T-1", 1, [], { state }), row("T-2", 2, ["T-1"])], 20).lines[0].tone;
+  const tone = (state, stage = "todo") => graphLayout([row("T-1", 1, [], { state, stage }), row("T-2", 2, ["T-1"])], 20).lines[0].tone;
   assert.equal(tone("closed"), "closed");
   assert.equal(tone("dropped"), "closed");
-  assert.equal(tone("going"), "going");
+  assert.equal(tone("going", "in-progress"), "in-progress");
+  assert.equal(tone("going", "in-review"), "in-review");
   assert.equal(tone("ready"), "blocked");
 });
 
@@ -117,4 +118,19 @@ test("a view that follows says why it shows no tracker", () => {
   assert.equal(followNotice(null, null), "No agent is focused.");
   assert.equal(followNotice({ address: "t1", machine: null }, null), "The focused agent has no tracker.");
   assert.match(followNotice({ address: "mac/t1", machine: "mac" }, null), /agent on mac has no tracker/);
+});
+
+test("a README's Goal and Scope become labelled rows, with their sub-headings as bold lines", () => {
+  assert.deepEqual(briefParts("## Goal\n\nDo it.\n\n## Scope\n\n### In\n- a\n- b\n### Out\n- c"), [
+    { label: "Goal", text: "Do it." },
+    { label: "Scope", text: "**In**\n\n- a\n- b\n\n**Out**\n\n- c" },
+  ]);
+  assert.deepEqual(briefParts(""), []);
+});
+
+test("an id column fits the longest id, within limits", () => {
+  assert.equal(idWidth(["T-1", "T-10"], 10), idWidth(["T-10"], 10));
+  assert.ok(idWidth(["T-100"], 10) > idWidth(["T-10"], 10));
+  assert.equal(idWidth([], 10), idWidth(["T"], 10));
+  assert.equal(idWidth(["x".repeat(40)], 10), idWidth(["x".repeat(16)], 10));
 });

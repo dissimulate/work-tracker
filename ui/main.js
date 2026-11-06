@@ -24,6 +24,7 @@ export default trackerView({
     }
   },
   trackersDir: () => props()?.trackers ?? null,
+  framed: () => !props()?.slug, // a layout's block; the tab of `tracker open` asks for a tracker, and has a pane's frame
   agentAt: () => {
     const focus = focused();
     const address = focus?.shown ?? focus?.terminal ?? focus?.agent;

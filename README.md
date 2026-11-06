@@ -123,8 +123,8 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 - **Your actions**: your open actions, soonest due first, with Done and Drop. A due day is red once past.
 - **Current**: the tickets under way (your move first), each branch's handoff, and the agent sessions on the tracker (a filled dot while one works). A session is busy from your message to its turn's end; an interrupted turn can show busy until the next event.
 - **Sequence**: the tickets in dependency order, depth first so a chain stays together, dropped tickets last. The Step column draws the dependency graph:
-  - a dot per ticket: blue when ready, amber when under way or it can stack on work under way, red when blocked, a green ring when closed, a grey ring when dropped. The ticket's id takes the same colour.
-  - a line from each ticket to each ticket that waits on it: red while it blocks, amber while under way, green once closed.
+  - a dot per ticket, by the theme: ready, green in progress, amber in review or when it can stack on work under way, red when blocked, a ring in the theme's done colour when closed, a grey ring when dropped. The ticket's id takes the same colour.
+  - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, amber while in review, the theme's done colour once closed.
   - Hover a row to see only what its ticket waits on and unblocks.
   - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. A narrow view leaves out Priority, Size, Waits on and Unblocks, then Group.
 - **A record** (a ticket, decision or action) opens beside the page when you click it, or in its place when the view is narrow: what it waits on and unblocks, its facts and links, its body. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.

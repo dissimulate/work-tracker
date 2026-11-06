@@ -37,7 +37,9 @@ export function nextSort(sort, key) {
 }
 
 const HOLLOW = new Set(["closed", "dropped"]);
-const lineTone = state => (HOLLOW.has(state) ? "closed" : state === "going" ? "going" : "blocked");
+// What gives a row its colour: its state, and for work under way its stage, which tells in progress from in review.
+export const rowStatus = t => (t.state === "going" ? t.stage : t.state);
+const lineTone = t => (HOLLOW.has(t.state) ? "closed" : t.state === "going" ? t.stage : "blocked");
 
 export const GRAPH = {
   width: 8, // a column's
@@ -135,10 +137,10 @@ export function graphLayout(rows, rowHeight, focusId = null) {
       const path = [["move", x1, y1]];
       if (run) path.push(["line", tx - r, y1], ["curve", tx, y1 + dy, tx, y1]); // a gap run leaves level
       path.push(["line", tx, y2 - dy], ["curve", tx + r, y2, tx, y2], ["line", x2, y2]);
-      return { tone: lineTone(rows[from].state), dim: focus !== undefined && !nearLinks.has(k), path };
+      return { tone: lineTone(rows[from]), dim: focus !== undefined && !nearLinks.has(k), path };
     });
   const dots = rows.map((t, i) => ({
-    id: t.id, x: x(i), y: y(i), state: t.state, hollow: HOLLOW.has(t.state),
+    id: t.id, x: x(i), y: y(i), state: rowStatus(t), hollow: HOLLOW.has(t.state),
     dim: focus !== undefined && !near.has(i),
   }));
   return { width: colX[cols] + GRAPH.width / 2, lines, dots };
@@ -170,6 +172,22 @@ export function followNotice(agent, slug) {
   if (slug) return "";
   if (!agent) return "No agent is focused.";
   return agent.machine ? `The focused agent on ${agent.machine} has no tracker.` : "The focused agent has no tracker.";
+}
+
+// The width of a column of ids in a monospace font, in px: room for the longest, within limits so that a short list
+// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size.
+export function idWidth(ids, size) {
+  const longest = Math.max(0, ...[...ids].map(id => String(id).length));
+  return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.62);
+}
+
+// A README's Goal and Scope as rows for a compact grid: each `## Heading` a label and its text, whose `### Heading` is
+// a bold line, since a heading's size would take a row of its own.
+export function briefParts(body) {
+  return String(body ?? "").split(/^## +/m).map(part => part.trim()).filter(Boolean).map(part => {
+    const [label, ...rest] = part.split("\n");
+    return { label: label.trim(), text: rest.join("\n").replace(/^### +(.+)$/gm, "\n**$1**\n").replace(/\n{3,}/g, "\n\n").trim() };
+  });
 }
 
 export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
