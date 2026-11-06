@@ -1,13 +1,13 @@
 // The tracker as a Herdr mod. All of Herdr that the UI uses is here.
-import { exec, home, nextCommand, props, readTextFile, settings, theme, watchFolder } from "herdr";
+import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
 import { trackerView } from "./view.js";
 
 const AT_LEAST_MS = 15000; // agent sessions report outside the watched folder
 
 export default trackerView({
   home,
-  readText: path => readTextFile(path),
-  run: (command, args) => exec(command, args),
+  readText: (path, machine) => readTextFile(path, { on: machine ?? null }),
+  run: (command, args, machine) => exec(command, args, { on: machine ?? null }),
   // A folder that cannot be watched yet, or at all, rejects: wait, and look again.
   changed: async (cx, dir) => {
     await Promise.race([watchFolder(dir).catch(() => cx.sleep(AT_LEAST_MS)), cx.sleep(AT_LEAST_MS)]);
@@ -24,4 +24,13 @@ export default trackerView({
     }
   },
   trackersDir: () => props()?.trackers ?? null,
+  agentAt: () => {
+    const focus = focused();
+    const address = focus?.shown ?? focus?.terminal ?? focus?.agent;
+    if (!address) return undefined;
+    const terminal = terminals().find(x => x.address === address && x.state === "live");
+    if (!terminal || !(terminal.program?.agent || terminal.status || agents().some(x => x.address === address))) return null;
+    return { address, machine: address.includes("/") ? address.split("/")[0] : null, // another machine's: "macbook/t1"
+      pid: terminal.foreground?.pid ?? null, cwd: terminal.foreground?.cwd ?? terminal.cwd ?? null };
+  },
 });

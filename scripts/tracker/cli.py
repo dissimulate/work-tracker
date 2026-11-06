@@ -25,7 +25,7 @@ from .model import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE
     unknown_dep, utc_now, Busy, Record, Tracker)
 from .system import open_with_system
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos, locate,
+from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker, in_repos, locate,
     mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve, save_session,
     session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
 from .contract import check, migrate, rules_lines
@@ -1127,6 +1127,11 @@ def cmd_data(args):
     print(json.dumps(view_model(tr)))
 
 
+def cmd_attached(args):
+    """A UI's question: which tracker the agent it follows is on."""
+    print(json.dumps({"slug": attached_tracker(args.pid, args.cwd) or None}))
+
+
 def cmd_refresh(args):
     """A UI's Refresh: ask again for every open ticket's issue fields, and pull PR state unless a sync just ran. Only
     the model can read an issue tracker (through its tool), so this records the request; the next prompt hook passes it
@@ -1387,6 +1392,9 @@ def build_parser():
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
     sp = add("data", cmd_data, "a tracker's sequence as JSON, for a UI")
     sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
+    sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI")
+    sp.add_argument("--pid", type=int, required=True, help="the agent's process id")
+    sp.add_argument("--cwd", default="", help="its folder: finds a host that keeps no process file")
     sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open, else its own window")
     sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
                                              "archived one too)")

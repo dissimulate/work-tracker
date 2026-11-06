@@ -2,8 +2,8 @@
 // knows of its host is the object they pass in, and all it knows of the tracker is the `tracker` CLI's JSON:
 //
 //   home()              the user's home folder
-//   readText(path)      a file's text, or null
-//   run(command, args)  a program's { code, stdout, stderr }
+//   readText(path, machine)      a file's text, or null. A null machine is this one; on another, a path is from its home
+//   run(command, args, machine)  a program's { code, stdout, stderr }
 //   changed(cx, dir)    resolves when something under dir may have changed
 //   colors()            the colours by Herdr's names (theme() in herdr.d.ts)
 //   font()              the font for numbers and ids
@@ -13,9 +13,12 @@
 //   nextOpen()          optional: resolves with each later request, as "<slug>/<id>"
 //   trackersDir()       optional: the trackers' folder, when it is not the default
 //   cli()               optional: how to start the CLI, when the host was told
+//   agentAt()           optional: the focused agent, { address, machine, pid, cwd } with machine null when it is here;
+//                       null when the focus is on something else; undefined when it is on no terminal. With it the
+//                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { TextView, h_flex, v_flex } from "gpui-base";
-import { filterRows, GRAPH, graphLayout, liveLine, linkTarget, nextSort, nowTitle, parseOpen, plainInline,
+import { filterRows, followNotice, GRAPH, graphLayout, liveLine, linkTarget, nextSort, nowTitle, parseOpen, plainInline,
   sortRows } from "./model.js";
 
 const SCHEMA = 2; // viewmodel.VIEW_SCHEMA
@@ -23,6 +26,8 @@ const ROW = 28, LINE = 26;
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
 const DETAIL_W = 420, DETAIL_MIN = 900; // the opened record sits beside the page from this width, else in its place
 const LABEL_W = 76; // an opened record's labels
+const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
+const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 
 // Each status's colour, by the theme's names: blue when ready, amber under way, red blocked, green closed.
 const TONES = {
@@ -50,21 +55,38 @@ export function trackerView(host, first = null) {
       this.view = first?.view ?? null;
       this.trackers = first?.trackers ?? null;
       this.slug = first?.view?.slug ?? start.slug;
+      this.machine = null; // where this tracker lives: another machine when the agent followed runs there
+      this.clis = new Map(); // per machine, how to start the CLI
       this.shown = "";
       this.live = "";
+      this.follows = !first && Boolean(host.agentAt) && !start.slug;
+      this.notice = first?.notice ?? ""; // why a view that follows shows no tracker
+      this.agentAddress = undefined; // the agent followed
+      this.followed = undefined; // that agent and its tracker: when they change, a tracker picked by hand gives way
+      this.following = false;
       if (first) { // a check of the drawing: its data is given, and every part opens
         ["sec-check", "sec-reference", "links", "goal", "closed-decisions", "closed-actions", "more", "log"]
           .forEach(key => this.panels.set(key, true));
         return;
       }
-      const dir = host.trackersDir?.() ?? `${host.home()}/.claude/trackers`;
+      const dir = this.dir = host.trackersDir?.() ?? `${host.home()}/.claude/trackers`;
       cx.spawn(async cx => {
-        await this.findCli(dir);
+        await this.findCli(null);
         await this.listTrackers(cx);
+        await this.followAgent(cx, true);
         await this.load(cx);
+        if (this.follows) {
+          cx.spawn(async cx => {
+            for (;;) {
+              await cx.sleep(FOCUS_MS);
+              await this.followAgent(cx);
+            }
+          });
+        }
         for (;;) {
           await host.changed(cx, dir);
           await cx.sleep(150); // a command writes several files
+          await this.followAgent(cx, true); // `tracker start` links a session with the focus still on it
           await this.load(cx);
         }
       });
@@ -85,7 +107,7 @@ export function trackerView(host, first = null) {
         cx.spawn(async cx => {
           for (;;) {
             const { slug, id } = parseOpen(await host.nextOpen());
-            if (slug && slug !== this.slug) this.show(slug, cx);
+            if (slug && (slug !== this.slug || this.machine)) this.show(slug, cx, null);
             if (id) this.selected = id;
             cx.notify();
           }
@@ -93,43 +115,97 @@ export function trackerView(host, first = null) {
       }
     }
 
-    // Where the CLI is: the plugin's path changes with each version, so its hooks record it. Else `tracker` on PATH.
-    async findCli(dir) {
-      this.cli = ["tracker"];
-      const told = host.cli?.();
-      if (told?.length) {
-        this.cli = told;
-        return;
+    // Where a machine's CLI is: the plugin's path changes with each version, so its hooks record it. Here, else `tracker`
+    // on PATH. On another machine PATH holds no plugin, so with no record the view says so.
+    async findCli(machine) {
+      if (this.clis.has(machine)) return this.clis.get(machine);
+      let argv = machine ? null : host.cli?.();
+      if (!argv?.length) {
+        try {
+          argv = JSON.parse(await host.readText(`${machine ? REMOTE_DIR : this.dir}/.cli.json`, machine))?.argv;
+        } catch {
+          // No hook has run yet, or the host cannot read it.
+        }
       }
-      try {
-        const argv = JSON.parse(await host.readText(`${dir}/.cli.json`))?.argv;
-        if (Array.isArray(argv) && argv.length) this.cli = argv;
-      } catch {
-        // No hook has run yet, or the host cannot read it.
+      if (!Array.isArray(argv) || !argv.length) {
+        if (machine) throw new Error(`No tracker CLI recorded on ${machine}: it needs this plugin version, and a session on a tracker there`);
+        argv = ["tracker"];
       }
+      this.clis.set(machine, argv);
+      return argv;
     }
 
-    async tracker(...args) {
-      const [command, ...rest] = this.cli;
-      const r = await host.run(command, [...rest, ...args]);
-      if (r.code !== 0) throw new Error(r.stderr.trim() || `tracker ${args.join(" ")} failed (${r.code})`);
-      return r.stdout;
+    async trackerOn(machine, ...args) {
+      const [command, ...rest] = await this.findCli(machine);
+      const r = await host.run(command, [...rest, ...args], machine);
+      if (r.code === 0) return r.stdout;
+      this.clis.delete(machine); // a plugin update moves it: read the record again
+      throw new Error(r.stderr.trim() || `tracker ${args.join(" ")} failed (${r.code})`);
     }
+
+    tracker(...args) { return this.trackerOn(this.machine, ...args); }
 
     async listTrackers(cx) {
+      const machine = this.machine;
       try {
-        this.trackers = JSON.parse(await this.tracker("list", "--json"));
-        this.slug ??= this.trackers.active[0]?.slug ?? null;
+        const list = JSON.parse(await this.tracker("list", "--json"));
+        if (machine !== this.machine) return; // another machine came to show while this one answered
+        this.trackers = list;
+        if (!this.follows) this.slug ??= this.trackers.active[0]?.slug ?? null;
       } catch (e) {
         this.error = String(e.message ?? e);
       }
       cx.notify();
     }
 
+    async attachedTo(agent) {
+      if (!agent.pid) return null;
+      const where = agent.cwd ? ["--cwd", agent.cwd] : [];
+      return JSON.parse(await this.trackerOn(agent.machine, "attached", "--pid", String(agent.pid), ...where)).slug;
+    }
+
+    // Show the focused agent's tracker, or say why there is none. `recheck`: ask again with the focus where it was.
+    async followAgent(cx, recheck = false) {
+      if (!this.follows || this.following) return;
+      const agent = host.agentAt();
+      if (agent === undefined) return; // the focus is on no terminal, such as on this view: keep what shows
+      const address = agent?.address ?? null, machine = agent?.machine ?? null;
+      if (!recheck && address === this.agentAddress) return;
+      this.following = true;
+      try {
+        const slug = agent ? await this.attachedTo(agent) : null;
+        const now = host.agentAt();
+        if (now !== undefined && (now?.address ?? null) !== address) return; // it moved on: the next look takes it
+        this.agentAddress = address;
+        if (!slug && this.error) {
+          this.error = "";
+          cx.notify();
+        }
+        const followed = `${address} ${slug}`;
+        if (followed === this.followed) return;
+        this.followed = followed;
+        if (slug !== this.slug || machine !== this.machine) this.show(slug, cx, machine);
+        this.notice = followNotice(agent, slug);
+        cx.notify();
+      } catch (e) {
+        this.agentAddress = address; // no program runs again until the focus moves or the next look
+        this.followed = undefined;
+        if (machine !== this.machine) this.show(null, cx, machine);
+        if (!this.slug) this.notice = "Could not ask the focused agent's machine for its tracker.";
+        this.error = String(e.message ?? e);
+        cx.notify();
+      } finally {
+        this.following = false;
+      }
+    }
+
     async load(cx) {
       if (!this.slug) return;
+      const slug = this.slug, machine = this.machine;
+      const moved = () => slug !== this.slug || machine !== this.machine; // another tracker came to show meanwhile
       try {
-        const text = await this.tracker("data", this.slug);
+        const text = await this.trackerOn(machine, "data", slug);
+        if (moved()) return;
         const live = this.view ? liveLine(this.view, new Date()) : "";
         if (text === this.shown && live === this.live && !this.error) return; // nothing to draw
         if (text !== this.shown) {
@@ -143,13 +219,17 @@ export function trackerView(host, first = null) {
         this.live = liveLine(this.view, new Date());
         this.error = "";
       } catch (e) {
+        if (moved()) return;
         this.error = String(e.message ?? e);
       }
       cx.notify();
     }
 
-    show(slug, cx) {
+    show(slug, cx, machine = this.machine) {
+      if (machine !== this.machine) this.trackers = null; // the menu's list is the machine's
+      this.machine = machine;
       this.slug = slug;
+      this.notice = "";
       this.menu = false;
       this.selected = null;
       this.filter = "all";
@@ -535,7 +615,7 @@ export function trackerView(host, first = null) {
             cx.notify();
             if (this.menu) cx.spawn(async cx => { await this.listTrackers(cx); });
           })
-          .child(div().min_w(0).truncate().text_size(12).child(view?.slug ?? this.slug ?? "Trackers"))
+          .child(div().min_w(0).truncate().text_size(12).child([this.machine, view?.slug ?? this.slug ?? "Trackers"].filter(Boolean).join(" / ")))
           .child(div().flex_none().text_size(10).text_color(t.dim).child(this.menu ? "▴" : "▾")))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(11).text_color(t.dim).child(this.live || " "))
         .when(Boolean(view) && !view.archived, el => el.child(this.button("refresh", "Refresh", t,
@@ -553,6 +633,12 @@ export function trackerView(host, first = null) {
       if (this.menu) root.child(this.trackerMenu(t));
       if (this.doomed) root.child(this.deleteQuestion(this.doomed, t));
       if (this.error) root.child(div().flex_none().px(14).py(6).text_size(12).text_color(t.blocked).child(this.error));
+      if (this.notice && !view) {
+        return root.child(v_flex().p(14).gap(4).text_size(12).text_color(t.dim)
+          .child(div().text_size(15).font_semibold().text_color(t.foreground).child("No tracker to show"))
+          .child(div().child(this.notice))
+          .child(div().child("Pick one with the switcher above, or ask the agent to start one.")));
+      }
       if (!view) {
         return root.child(div().p(14).text_size(12).text_color(t.dim)
           .child(this.slug ? "Loading…" : "No tracker open: pick one above, or ask the agent to make one."));

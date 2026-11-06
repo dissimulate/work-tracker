@@ -642,6 +642,19 @@ def claude_sessions() -> list[dict]:
     return [c for c in map(read_json, CLAUDE_SESSIONS.glob("*.json")) if c]
 
 
+def attached_tracker(pid: int, cwd: str = "") -> str:
+    """The slug of the tracker linked to the agent in a process, "" with none. Claude Code's process file names its
+    session. Another host has no such file: the live sessions its hooks report in that folder, when they agree on one
+    tracker."""
+    sid = read_json(CLAUDE_SESSIONS / f"{pid}.json").get("sessionId")
+    if sid:
+        tr = session_tracker(str(sid))
+        return tr.slug if tr else ""
+    native = {str(c.get("sessionId")) for c in claude_sessions()}
+    slugs = {slug for slug, live in live_by_tracker().items() for x in live if x.cwd == cwd and x.sid not in native}
+    return slugs.pop() if len(slugs) == 1 else ""
+
+
 def session_activity(sid: str, status: str) -> None:
     """Keep a tracked session's status from its hooks, and when the status last changed; and whether Claude Code
     keeps a process file for it (`native`), until it is seen to."""

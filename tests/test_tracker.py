@@ -1693,6 +1693,35 @@ class Ui(unittest.TestCase):
         for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
 
+    def test_attached_finds_the_tracker_of_an_agents_process(self):
+        s = self.tracker()
+        session.CLAUDE_SESSIONS.mkdir(parents=True, exist_ok=True)
+
+        def process(sid):
+            pid = time.monotonic_ns()
+            (session.CLAUDE_SESSIONS / f"{pid}.json").write_text(json.dumps(
+                {"pid": pid, "sessionId": sid, "cwd": "/", "status": "idle"}))
+            return pid
+
+        def attached(pid, cwd=""):
+            return json.loads(run("attached", "--pid", str(pid), "--cwd", cwd))["slug"]
+
+        sid = f"linked{time.monotonic_ns()}"
+        pid = process(sid)
+        session.save_session(sid, tracker=s, cwd=BASE)
+        self.assertEqual(attached(pid), s)
+        self.assertIsNone(attached(process(f"unlinked{time.monotonic_ns()}")))
+
+        # A host with no process file: its hooks' live sessions in that folder, while they agree on one tracker.
+        now, folder = time.time(), f"/nowhere/{time.monotonic_ns()}"
+        activity = {"status": "busy", "since": now, "at": now}
+        none = 2 ** 40 + time.monotonic_ns() % 1000
+        self.assertIsNone(attached(none, folder))
+        session.save_session(f"other{time.monotonic_ns()}", tracker=s, cwd=folder, activity=activity)
+        self.assertEqual(attached(none, folder), s)
+        session.save_session(f"other{time.monotonic_ns()}", tracker=self.tracker(), cwd=folder, activity=activity)
+        self.assertIsNone(attached(none, folder))
+
     def test_open_does_not_install_the_mod(self):
         s = self.tracker()
         home = Path(tempfile.mkdtemp(dir=BASE))

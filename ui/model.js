@@ -165,6 +165,13 @@ export function parseOpen(text) {
   return { slug: slug || null, id: rest.join("/") || null };
 }
 
+// Why a view that follows the focused agent shows no tracker; "" when it shows one. `agent` is what host.agentAt() gave.
+export function followNotice(agent, slug) {
+  if (slug) return "";
+  if (!agent) return "No agent is focused.";
+  return agent.machine ? `The focused agent on ${agent.machine} has no tracker.` : "The focused agent has no tracker.";
+}
+
 export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 
 // What the live line says: when the data was read, when GitHub was, and the issue fields' state.

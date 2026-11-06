@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GRAPH, filterRows, graphLayout, hhmm, linkTarget, liveLine, naturalCompare, nextSort, nowTitle, parseOpen,
+import { GRAPH, filterRows, followNotice, graphLayout, hhmm, linkTarget, liveLine, naturalCompare, nextSort, nowTitle, parseOpen,
   plainInline, sortRows } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
@@ -110,4 +110,11 @@ test("the live line and Current's heading say only what is there", () => {
   assert.match(liveLine({ synced: now / 1000, issues: "" }, now), /· PRs from GitHub 09:05$/);
   assert.equal(nowTitle({ busy: 2, yours: 1, agents: 2 }), "2 · 1 your move · 2 agents");
   assert.equal(nowTitle({ busy: 1, yours: 0, agents: 1 }), "1 · 1 agent");
+});
+
+test("a view that follows says why it shows no tracker", () => {
+  assert.equal(followNotice({ address: "t1", machine: null }, "work"), "");
+  assert.equal(followNotice(null, null), "No agent is focused.");
+  assert.equal(followNotice({ address: "t1", machine: null }, null), "The focused agent has no tracker.");
+  assert.match(followNotice({ address: "mac/t1", machine: "mac" }, null), /agent on mac has no tracker/);
 });
