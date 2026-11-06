@@ -45,14 +45,25 @@ def gh(*args: str, fields: str | None = None, partial: bool = False):
         return None
 
 
-def pick_pr(prs: list[dict], ticket: Record) -> dict | None:
-    """The ticket's PR: by its number, else the PR from its branch. A fork's PR from a branch of the same name is
-    someone else's work (`own_prs`)."""
-    if ticket.get("pr"):
-        return next((p for p in prs if str(p["number"]) == str(ticket.get("pr"))), None)
-    mine = [p for p in own_prs(prs) if p["headRefName"] == ticket.get("branch")]
-    rank = {"OPEN": 0, "MERGED": 1, "CLOSED": 2}
-    return min(mine, key=lambda p: (rank.get(p["state"], 3), -p["number"]), default=None)
+PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
+
+
+def pr_url(repo: str, number: object) -> str:
+    """A PR's page, or "" when no repo says where it is."""
+    return f"https://github.com/{repo}/pull/{number}" if repo else ""
+
+
+def named_prs(t: Record, repo: str) -> set[str]:
+    """The numbers of the PRs a ticket names in this repo: the ones `sync` follows, and its `PR:` links."""
+    linked = (PR_PAGE.search(x.text) for x in t.links if x.label == "PR")
+    return {n for n in (*t.prs, *(m[2] for m in linked if m and m[1].lower() == repo.lower())) if n.isdigit()}
+
+
+def ticket_prs(prs: list[dict], t: Record, repo: str) -> list[dict]:
+    """A ticket's PRs: those it names, and those from its branch. The closed ones only while there are no others."""
+    named, own = named_prs(t, repo), own_prs(prs)
+    mine = [p for p in prs if str(p["number"]) in named or p in own and p["headRefName"] == t.get("branch")]
+    return [p for p in mine if pr_state(p) != "closed"] or mine
 
 
 def own_prs(prs: list[dict]) -> list[dict]:
@@ -61,7 +72,7 @@ def own_prs(prs: list[dict]) -> list[dict]:
     return [p for p in prs if not p.get("isCrossRepository")]
 
 
-# What sync reads of each PR: its own state, base and head (pr_of, pick_pr), and what a ticket's move needs
+# What sync reads of each PR: its own state, base and head (pr_of, ticket_prs), and what a ticket's move needs
 # (review_facts, for model.whose_move).
 PR_FRAGMENT = """fragment F on PullRequest {
   number headRefName state isDraft mergedAt baseRefName isCrossRepository reviewDecision mergeStateStatus
@@ -74,16 +85,15 @@ PR_FRAGMENT = """fragment F on PullRequest {
 
 
 def gh_prs(tr: Tracker, tickets: list[Record]) -> dict[str, list[dict] | None] | None:
-    """The PRs the tickets can be on, per repo, from one GraphQL call: a ticket's PR by its number, else the newest
-    BRANCH_PRS_MAX from its branch, each as PR_FRAGMENT reads it. None for a repo GitHub does not answer for, and in
+    """The PRs the tickets can be on, per repo, from one GraphQL call: those a ticket names by their numbers, and while
+    it has no merged PR the newest BRANCH_PRS_MAX from its branch, each as PR_FRAGMENT reads it. None for a repo GitHub does not answer for, and in
     place of all when gh fails. A PR GitHub does not find is left out."""
     asked: dict[str, tuple[set[str], set[str]]] = {}  # repo: (PR numbers, branches)
     for t in tickets:
-        pr = str(t.get("pr") or "")
-        if pr and not pr.isdigit():
-            continue  # it names no PR (pick_pr)
         numbers, branches = asked.setdefault(tr.repo_of(t), (set(), set()))
-        (numbers if pr else branches).add(pr or str(t.get("branch")))
+        numbers |= named_prs(t, tr.repo_of(t))
+        if t.get("branch") and t.pr_state != "merged":
+            branches.add(str(t.get("branch")))
     repos = sorted(asked)
     query = []
     for i, repo in enumerate(repos):
@@ -148,11 +158,15 @@ def review_facts(pr: dict) -> dict:
     return {k: v for k, v in facts.items() if v}
 
 
+def pr_state(pr: dict) -> str:
+    """A PR's state as gh gives it (PR_FRAGMENT), in the tracker's words."""
+    return ("merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED"
+            else "draft" if pr["isDraft"] else "open")
+
+
 def pr_of(pr: dict) -> dict:
     """A PR as gh gives it (PR_FRAGMENT), in the tracker's words (model.apply_prs)."""
-    state = "merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED" else \
-        "draft" if pr["isDraft"] else "open"
-    return {"number": pr["number"], "state": state, "base": pr["baseRefName"],
+    return {"number": pr["number"], "state": pr_state(pr),
             "merged_at": FORMS["time"].read("merged_at", pr["mergedAt"]) if pr.get("mergedAt") else ""}
 
 
@@ -165,17 +179,21 @@ def skipped(changes: list[str]) -> bool:
 
 
 def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) -> list[str]:
-    """Pull PR state from GitHub: each ticket's PR into its frontmatter (`pr`, `pr_state`, `base`, `merged_at`), the
+    """Pull PR state from GitHub: each ticket's PRs into its frontmatter (`prs`, `merged_at`), the
     open PRs' PR_FACTS into .state.json `prs` (`model.apply_prs`). Returns change lines. GitHub is asked first, in
     one call (`gh_prs`) and without the lock; the tracker is then reloaded and written under it."""
     if not tr.repos:
         return []
     if not force and time.time() - tr.state().get("last_sync", 0) < min_interval:
         return []
-    # Only started work has a PR: a todo ticket on a branch that holds a PR is not in it yet. A merged PR is final: a
-    # later PR from a branch the ticket shared is other tickets' work.
-    tickets = [t for t in tr.tickets if t.started and t.get("pr_state") != "merged" and tr.repo_of(t) in tr.repos
-               and (t.get("branch") or t.get("pr"))]
+    # Only started work has a PR: a todo ticket on a branch that holds a PR is not in it yet. A merged ticket is final,
+    # but for a PR newly linked to it: a later PR from a branch the ticket shared is other tickets' work.
+    def to_read(t: Record) -> bool:
+        repo = tr.repo_of(t)
+        return (t.started and repo in tr.repos and (t.get("branch") or named_prs(t, repo))
+                and (t.pr_state != "merged" or bool(named_prs(t, repo) - set(t.prs))))
+
+    tickets = [t for t in tr.tickets if to_read(t)]
     prs_by_repo = gh_prs(tr, tickets) if tickets else {}
     failed = (sorted({tr.repo_of(t) for t in tickets}) if prs_by_repo is None
               else [repo for repo, prs in prs_by_repo.items() if prs is None])
@@ -184,11 +202,11 @@ def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) ->
     found, facts = {}, {}
     for t in tickets:
         repo = tr.repo_of(t)
-        pr = pick_pr(prs_by_repo.get(repo, []), t)
-        if pr:
-            found[t.id] = (repo, pr_of(pr))
-            if found[t.id][1]["state"] in OPEN_PR:
-                facts[pr_key(repo, pr["number"])] = review_facts(pr)
+        prs = ticket_prs(prs_by_repo.get(repo, []), t, repo)
+        if prs:
+            found[t.id] = (repo, [pr_of(p) for p in prs])
+            facts.update({pr_key(repo, p["number"]): {**review_facts(p), "base": p["baseRefName"]}
+                          for p in prs if pr_state(p) in OPEN_PR})
     with locked():
         return apply_prs(Tracker(tr.root), found, facts)
 

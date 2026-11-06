@@ -170,7 +170,7 @@ Environment variables. All are optional.
 5. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
 6. `contract`: `check`, `rules`, `migrate`
 7. `views`: text views and the brief
-8. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`); `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
+8. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). A ticket's PRs are those from its branch and its `PR:` links, all equal, in its `prs` list; `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
 9. `watcher`: `tracker watch` and the user's grant; archiving and deleting a tracker
 10. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
 11. `ui`: where the UI in `ui/` runs: `tracker open`

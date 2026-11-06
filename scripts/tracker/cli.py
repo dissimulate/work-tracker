@@ -277,7 +277,7 @@ def base_notes(tr: Tracker, t: Record) -> list[str]:
     missing = [b for b in under if contains(cwd, str(b.get("branch"))) is False]
     if not missing:
         return []
-    where = ", ".join(f"{b.get('branch')} ({b.id}" + (f", #{b.get('pr')}" if b.get("pr") else "") + ")"
+    where = ", ".join(f"{b.get('branch')} ({b.id}" + (f", {b.pr_refs}" if b.prs else "") + ")"
                       for b in missing)
     return [f"{t.id} waits on work under way that branch {t.get('branch')} does not contain: {where}. Start the branch "
             f"from it, unless the user chose otherwise (`tracker ready` names the branch to start from)."]

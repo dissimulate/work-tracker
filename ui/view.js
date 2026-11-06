@@ -303,7 +303,7 @@ export function trackerView(host, first = null) {
     // A record's id that opens it. `place` keeps the element's id the same from draw to draw, or a click is lost.
     idLink(place, id, t, color = null) {
       return this.mono(div().id(`link-${place}-${id}`).flex_none().cursor_pointer().text_size(TEXT.small)
-        .text_color(color ?? t.muted).on_click((_e, cx) => this.select(id, cx)).child(id));
+        .text_color(color ?? t.muted).on_click((_e, cx) => { cx.stop_propagation(); this.select(id, cx); }).child(id));
     }
 
     // The start of a row: its id, in a column as wide on every row of the page, so what follows lines up.
@@ -339,6 +339,14 @@ export function trackerView(host, first = null) {
       ], t);
     }
 
+    // A PR by its number: with a page to open, a click opens it in the browser and not the row around it.
+    prLink(place, pr, t) {
+      const text = div().id(`pr-${place}-${pr.number}`).flex_none().child(`PR #${pr.number}`);
+      if (!pr.url) return text.text_color(t.muted);
+      return text.text_color(t.accent).cursor_pointer().hover(s => s.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.follow(pr.url, cx); });
+    }
+
     agentMark(agents, t) {
       if (!agents.length) return [];
       const busy = agents.some(a => a.busy);
@@ -365,8 +373,10 @@ export function trackerView(host, first = null) {
           .child(this.idLink("now", item.id, t, tone(item.stage, t)).w(this.idColumn).truncate())
           .children(this.agentMark(item.agents, t))
           .child(chip(item.stage, item.stage, t))
-          .when(Boolean(item.move), row => row.child(chip(item.move.text, item.move.mine ? "you" : "them", t))))
-        .child(this.named(item.title, item.meta, t, t.muted));
+          .children((item.prs ?? []).map(pr => this.prLink(item.key, pr, t)))
+          .when(Boolean(item.move), row => row.child(div().flex_1().min_w(0).truncate().text_right()
+            .text_color(tone(item.move.mine ? "you" : "them", t)).child(item.move.text))))
+        .when(item.kind !== "ticket", el => el.child(this.named(item.title, item.meta, t, t.muted)));
       // A card that opens where it is: with nothing more to show, it does not take a click.
       const expands = Boolean(item.line || item.on?.length || item.fresh || item.agents.length);
       return card(key, [head], t, { click: expands ? cx => { this.panels.set(key, !open); cx.notify(); } : null,

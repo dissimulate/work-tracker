@@ -18,11 +18,7 @@ from .contract import check
 # ---------------------------------------------------------------- views
 
 def pr_label(t: Record) -> str:
-    pr = t.get("pr")
-    if not pr:
-        return "—"
-    state = t.get("pr_state")
-    return f"#{pr}" + (f" {state}" if state and state != "merged" else "")
+    return ", ".join(f"#{n}" + (f" {state}" if state and state != "merged" else "") for n, state in t.prs.items()) or "—"
 
 
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,
@@ -116,7 +112,7 @@ def start_text(tr: Tracker, s: Start) -> str:
         b = s.base
         where = f"stack on {b.get('branch')}" if b.get("branch") else f"stack on {b.id}'s work (no branch recorded)"
         move = whose_move(tr, b)
-        facts = [f"{b.id} {b.stage}" + (f", #{b.get('pr')}" if b.get("pr") else ""), *([move.text()] if move else [])]
+        facts = [f"{b.id} {b.stage}" + (f", {b.pr_refs}" if b.prs else ""), *([move.text()] if move else [])]
         return f"{where} ({'; '.join(facts)})"
     if s.apart:
         on = " and ".join(f"{b.id} ({b.get('branch') or 'no branch'})" for b in s.apart)

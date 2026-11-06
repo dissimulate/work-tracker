@@ -38,7 +38,7 @@ Record each fact at the moment it forms, in its home:
 | you stop with the work unfinished: a pause, a compaction, the session's end | `tracker step <id> "..." --pause "<what is done, what is half-done and uncommitted, the next step>"` |
 | the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>" --why "<why>"`, or the whole Plan with `tracker put <id> plan - --why "<why>"` and a heredoc |
 | a section changes as a whole (Carry forward kept short, Links sorted), or the README needs a section of its own (`put tracker "Why this order" -` makes it) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
-| you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
+| you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."`. A `PR:` link to a PR in the ticket's repo also makes `sync` follow that PR, with those from the ticket's branch |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
 | the user gives a standing rule for this work (how to handle a kind of ticket, an action to add when something happens) | `tracker put tracker instructions -` with the whole section in a heredoc, or one line `tracker add tracker instructions "..."`; follow the section the brief prints |

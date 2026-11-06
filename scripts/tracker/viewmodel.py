@@ -12,11 +12,11 @@ from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, 
     Record, Tracker)
 from .session import ago, handoff_where, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
+from .github import PR_PAGE, pr_url
 from .views import dep_facts, duration, pr_label, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
 VIEW_SCHEMA = 3  # a UI that reads another number asks to be updated
-STALE_MARK_S = 86400  # a branch whose commits were last logged longer ago than this shows that age in its row
 
 
 def gate_tag(g: Gate) -> str:
@@ -110,6 +110,20 @@ def dep_view(d: Dep) -> dict:
             "title": d.link.text if d.link and not d.rec else ""}
 
 
+def pr_views(tr: Tracker, t: Record) -> list[dict]:
+    """A ticket's PRs, each once: the ones `sync` follows, then each of its `PR:` links to a PR's page, also one in a
+    repo `sync` does not read."""
+    prs = {}
+    for n in t.prs:
+        url = pr_url(tr.repo_of(t), n)
+        prs[url or str(n)] = {"number": str(n), "url": url}
+    for link in t.links:
+        m = PR_PAGE.search(link.text) if link.label == "PR" else None
+        if m:
+            prs.setdefault(m[0], {"number": m[2], "url": m[0]})
+    return list(prs.values())
+
+
 def link_views(items: list[Link]) -> list[dict]:
     return [{"label": x.label, "text": x.text, "sub": list(x.sub)} for x in items]
 
@@ -156,7 +170,7 @@ def ticket_view(tr: Tracker, t: Record, order: int, step: int, links: list[str])
         "gate": {"state": tr.gate(t).state, "text": tr.gate(t).text(), "tag": gate_tag(tr.gate(t))},
         "order": order, "step": step, "links": links,
         "group": str(t.get("group", "")), "levels": {key: level_name(t, key) for key in SCALES},
-        "pr": pr_label(t) if t.get("pr") else "",
+        "pr": pr_label(t) if t.prs else "",
         "waits": [dep_view(d) for d in waits], "unblocks": unblocks,
         "sort": {"step": order, "ticket": t.id,
                  "status": list(STAGES).index(t.stage) if t.stage in STAGES else len(STAGES),
@@ -207,10 +221,8 @@ def now_view(tr: Tracker) -> dict:
         b = str(t.get("branch") or "")
         mark = branch_entry(marks, tr.repo_of(t), b)
         fresh = f"commits logged {ago(mark['at'])}" if isinstance(mark, dict) else ""
-        stale = fresh if fresh and time.time() - mark["at"] > STALE_MARK_S else ""
         move = moves[t.id]
-        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "title": str(t.get("title")),
-                      "meta": " · ".join(x for x in (b, stale) if x), "fresh": fresh,
+        items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "prs": pr_views(tr, t), "fresh": fresh,
                       "move": {"text": move.text(), "mine": move.mine} if move else None,
                       "line": f"next: {t.get('next')}" if t.get("next") else "", "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():

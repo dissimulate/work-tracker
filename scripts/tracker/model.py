@@ -57,8 +57,9 @@ LIFECYCLES = {
 STAGES = LIFECYCLES["ticket"]
 # The statuses a command sets, per kind; a ticket's PR adds the others
 STATUSES = {kind: tuple(s for s, x in stages.items() if not x.derived) for kind, stages in LIFECYCLES.items()}
-PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # pr_state -> stage of started work
-OPEN_PR = {"draft", "open"}  # pr_state values of a PR not yet merged or closed
+PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "merged"}  # PRs' state -> stage of started work
+PR_STATES = ("open", "draft", "merged", "closed")  # the state of a ticket's PRs together: the first any of them has
+OPEN_PR = {"draft", "open"}  # the states of a PR not yet merged or closed
 OPEN_STAGES = {s for s, x in STAGES.items() if not x.closed}
 
 
@@ -162,11 +163,9 @@ KEYS = {
         "updated_at": ("auto", UPDATED),
         "started_at": ("auto", "when `set status=in-progress` first started it; none for one started before 0.29"),
         "closed_at": ("auto", "when its status closed it (done or dropped); a merged PR's time is merged_at"),
-        "pr": ("sync", "the PR number"),
-        "pr_state": ("sync", "draft|open|merged|closed, from the PR"),
-        "base": ("sync", "the PR's base branch; while the PR is open, a base that is other tickets' branch makes "
-                         "this ticket wait on them (computed; depends_on does not change)"),
-        "merged_at": ("sync", "when the PR merged"),
+        "prs": ("sync", "its PRs, those from its branch and its `PR:` links, each as `<number>:<state>` (draft, open, "
+                        "merged or closed); a closed one is left out while another is not closed"),
+        "merged_at": ("sync", "when its last PR merged, once none is open"),
         "issue_created_at": ("issue", "when the ticket's issue was created in its issue tracker"),
     },
     "decision": {
@@ -203,7 +202,7 @@ KEYS = {
         "schema": ("auto", "the tracker's format version; `tracker migrate` brings an older one up to date"),
     },
 }
-SCHEMA = 3  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 4  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
 # Keys an older format named otherwise, old: new; `migrate` renames them
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
@@ -211,7 +210,7 @@ RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_crea
                 "tracker": {"created": "created_at"}}
 # `migrate` removes them, or renames them
 RETIRED_KEYS = {kind: removed | set(RENAMED_KEYS[kind]) for kind, removed in
-                {"ticket": {"slice", "key"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
+                {"ticket": {"slice", "key", "pr", "pr_state", "base"}, "decision": {"resolved"}, "action": set(), "tracker": set()}.items()}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
@@ -261,7 +260,7 @@ STATE_RULES = {
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
-LIST_KEYS = {"depends_on", "refs", "labels"}
+LIST_KEYS = {"depends_on", "refs", "labels", "prs"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
 CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
 
@@ -409,7 +408,7 @@ def show_value(key: str, value) -> str:
 # A record's facts as its views show them, in this order, each by its form (show_value): the UI's opened record all
 # of them; `tracker context` and the brief, on one line, those in TEXT_FACTS (their first line holds the group and the
 # PR). A new key, a new scale's too, shows once it is here.
-FACTS = ("branch", "base", "repo", "group", "owner", *SCALES, "due", "created_at", "started_at", "merged_at",
+FACTS = ("branch", "repo", "group", "owner", *SCALES, "due", "created_at", "started_at", "merged_at",
          "closed_at", "updated_at")
 TEXT_FACTS = {"branch", "repo", *SCALES, "due"}
 
@@ -722,6 +721,25 @@ class Record:
         return bullets(section(self.body, "Carry forward"))
 
     @property
+    def prs(self) -> dict[str, str]:
+        """Its PRs in number order, each number's state. All are equal: what they say together is `pr_state`. A ticket
+        that `sync` and `migrate` have not yet brought to the list reads from its one `pr` and `pr_state`."""
+        items = [str(x).partition(":") for x in self.list("prs")]
+        if not items and self.meta.get("pr"):
+            items = [(str(self.meta["pr"]), ":", str(self.meta.get("pr_state") or ""))]
+        return {n: state for n, _, state in sorted(items, key=lambda x: (len(x[0]), x[0]))}
+
+    @property
+    def pr_state(self) -> str:
+        """The state of its PRs together: open while one is, then draft, merged, closed; merged only once none is open."""
+        return next((x for x in PR_STATES if x in self.prs.values()), "")
+
+    @property
+    def pr_refs(self) -> str:
+        """`#11, #12`, for a line that names its PRs."""
+        return ", ".join(f"#{n}" for n in self.prs)
+
+    @property
     def links(self) -> list[Link]:
         return parse_links(section(self.body, "Links"))[0]
 
@@ -732,10 +750,10 @@ class Record:
 
     @property
     def stage(self) -> str:
-        """Its status; a ticket's, once in progress, overlaid by its PR's state (PR_STAGE). A todo ticket on a branch
+        """Its status; a ticket's, once in progress, overlaid by its PRs' state (`pr_state`, PR_STAGE). A todo ticket on a branch
         that holds a PR has not started, so the PR says nothing about it."""
         status = str(self.get("status", STATUSES[self.kind][0]))
-        return PR_STAGE.get(self.get("pr_state"), status) if stage_of(self.kind, status).in_flight else status
+        return PR_STAGE.get(self.pr_state, status) if stage_of(self.kind, status).in_flight else status
 
     @property
     def progress(self) -> Stage:
@@ -1084,7 +1102,7 @@ class Tracker:
         """The ticket whose PR is `#123` (`owner/name#123` when the tracker spans repos), or whose branch this is."""
         repo, _, num = ident.rpartition("#")
         if num.isdigit():
-            hits = [t for t in self.tickets if str(t.get("pr")) == num
+            hits = [t for t in self.tickets if num in t.prs
                     and (not repo or self.repo_of(t).lower() == repo.lower())]
             if len(hits) > 1:
                 die(f"PR #{num} names {', '.join(t.id for t in hits)}: pass <owner/name>#{num}")
@@ -1129,12 +1147,12 @@ class Tracker:
         return cache[id(t)][1]
 
     def stacked_on(self, t: Record) -> list[Record]:
-        """The tickets past todo on the branch that a ticket's open PR is based on: its PR cannot merge before theirs.
-        Computed from the PR's `base`, so it ends when the PR is retargeted."""
-        base = t.get("base")
-        if not base or t.get("pr_state") not in OPEN_PR:
-            return []
-        return [o for o in self.tickets if o is not t and o.get("branch") == base and not o.todo
+        """The tickets past todo on a branch that one of a ticket's open PRs is based on: that PR cannot merge before
+        theirs. Computed from each PR's `base`, so it ends when the PR is retargeted."""
+        open_prs = self.open_prs(t)
+        bases = {r.get("base") for _, r in open_prs if r} | ({t.meta.get("base")} if open_prs else set())  # older format
+        bases.discard(None)
+        return [o for o in self.tickets if o is not t and o.get("branch") in bases and not o.todo
                 and same_repo(self.repo_of(o), self.repo_of(t))]
 
     def blockers(self, t: Record) -> list[Dep]:
@@ -1202,11 +1220,9 @@ class Tracker:
         prs = self.raw_state().get("prs", {})
         return prs if isinstance(prs, dict) else {}
 
-    def pr_facts(self, t: Record) -> dict | None:
-        """The PR_FACTS of a ticket's open PR; None without an open PR, or before `sync` read them."""
-        if not t.get("pr") or t.get("pr_state") not in OPEN_PR:
-            return None
-        return self.prs.get(pr_key(self.repo_of(t), t.get("pr")))
+    def open_prs(self, t: Record) -> list[tuple[str, dict | None]]:
+        """A ticket's open PRs, by number, each with its PR_FACTS; None before `sync` read them."""
+        return [(n, self.prs.get(pr_key(self.repo_of(t), n))) for n, state in t.prs.items() if state in OPEN_PR]
 
     # -- machine state (.state.json): see STATE_RULES. state() drops what no longer applies, so a write of what it
     # read keeps the file current; raw_state() is the file as it is.
@@ -1533,6 +1549,8 @@ PR_FACTS = {
     "merge": "what stops the merge: conflict, behind (its base) or blocked (by the repo's rules); none when it can",
     "threads": "how many review threads are unresolved",
     "draft": "the PR is a draft",
+    "base": "the branch the PR would merge into; a base that is other tickets' branch makes the ticket wait on them "
+            "(computed; depends_on does not change)",
 }
 YOU = "you"
 MOVE_RULE = (
@@ -1540,7 +1558,8 @@ MOVE_RULE = (
     "failing checks or requested changes not re-requested are yours; a requested review is the reviewer's; an open "
     "decision it waits on is its owner's, an open action yours; an external blocker is that blocker's; then "
     "unresolved review threads, an approval (CI's while its checks run), a draft or a PR with no review requested are "
-    "yours. `next` holds your own next action: do not write a wait on a reviewer into it.")
+    "yours. With several open PRs, the most urgent of their moves, yours first, naming that PR. `next` holds your own "
+    "next action: do not write a wait on a reviewer into it.")
 
 
 @dataclass
@@ -1562,11 +1581,19 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
     `sync` has not read."""
     if not t.in_flight:
         return None
-    is_open = t.get("pr_state") in OPEN_PR
-    r = tr.pr_facts(t)
-    if r is None and is_open:
+    open_prs = tr.open_prs(t)
+    if not open_prs:
+        return pr_move(tr, t, {})
+    moves = [(n, pr_move(tr, t, r)) for n, r in open_prs if r is not None]
+    if not moves:
         return None
-    r = r or {}
+    number, move = min(moves, key=lambda x: (not x[1].mine, x[1].rank))
+    return Move(move.who, f"#{number} {move.what}".strip(), move.rank) if len(open_prs) > 1 else move
+
+
+def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
+    """A ticket's move as one open PR's facts make it; empty facts, for a ticket with no open PR."""
+    is_open = bool(tr.open_prs(t))
     threads = r.get("threads", 0)
     open_threads = f"{threads} unresolved review thread{'s' * (threads != 1)}"
     requested = r.get("requested", [])
@@ -1604,7 +1631,7 @@ def whose_move(tr: Tracker, t: Record) -> Move | None:
         return Move(YOU, "draft", 9)
     if is_open:
         return Move(YOU, "no review requested", 9)
-    return Move(YOU, "PR closed" if t.get("pr_state") == "closed" else "no PR yet", 10)
+    return Move(YOU, "PR closed" if t.pr_state == "closed" else "no PR yet", 10)
 
 
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
@@ -1680,26 +1707,32 @@ def logged_decision(text: str) -> str | None:
 PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}
 
 
-def apply_prs(tr: Tracker, found: dict[str, tuple[str, dict]], facts: dict[str, dict] | None) -> list[str]:
-    """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PR (`number`; `state`: one
-    of PR_EVENT; `base`; `merged_at`, UTC), each PR event a log line; and the open PRs' PR_FACTS by pr_key (None: the
-    forge did not answer, so the last ones stay). Returns the change lines."""
+def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None) -> list[str]:
+    """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PRs (each with `number`;
+    `state`: one of PR_EVENT; `merged_at`, UTC), each PR's new state a log line; and the open PRs' PR_FACTS by pr_key
+    (None: the forge did not answer, so the last ones stay). Returns the change lines."""
     changes, events = [], {}
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     for t in tr.tickets:
         if t.id not in found:
             continue
-        repo, pr = found[t.id]
-        upd = {"pr": str(pr["number"]), "pr_state": pr["state"], "base": pr["base"]}
-        if pr["state"] == "merged":
-            upd["merged_at"] = pr["merged_at"]
-        diff = {k: v for k, v in upd.items() if str(t.get(k)) != str(v)}
+        repo, prs = found[t.id]
+        old = t.prs
+        now = sorted(prs, key=lambda x: int(x["number"]))
+        written = [f"{x['number']}:{x['state']}" for x in now]
+        diff = {"prs": written} if list(map(str, t.list("prs"))) != written else {}
+        diff |= {k: None for k in ("pr", "pr_state", "base") if k in t.meta}  # the older format's
         if diff:
             t.change(diff)
-            changes.append(f"{t.id}: " + ", ".join(f"{k}={format_value(v)}" for k, v in diff.items()))
-            if "pr_state" in diff:
-                name = f"{repo}#{upd['pr']}" if len(tr.repos) > 1 else f"#{upd['pr']}"
-                events.setdefault((name, pr["state"]), []).append(t.id)
+            changes.append(f"{t.id}: PRs " + ", ".join(written))
+        if t.pr_state == "merged":
+            merged = max(x["merged_at"] for x in now if x["state"] == "merged")
+            if str(t.get("merged_at")) != merged:
+                t.change({"merged_at": merged})
+        for x in now:
+            if old.get(str(x["number"])) != x["state"]:
+                name = f"{repo}#{x['number']}" if len(tr.repos) > 1 else f"#{x['number']}"
+                events.setdefault((name, x["state"]), []).append(t.id)
     for (name, pr_state), ids in events.items():
         append_log(tr, f"PR {name} {PR_EVENT[pr_state]}", ids)
     changes += unblocked(tr, blocked)

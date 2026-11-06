@@ -29,7 +29,7 @@ for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAU
             "CODEX_THREAD_ID", "PLUGIN_ROOT"):
     os.environ.pop(var, None)
 sys.path.insert(0, str(ROOT / "scripts"))
-from tracker import (cli, git, github, hooks, markdown, model, session, system, ui, viewmodel, views,  # noqa: E402
+from tracker import (cli, contract, git, github, hooks, markdown, model, session, system, ui, viewmodel, views,  # noqa: E402
                      watcher)
 
 
@@ -156,8 +156,8 @@ class Format(unittest.TestCase):
         t = model.Record(Path("T-1.md"), "ticket", {"id": "T-1", "branch": "fix"}, "")
         fork = {"number": 9, "headRefName": "fix", "state": "OPEN", "isCrossRepository": True}
         own = {"number": 3, "headRefName": "fix", "state": "CLOSED", "isCrossRepository": False}
-        self.assertIs(github.pick_pr([fork, own], t), own)
-        self.assertIsNone(github.pick_pr([fork], t))
+        self.assertEqual(github.ticket_prs([fork, own], t, "a/x"), [own])
+        self.assertEqual(github.ticket_prs([fork], t, "a/x"), [])
 
     def test_gh_budget(self):
         with mock.patch.object(github.subprocess, "run") as run_gh:
@@ -197,7 +197,7 @@ class MachineState(unittest.TestCase):
         (self.root / "README.md").write_text("---\ntitle: T\nrepo: [a/x, b/y]\n---\n")
         ticket(self.root, "T-1", status="done", branch="f1", repo="a/x")
         ticket(self.root, "T-2", status="in-progress", branch="f2", repo="a/x")
-        ticket(self.root, "T-3", status="in-progress", branch="f3", repo="a/x", pr_state="open", base="f2")
+        ticket(self.root, "T-3", status="in-progress", branch="f3", repo="a/x", pr="5", pr_state="open", base="f2")
 
     def state(self, data: dict) -> dict:
         (self.root / ".state.json").write_text(json.dumps(data))
@@ -271,6 +271,110 @@ def answers(prs: list[dict]):
 class Moves(unittest.TestCase):
     """Whose move a ticket under way waits on: read from its PR by `sync`, and from its blockers."""
 
+    def test_sync_follows_every_pr_of_a_ticket(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        requested = {"requested": ["rev"]}
+        prs = [pull(11, branch="f1", checks="FAILURE"), pull(12, branch="f1", **requested)]
+
+        def synced():
+            with mock.patch.object(github, "gh", answers(prs)):
+                run(*t, "sync")
+            tr = model.Tracker(model.HOME / s)
+            return tr, tr.lookup("S-1")
+
+        tr, one = synced()
+        self.assertEqual((one.prs, one.stage), ({"11": "open", "12": "open"}, "in-review"))
+        self.assertEqual(set(tr.prs), {"a/x#11", "a/x#12"})
+        self.assertEqual(model.whose_move(tr, one).text(), "you: #11 checks failing")  # the most urgent, and yours
+        self.assertIs(tr.by_pr_or_branch("#11"), one)
+        self.assertEqual(views.pr_label(one), "#11 open, #12 open")
+        self.assertEqual([x["number"] for x in viewmodel.pr_views(tr, one)], ["11", "12"])
+
+        # One merges: the ticket stays under way while the other is open
+        prs[1] = pull(12, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")
+        tr, one = synced()
+        self.assertEqual((one.prs, one.stage), ({"11": "open", "12": "merged"}, "in-review"))
+        self.assertEqual(model.whose_move(tr, one).text(), "you: checks failing")  # one open PR: nothing to tell apart
+        self.assertIn("PR #12 merged", (tr.root / "log.md").read_text())
+
+        # A PR from another branch, by a link; a closed one drops out while another is not closed
+        run(*t, "add", "S-1", "link", "PR: [Part two](https://github.com/a/x/pull/20)")
+        run(*t, "add", "S-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/30)")
+        prs += [pull(20, branch="other"), pull(13, branch="f1", state="CLOSED")]
+        tr, one = synced()
+        self.assertEqual(one.prs, {"11": "open", "12": "merged", "20": "open"})
+        self.assertEqual([x["number"] for x in viewmodel.pr_views(tr, one)], ["11", "12", "20", "30"])
+
+        # All merged: merged, at the last one's time, and sync is done with it
+        prs[:] = [pull(11, branch="f1", state="MERGED", merged_at="2026-10-03T06:30:00Z"),
+                  pull(12, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z"),
+                  pull(20, branch="other", state="MERGED", merged_at="2026-10-02T06:30:00Z")]
+        tr, one = synced()
+        self.assertEqual((one.stage, one.get("merged_at")), ("merged", "2026-10-03T06:30:00Z"))
+        fake = answers(prs)
+        with mock.patch.object(github, "gh", fake):
+            run(*t, "sync")
+        self.assertEqual(fake.queries, [])
+
+    def test_each_open_pr_can_stack_a_ticket(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-0", "--title", "Below", "--branch", "f0")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-0", "status=in-progress")
+        run(*t, "set", "S-1", "status=in-progress")
+        prs = [pull(11, branch="f1"), {**pull(12, branch="f1"), "baseRefName": "f0"}]
+
+        def waits():
+            with mock.patch.object(github, "gh", answers(prs)):
+                run(*t, "sync")
+            tr = model.Tracker(model.HOME / s)
+            return [d.ident for d in tr.deps(tr.lookup("S-1"))]
+
+        self.assertEqual(waits(), ["S-0"])
+        prs[1]["baseRefName"] = "main"  # retargeted
+        self.assertEqual(waits(), [])
+
+    def test_older_tickets_read_as_one_pr_until_sync_or_migrate_lists_them(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        one = model.Tracker(model.HOME / s).lookup("S-1")
+        old = 'status: in-progress\npr: 11\npr_state: open\nbase: main'
+        one.path.write_text(one.path.read_text().replace("status: in-progress", old, 1))
+        one = model.Tracker(model.HOME / s).lookup("S-1")
+        self.assertEqual((one.prs, one.stage), ({"11": "open"}, "in-review"))
+
+        contract.migrate(model.Tracker(model.HOME / s), True)
+        one = model.Tracker(model.HOME / s).lookup("S-1")
+        self.assertEqual((one.list("prs"), one.prs, one.stage), (["11:open"], {"11": "open"}, "in-review"))
+        self.assertFalse(one.meta.keys() & {"pr", "pr_state", "base"})
+
+        with mock.patch.object(github, "gh", answers([pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")])):
+            run(*t, "sync")
+        one = model.Tracker(model.HOME / s).lookup("S-1")
+        self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "merged", "2026-10-01T06:30:00Z"))
+
+    def test_sync_with_only_a_closed_pr_keeps_it(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Work", "--owner", "me", "--repo", "a/x")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        with mock.patch.object(github, "gh", answers([pull(1, branch="f1", state="CLOSED"), pull(2, branch="f1", state="CLOSED")])):
+            run(*t, "sync")
+        tr = model.Tracker(model.HOME / s)
+        one = tr.lookup("S-1")
+        self.assertEqual((one.prs, one.pr_state), ({"1": "closed", "2": "closed"}, "closed"))
+        self.assertEqual(model.whose_move(tr, one).text(), "you: PR closed")
+
     def test_review_facts(self):
         bot = {"author": {"__typename": "Bot", "login": "lint"}, "state": "CHANGES_REQUESTED",
                "submittedAt": "2026-09-02T00:00:00Z"}
@@ -339,7 +443,7 @@ class Moves(unittest.TestCase):
             self.assertIn('b0: pullRequests(headRefName: "f1"', fake.queries[0])
             self.assertNotIn('"f3"', fake.queries[0])
             tr = model.Tracker(model.HOME / s)
-            self.assertEqual([t.get("pr") for t in tr.tickets], ["11", "12", ""])  # not the fork's PR from f1
+            self.assertEqual([list(t.prs) for t in tr.tickets], [["11"], ["12"], []])  # not the fork's PR from f1
             self.assertEqual(set(tr.prs), {"a/x#11", "a/x#12"})
             index = run(*t, "index")
             self.assertIn("  you: draft — S-2\n  rev: review requested — S-1", index)
@@ -354,7 +458,7 @@ class Moves(unittest.TestCase):
             run(*t, "sync")
             self.assertEqual(len(fake.queries), 2)
             self.assertIn("p11: pullRequest(number: 11)", fake.queries[1])  # a known PR: by its number
-            self.assertNotIn("pullRequests(", fake.queries[1])
+            self.assertIn('pullRequests(headRefName: "f1"', fake.queries[1])  # and its branch, for another PR from it
             tr = model.Tracker(model.HOME / s)
             self.assertEqual(session.changes_since(tr, seen, session.watch(tr, [tr.lookup("S-1")])),
                              ["S-1 move now: you — approved by rev; ready to merge"])
@@ -1692,6 +1796,25 @@ class Ui(unittest.TestCase):
         self.assertEqual(sorted(x.name for x in target.iterdir()), names)
         for name in names:
             self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
+
+    def test_a_current_ticket_lists_each_of_its_prs_once(self):
+        s = slug()
+        t = ("--tracker", s)
+        run("init", s, "--title", "Shown", "--owner", "me", "--repo", "acme/app")
+        run(*t, "new", "T-1", "--title", "One", "--branch", "b")
+        run(*t, "set", "T-1", "status=in-progress")
+        tracker = model.tracker_at(s)
+        record = tracker.lookup("T-1")
+        self.assertEqual(viewmodel.pr_views(tracker, record), [])
+        run(*t, "add", "T-1", "link", "PR: [Part two](https://github.com/acme/app/pull/8) — the rest")
+        run(*t, "add", "T-1", "link", "PR: [Same as synced](https://github.com/acme/app/pull/7)")
+        run(*t, "add", "T-1", "link", "PR: [Not a PR page](https://example.com/7)")
+        path = model.tracker_at(s).lookup("T-1").path
+        path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\npr: 7\npr_state: open", 1))
+        tracker = model.tracker_at(s)
+        self.assertEqual(viewmodel.pr_views(tracker, tracker.lookup("T-1")), [
+            {"number": "7", "url": "https://github.com/acme/app/pull/7"},
+            {"number": "8", "url": "https://github.com/acme/app/pull/8"}])
 
     def test_attached_finds_the_tracker_of_an_agents_process(self):
         s = self.tracker()

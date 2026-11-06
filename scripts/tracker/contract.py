@@ -50,8 +50,8 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             warnings.append(f"{t.id}: {t.stage} but Carry forward has {len(t.carry_forward)} bullets "
                             f"(limit {MERGED_CARRY_FORWARD_MAX}) — keep what a later ticket needs; the detail is in "
                             f"the PR (`tracker drop {t.id} carry \"<text>\"`)")
-        if t.todo and t.get("pr_state") in PR_STAGE:
-            warnings.append(f"{t.id}: todo, but its PR #{t.get('pr')} is {t.get('pr_state')} — `tracker migrate` "
+        if t.todo and t.pr_state in PR_STAGE:
+            warnings.append(f"{t.id}: todo, but its PRs {t.pr_refs} are {t.pr_state} — `tracker migrate` "
                             f"sets it in progress; a PR overlays only started work")
         if t.stage == "in-progress" and idle_days(t) > STALE_TICKET_DAYS:
             warnings.append(f"{t.id}: in-progress, no update for {idle_days(t)} days")
@@ -60,7 +60,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             if other and other != t.id:
                 errors.append(f"{t.id}: Issue id {a} also names {other} — an id finds one ticket")
             aliases[norm_id(a)] = t.id
-        if (t.get("branch") or t.get("pr")) and len(tr.repos) > 1 and not t.get("repo"):
+        if (t.get("branch") or t.prs) and len(tr.repos) > 1 and not t.get("repo"):
             errors.append(f"{t.id}: the tracker spans {len(tr.repos)} repos — set the ticket's repo")
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
@@ -228,7 +228,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         + ", ".join(f"{what} {most}" for most, what, _ in TEXT_MAX.values()) + ".",
         f"Ticket status (you set it): {'|'.join(STATUSES['ticket'])}. Set in-progress when its work starts: "
         f"from a branch, that records the branch when the ticket has none (a branch holds any number of tickets). Once "
-        f"in progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
+        f"in progress, its PRs overlay the stage, all equal, any open one first: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
         + f". Stages {', '.join(s for s, x in STAGES.items() if x.closed)} are closed; closing clears `next` and wants "
         "a `summary`.",
         *(f"{kind.capitalize()} status: {'|'.join(STATUSES[kind])}, changed only by `tracker {owner}`."
@@ -289,12 +289,16 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
     for t in tr.tickets:
         upd = {}
         status = t.get("status")
-        if status == "in-review" or (status == "merged" and t.get("pr_state") == "merged"):
+        if status == "in-review" or (status == "merged" and t.pr_state == "merged"):
             upd["status"] = "in-progress"  # the PR shows it as in-review or merged
         elif status == "merged":
             upd["status"] = "done"
-        elif status == "todo" and t.get("pr_state") in PR_STAGE:
+        elif status == "todo" and t.pr_state in PR_STAGE:
             upd["status"] = "in-progress"  # its PR showed it started; a PR now overlays only started work
+        if t.meta.keys() & {"pr", "pr_state", "base"}:  # one PR of a ticket, now any number of them
+            upd |= {"pr": None, "pr_state": None, "base": None}
+            if t.prs:
+                upd["prs"] = [f"{n}:{state}" if state else n for n, state in t.prs.items()]
         if t.get("next") == "—":
             upd["next"] = ""
         if str(t.get("priority", "")).strip() and level(t, "priority") is None:
