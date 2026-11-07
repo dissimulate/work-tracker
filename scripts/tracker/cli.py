@@ -32,8 +32,8 @@ from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HO
     context_lines, dep_lines, history_lines, index_lines, issue_update_request, levels_text, order_lines, span_lines,
     start_text, updates_told)
 from .github import NAME as FORGE, match_pr, sync
-from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
-    unarchive_tracker, watching)
+from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, await_change, delete_tracker, granted,
+    session_name, unarchive_tracker, watching)
 from .viewmodel import trackers_view, view_model
 from .ui import GPUI_SHELL_VERSION, NO_HOST, install_window, open_ui
 
@@ -1106,11 +1106,20 @@ def cmd_install_window(args):
     print(f"gpui-shell {GPUI_SHELL_VERSION} is in {install_window()}. `tracker open --window` opens the view.")
 
 
-def cmd_data(args):
-    """A UI's one read of a tracker: viewmodel.view_model as JSON. An archived tracker too, as `open` shows it."""
-    tr = (tracker_at(args.slug) or archived_at(args.slug) or die(f"no tracker '{args.slug}'")) if args.slug \
+def shown_tracker(args) -> Tracker:
+    """The tracker a UI asks about: an archived one too, as `open` shows it."""
+    return (tracker_at(args.slug) or archived_at(args.slug) or die(f"no tracker '{args.slug}'")) if args.slug \
         else resolve(args)
-    print(json.dumps(view_model(tr)))
+
+
+def cmd_data(args):
+    """A UI's one read of a tracker: viewmodel.view_model as JSON."""
+    print(json.dumps(view_model(shown_tracker(args))))
+
+
+def cmd_await_change(args):
+    """A UI's wait for something new to read, when its host has no folder watch."""
+    await_change(shown_tracker(args))
 
 
 def cmd_attached(args):
@@ -1311,8 +1320,8 @@ def build_parser():
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
     add("check", cmd_check, "validate the tracker; exit 1 on errors")
-    sp = add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open "
-                               "PRs' reviews, checks and merge state, from which each ticket's move is computed")
+    sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
+                               "base, reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with --written that its issue now shows "
@@ -1376,6 +1385,8 @@ def build_parser():
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
     sp = add("data", cmd_data, "all a UI shows of a tracker, as JSON", listed=False)
+    sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
+    sp = add("await-change", cmd_await_change, "wait until what a UI shows of a tracker may have changed", listed=False)
     sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
     sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI", listed=False)
     sp.add_argument("--pid", type=int, required=True, help="the agent's process id")

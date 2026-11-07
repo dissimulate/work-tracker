@@ -16,7 +16,7 @@ from .github import pr_url
 from .views import dep_facts, duration, span_lines, stage_counts
 from .watcher import in_use, watcher_of
 
-VIEW_SCHEMA = 4  # a UI that reads another number asks to be updated
+VIEW_SCHEMA = 5  # a UI that reads another number asks to be updated
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -160,19 +160,17 @@ def record_view(tr: Tracker, r: Record) -> dict:
 
 def ticket_view(tr: Tracker, t: Record, order: int, step: int, links: list[str]) -> dict:
     """A ticket as its row shows it. A closed ticket's waits-on is history, which its row leaves out (the opened ticket
-    still lists it). `sort`: its value per sortable column; a None or "" sorts last."""
+    still lists it). `sort`: what a column sorts by that the row does not show as it sorts; a None sorts last."""
     waits = [] if t.closed else tr.deps(t)
     unblocks = [o.id for o in tr.waiting_on(t.id)]
     return {
         "id": t.id, "title": str(t.get("title")), "stage": t.stage, "closed": t.closed, "state": ticket_state(tr, t),
-        "gate": {"state": tr.gate(t).state, "text": tr.gate(t).text()},
+        "gate": {"state": tr.gate(t).state},
         "order": order, "step": step, "links": links,
         "group": str(t.get("group", "")), "levels": {key: level_name(t, key) for key in SCALES},
-        "waits": [dep_view(d) for d in waits], "unblocks": unblocks,
-        "sort": {"step": order, "ticket": t.id,
-                 "status": list(STAGES).index(t.stage) if t.stage in STAGES else len(STAGES),
-                 "group": str(t.get("group", "")), **{key: level(t, key) for key in SCALES},
-                 "waits": len(waits), "unblocks": len(unblocks)},
+        "waits": [{"id": d.ident, "done": d.done} for d in waits], "unblocks": unblocks,
+        "sort": {"status": list(STAGES).index(t.stage) if t.stage in STAGES else len(STAGES),
+                 **{key: level(t, key) for key in SCALES}},
     }
 
 
@@ -205,8 +203,7 @@ def now_view(tr: Tracker) -> dict:
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:
-        return [{"busy": x.status == "busy", "waiting": x.status == "waiting", "word": agent_word(x), "cwd": x.cwd}
-                for x in sessions]
+        return [{"status": x.status, "word": agent_word(x), "cwd": x.cwd} for x in sessions]
 
     def turn(t: Record) -> tuple:
         move = moves[t.id]
@@ -221,7 +218,7 @@ def now_view(tr: Tracker) -> dict:
         move = moves[t.id]
         items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "state": ticket_state(tr, t),
                       "prs": pr_views(tr, t), "fresh": fresh, "move": move_view(move),
-                      "line": f"next: {t.get('next')}" if t.get("next") else "", "agents": agent_views(agents[t.id])})
+                      "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():
         items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""),
                       "agents": []})

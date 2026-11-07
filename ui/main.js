@@ -1,16 +1,21 @@
 // The tracker as a Herdr mod. All of Herdr that the UI uses is here.
 import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
+import { concerns } from "./model.js";
 import { trackerView } from "./view.js";
 
 const AT_LEAST_MS = 15000; // a session that ends with no hook, and another machine's tracker, change nothing watched here
 
 export default trackerView({
-  home,
+  dir: () => props()?.trackers ?? `${home()}/.claude/trackers`,
   readText: (path, machine) => readTextFile(path, { on: machine ?? null }),
   run: (command, args, machine) => exec(command, args, { on: machine ?? null }),
   // A folder that cannot be watched yet, or at all, rejects: wait, and look again.
-  changed: async (cx, dir) => {
-    await Promise.race([watchFolder(dir).catch(() => cx.sleep(AT_LEAST_MS)), cx.sleep(AT_LEAST_MS)]);
+  changed: async (cx, dir, slug) => {
+    const atLeast = cx.sleep(AT_LEAST_MS);
+    for (;;) {
+      const paths = await Promise.race([watchFolder(dir).catch(() => atLeast), atLeast]);
+      if (!paths || concerns(paths, dir, slug)) return;
+    }
   },
   colors: () => theme(),
   font: () => settings()?.font_family || "JetBrains Mono",
@@ -23,7 +28,6 @@ export default trackerView({
       if (command.startsWith("open:")) return command.slice(5);
     }
   },
-  trackersDir: () => props()?.trackers ?? null,
   framed: () => !props()?.slug, // a layout's block; the tab of `tracker open` asks for a tracker, and has a pane's frame
   agentAt: () => {
     const focus = focused();

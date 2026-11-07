@@ -1,5 +1,5 @@
 // How the tracker looks, in one place: every status's colour, and the parts the view builds its rows from. Colours come
-// by the theme's names (theme() in herdr.d.ts), so a part follows the host's light and dark themes.
+// by the theme's names (theme() in herdr.d.ts), so a part follows the host's theme. The window's is dark only (app.js).
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { meaningOf } from "./model.js";

@@ -28,7 +28,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Removed
 
-- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer that is already running stops by itself when no session needs it.
+- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer that is already running stops when your trackers migrate to the new format.
 - The sort in the address (`?sort=`): the view starts in dependency order.
 - `tracker migrate`: migration is automatic.
 - The settings `TRACKER_VIEWER_SYNC` and `TRACKER_WATCH_SYNC`: use `TRACKER_SYNC`.

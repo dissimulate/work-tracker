@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { GRAPH, MEANINGS, agentStatus, bodyParts, filterRows, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
-  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sortRows } from "./model.js";
+import { GRAPH, MEANINGS, agentStatus, bodyParts, concerns, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sortRows, syncDue } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
   id, step, links, state: "ready", stage: "todo", closed: false, gate: { state: "ready" }, order: step, sort: {}, ...extra,
@@ -26,11 +26,70 @@ test("numbers compare as numbers", () => {
 });
 
 test("sort: no value goes last in both directions, equal values keep the dependency order", () => {
-  const rows = [row("A", 1, [], { order: 0, sort: { group: "" } }), row("B", 2, [], { order: 1, sort: { group: "x" } }),
-    row("C", 3, [], { order: 2, sort: { group: "x" } }), row("D", 4, [], { order: 3, sort: { group: "y" } })];
+  const rows = [row("A", 1, [], { order: 0, group: "" }), row("B", 2, [], { order: 1, group: "x" }),
+    row("C", 3, [], { order: 2, group: "x" }), row("D", 4, [], { order: 3, group: "y" })];
   const ids = desc => sortRows(rows, { key: "group", desc }).map(r => r.id);
   assert.deepEqual(ids(false), ["B", "C", "D", "A"]);
   assert.deepEqual(ids(true), ["D", "B", "C", "A"]);
+});
+
+test("sort: each column by what its row shows, and a level by its rank", () => {
+  const rows = [row("T-10", 1, [], { order: 0, waits: [{}], unblocks: [], sort: { priority: 3 } }),
+    row("T-2", 2, [], { order: 1, waits: [], unblocks: ["T-3", "T-4"], sort: { priority: null } }),
+    row("T-3", 3, [], { order: 2, waits: [{}, {}], unblocks: ["T-4"], sort: { priority: 0 } })];
+  const ids = key => sortRows(rows, { key, desc: false }).map(r => r.id);
+  assert.deepEqual(ids("step"), ["T-10", "T-2", "T-3"]);
+  assert.deepEqual(ids("ticket"), ["T-2", "T-3", "T-10"]);
+  assert.deepEqual(ids("waits"), ["T-2", "T-10", "T-3"]);
+  assert.deepEqual(ids("unblocks"), ["T-10", "T-3", "T-2"]);
+  assert.deepEqual(ids("priority"), ["T-3", "T-10", "T-2"]);
+});
+
+test("the CLI: read each time, so a record that comes later or moves is used at once", async () => {
+  let record = null;
+  const host = { readText: async () => record };
+  assert.deepEqual(await findCli(host, "/t", null), ["tracker"]);
+  record = JSON.stringify({ argv: ["python", "-c", "v1"] });
+  assert.deepEqual(await findCli(host, "/t", null), ["python", "-c", "v1"]);
+  record = JSON.stringify({ argv: ["python", "-c", "v2"] });
+  assert.deepEqual(await findCli(host, "/t", null), ["python", "-c", "v2"]);
+  record = "not json";
+  assert.deepEqual(await findCli(host, "/t", null), ["tracker"]);
+});
+
+test("the CLI: what the host was told comes first, and another machine needs its record", async () => {
+  const reads = [];
+  const host = { cli: () => ["told"], readText: async (path, machine) => { reads.push([path, machine]); return null; } };
+  assert.deepEqual(await findCli(host, "/t", null), ["told"]);
+  assert.deepEqual(reads, []);
+  await assert.rejects(findCli(host, "/t", "macbook"), /on macbook/);
+  assert.deepEqual(reads, [[".claude/trackers/.cli.json", "macbook"]]);
+  assert.deepEqual(await findCli({ cli: () => null }, undefined, null), ["tracker"]); // a host that reads no files
+});
+
+test("a sync is due at once when the data is old, then only once per round, also when it read nothing", () => {
+  const view = { archived: false, sync_every: 120, synced: 1000 };
+  assert.equal(syncDue(view, 0, 1119), false);
+  assert.equal(syncDue(view, 0, 1120), true);
+  assert.equal(syncDue(view, 1120, 1121), false); // gh is missing or offline: `synced` stays, the try counts
+  assert.equal(syncDue(view, 1120, 1240), true);
+  assert.equal(syncDue({ ...view, synced: 0 }, 0, 1000), true);
+  assert.equal(syncDue({ ...view, archived: true }, 0, 5000), false);
+  assert.equal(syncDue(null, 0, 5000), false);
+});
+
+test("a change in the folder concerns the view: this tracker, the sessions, the watches, or what cannot be told", () => {
+  const says = (...paths) => concerns(paths, "/t", "mine");
+  assert.equal(says("/t/mine/tickets/T-1.md"), true);
+  assert.equal(says("/t/.sessions/abc.json"), true);
+  assert.equal(says("/t/.watch/mine.json"), true);
+  assert.equal(says("/t"), true); // a batch that holds the root means everything
+  assert.equal(says("/private/t/other/log.md"), true); // a linked folder's path says nothing
+  assert.equal(says("/t/other/log.md"), false);
+  assert.equal(says("/t/mine2/log.md"), false);
+  assert.equal(says("/t/.lock", "/t/.backups/x/README.md"), false);
+  assert.equal(says("/t/other/log.md", "/t/mine/log.md"), true);
+  assert.equal(concerns(["/t/.sessions/a.json"], "/t", null), true);
 });
 
 test("a heading's second click turns the sort, and Step has no direction", () => {
@@ -164,9 +223,9 @@ test("a status has one meaning, and an unknown one is quiet", () => {
 
 test("an agent dot and a move take a status from the same table", () => {
   assert.equal(meaningOf(agentStatus([])), "quiet");
-  assert.equal(meaningOf(agentStatus([{}])), "held");
-  assert.equal(meaningOf(agentStatus([{}, { busy: true }])), "moving");
-  assert.equal(meaningOf(agentStatus([{ busy: true }, { waiting: true }])), "needs-you");
+  assert.equal(meaningOf(agentStatus([{ status: "idle" }])), "held");
+  assert.equal(meaningOf(agentStatus([{ status: "idle" }, { status: "busy" }])), "moving");
+  assert.equal(meaningOf(agentStatus([{ status: "busy" }, { status: "waiting" }])), "needs-you");
   assert.equal(meaningOf(moveStatus({ mine: true })), "needs-you");
   assert.equal(meaningOf(moveStatus({ mine: true, quiet: true })), "quiet");
   assert.equal(meaningOf(moveStatus({ mine: false })), "quiet");

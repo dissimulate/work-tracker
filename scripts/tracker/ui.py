@@ -4,21 +4,15 @@ changes a tracker only through this CLI (`viewmodel`), so nothing here serves it
 from __future__ import annotations
 
 import hashlib
-import http.client
 import io
 import json
 import os
-import platform
 import shutil
 import subprocess
-import tarfile
-import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path
 
 from .model import HOME, ROOT, die
-from .system import WINDOWS, cli_for_ui
+from .system import DETACH, WINDOWS, cli_for_ui
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
@@ -35,7 +29,7 @@ SHELL_ARCHIVES = {  # (platform.system(), platform.machine().lower()): GPUI_SHEL
                            "e6defad5d60cad9055cf34b9c5fe25c8cf630a486606a6268f2c29f0863dc389"),
 }
 DOWNLOAD_TIMEOUT_S = 60
-WINDOW_START_S = 0.5  # gpui-shell refuses an app before it runs it: this long with no exit, the window is up
+WINDOW_START_S = 2  # gpui-shell refuses an app before it runs it: this long with no exit, the window is up
 NO_HOST = (f"the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed "
            f"({ROOT / 'scripts' / 'install-herdr-mod.sh'}), or its own window: run `tracker install-window` once. "
            "Without them, `tracker index` and `tracker context <id>` show the same facts as text.")
@@ -80,13 +74,17 @@ def own_shell() -> Path:
     return HOME / ".gpui-shell" / GPUI_SHELL_VERSION / ("gpui-shell.exe" if WINDOWS else "gpui-shell")
 
 
+# The download's modules load only for it: every command imports this module, and they slow its start.
 def fetch(url: str) -> bytes:
+    import urllib.request
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as answer:
         return answer.read()
 
 
 def unpack(archive: bytes, name: str, member: str) -> bytes:
     """One file of a release's archive: only the binary leaves it, so no path in the archive can write elsewhere."""
+    import tarfile
+    import zipfile
     if name.endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(archive)) as files:
             return files.read(member)
@@ -96,6 +94,8 @@ def unpack(archive: bytes, name: str, member: str) -> bytes:
 
 def install_window() -> Path:
     """Install gpui-shell for this system, unless it is there: the path of the binary."""
+    import http.client
+    import platform
     shell = own_shell()
     if shell.is_file():
         return shell
@@ -123,16 +123,15 @@ def install_window() -> Path:
 def open_in_window(slug: str, ident: str = "") -> bool:
     """Open the UI's own window, which outlives this command. False when gpui-shell is not installed. When gpui-shell
     refuses at once (a version it cannot run, a bad manifest), says why: the window itself reports nothing."""
+    import tempfile
     own = own_shell()
     shell = str(own) if own.is_file() else shutil.which("gpui-shell")
     if not shell:
         return False
-    detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
-              else {"start_new_session": True})
     env = {**os.environ, "TRACKER_OPEN": f"{slug}/{ident}", "TRACKER_CLI": json.dumps(cli_for_ui())}
     with tempfile.TemporaryFile() as errors:  # a file: a pipe would break the window's stderr once this command ends
         started = subprocess.Popen([shell, "run", "--dir", str(UI_DIR)], env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=errors, **detach)
+                                   stdout=subprocess.DEVNULL, stderr=errors, **DETACH)
         try:
             code = started.wait(WINDOW_START_S)
         except subprocess.TimeoutExpired:

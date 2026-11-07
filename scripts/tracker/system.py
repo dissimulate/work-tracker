@@ -19,6 +19,9 @@ CLI = [*PYTHON, "-c", CLI_START, str(PACKAGE.parent)]
 # What the CLI and `gh` need of the environment. A UI's host can start programs with none (gpui-shell does).
 CLI_ENV = ("TRACKER_HOME", "TRACKER_SYNC", "CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE", "SYSTEMROOT", "PATH",
            "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_HOST")
+# What makes a process outlive this one
+DETACH = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
+          else {"start_new_session": True})
 
 
 def env_int(name: str, default: int, least: int = 0) -> int:
@@ -36,10 +39,8 @@ def env_int(name: str, default: int, least: int = 0) -> int:
 
 def spawn(*args: str) -> None:
     """Start `tracker <args>` in the background: it outlives this process and writes to no terminal."""
-    detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
-              else {"start_new_session": True})
     subprocess.Popen([*CLI, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     **detach)
+                     **DETACH)
 
 
 def cli_for_ui() -> list[str]:

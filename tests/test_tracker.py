@@ -11,11 +11,13 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -629,7 +631,8 @@ class LiveSessions(unittest.TestCase):
 
         now = viewmodel.now_view(tr)
         self.assertEqual(now["items"][0]["agents"],
-                         [{"busy": True, "waiting": False, "word": "working since Tue 09:05", "cwd": str(work)}])
+                         [{"status": "busy", "word": "working since Tue 09:05", "cwd": str(work)}])
+        self.assertNotIn("line", now["items"][0])  # an opened ticket has it from its record
         spare_item = now["items"][-1]
         self.assertEqual((spare_item["key"], spare_item["kind"]), (f"agent-agent-b{n}", "agent"))
         self.assertFalse(spare_item.keys() & {"title", "meta", "line"})
@@ -995,6 +998,40 @@ class Upgrade(unittest.TestCase):
         run("init", s, "--title", "Old", "--owner", "me")
         model.Tracker(model.HOME / s).readme.save({"schema": schema})
         return s, ("--tracker", s)
+
+    def test_a_migration_stops_the_old_viewer_and_only_it(self):
+        s, _ = self.old_tracker()
+        server = ("import http.server\n"
+                  "class H(http.server.BaseHTTPRequestHandler):\n"
+                  "    def do_GET(self):\n"
+                  "        self.send_response(200); self.end_headers(); self.wfile.write(ANSWER)\n"
+                  "    def log_message(self, *a): pass\n"
+                  "s = http.server.HTTPServer(('127.0.0.1', 0), H)\n"
+                  "print(s.server_address[1], flush=True)\n"
+                  "s.serve_forever()\n")
+
+        def serving(answer: bytes):
+            p = subprocess.Popen([sys.executable, "-c", f"ANSWER = {answer!r}\n{server}"], stdout=subprocess.PIPE,
+                                 text=True)
+            self.addCleanup(p.stdout.close)
+            self.addCleanup(p.kill)
+            return p, int(p.stdout.readline())
+
+        viewer, port = serving(b"work-tracker abc /old/plugin")
+        (model.HOME / ".viewer.json").write_text(json.dumps({"port": port, "pid": viewer.pid}))
+        run("list")
+        self.assertEqual(viewer.wait(10), -signal.SIGTERM)
+        self.assertFalse((model.HOME / ".viewer.json").exists())
+        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
+
+        # A pid that the file's viewer no longer has: something else on the port, or nothing on it.
+        other, port = serving(b"something else")
+        for named in ({"port": port, "pid": other.pid}, {"port": 1, "pid": other.pid}, {"pid": "x"}):
+            s, _ = self.old_tracker()
+            (model.HOME / ".viewer.json").write_text(json.dumps(named))
+            run("list")
+            self.assertIsNone(other.poll())
+            self.assertFalse((model.HOME / ".viewer.json").exists())
 
     def test_any_command_migrates_every_older_tracker_once(self):
         s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
@@ -1533,16 +1570,14 @@ class SequenceSort(unittest.TestCase):
 
         # step: the depth-first dependency order the sequence starts in, a chain together and dropped last; status: its
         # place in todo → dropped.
-        keys = ("step", "ticket", "group", "status", "waits", "unblocks")
-        self.assertEqual([rows["T-2"]["sort"][k] for k in keys], [0, "T-2", "api", 0, 0, 1])
-        self.assertEqual([rows["T-3"]["sort"][k] for k in keys], [1, "T-3", "", 0, 1, 1])
-        self.assertEqual([rows["T-5"]["sort"][k] for k in keys], [2, "T-5", "", 0, 1, 0])
-        self.assertEqual([rows["T-10"]["sort"][k] for k in keys], [3, "T-10", "ui", 0, 0, 0])
-        self.assertEqual([rows["T-4"]["sort"][k] for k in keys], [4, "T-4", "api", 4, 0, 0])
-        self.assertEqual(set(rows["T-2"]["sort"]), {*keys, *model.SCALES})
+        self.assertEqual([[rows[i][k] for k in ("order", "group")] + [rows[i]["sort"]["status"]]
+                          for i in ("T-2", "T-3", "T-5", "T-10", "T-4")],
+                         [[0, "api", 0], [1, "", 0], [2, "", 0], [3, "ui", 0], [4, "api", 4]])
+        self.assertEqual(set(rows["T-2"]["sort"]), {"status", *model.SCALES})  # what a row does not show as it sorts
 
         # What the ticket waits on, and what it unblocks.
-        self.assertEqual(([d["id"] for d in rows["T-3"]["waits"]], rows["T-3"]["unblocks"]), (["T-2"], ["T-5"]))
+        self.assertEqual((rows["T-3"]["waits"], rows["T-3"]["unblocks"]), ([{"id": "T-2", "done": False}], ["T-5"]))
+        self.assertEqual(rows["T-3"]["gate"], {"state": "blocked"})
         self.assertEqual((rows["T-2"]["waits"], rows["T-2"]["unblocks"]), ([], ["T-3"]))
 
     def test_rows_carry_the_graph(self):
@@ -1918,6 +1953,30 @@ class Ui(unittest.TestCase):
         run("--tracker", s, "new", "T-1", "--title", "One")
         return s
 
+    def test_a_command_loads_no_download_code(self):
+        code = (f"import sys; sys.path.insert(0, {str(ROOT / 'scripts')!r}); import tracker.cli; "
+                "print(sorted({'http.client', 'urllib.request', 'tarfile', 'zipfile', 'tempfile'} & set(sys.modules)))")
+        got = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
+        self.assertEqual(got.stdout.strip(), "[]")
+
+    def test_await_change_ends_on_a_change_or_at_its_limit(self):
+        s = self.tracker()
+        tr = model.tracker_at(s)
+        session.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        watcher.WATCH_DIR.mkdir(parents=True, exist_ok=True)
+        for path in (tr.root / "tickets/T-1.md", session.SESSIONS_DIR / f"{slug()}.json", watcher.state_path(s)):
+            with self.subTest(path=path.name), mock.patch.object(watcher, "CHANGE_WAIT_S", 30), \
+                    mock.patch.object(watcher, "CHANGE_POLL_S", 0.01):
+                later = threading.Timer(0.1, lambda: path.write_text(f"{path.read_text() if path.exists() else ''}\n"))
+                later.start()
+                began = time.monotonic()
+                watcher.await_change(tr)
+                later.join()
+                self.assertLess(time.monotonic() - began, 10)
+        with mock.patch.object(watcher, "CHANGE_WAIT_S", 0.1), mock.patch.object(watcher, "CHANGE_POLL_S", 0.01):
+            run("await-change", s)  # nothing changes: it ends all the same
+        self.assertIn(f"no tracker '{s}x'", run("await-change", f"{s}x", code=2))
+
     def test_the_install_script_gives_the_mod_only_its_own_files(self):
         home = Path(tempfile.mkdtemp(dir=BASE))
         subprocess.run([str(ROOT / "scripts/install-herdr-mod.sh")], check=True, capture_output=True,
@@ -2043,8 +2102,8 @@ class Ui(unittest.TestCase):
         for system_name, machine, name, archive, windows, binary in cases:
             with self.subTest(name=name), mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), \
                     mock.patch.object(ui, "WINDOWS", windows), \
-                    mock.patch.object(ui.platform, "system", lambda: system_name), \
-                    mock.patch.object(ui.platform, "machine", lambda: machine), \
+                    mock.patch("platform.system", lambda: system_name), \
+                    mock.patch("platform.machine", lambda: machine), \
                     mock.patch.object(ui, "SHELL_ARCHIVES", {(system_name, machine.lower()): (
                         name, hashlib.sha256(archive).hexdigest())}), \
                     mock.patch.object(ui, "fetch", mock.Mock(return_value=archive)) as fetch:
@@ -2058,8 +2117,8 @@ class Ui(unittest.TestCase):
     def test_install_window_installs_nothing_it_cannot_trust(self):
         key = ("Linux", "x86_64")
         with mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), mock.patch.object(ui, "WINDOWS", False), \
-                mock.patch.object(ui.platform, "system", lambda: key[0]), \
-                mock.patch.object(ui.platform, "machine", lambda: key[1]):
+                mock.patch("platform.system", lambda: key[0]), \
+                mock.patch("platform.machine", lambda: key[1]):
             with mock.patch.object(ui, "fetch", mock.Mock(return_value=b"changed")):
                 self.assertIn("not the file", run("install-window", code=2))
             with mock.patch.object(ui, "fetch", mock.Mock(side_effect=OSError("offline"))):
@@ -2073,7 +2132,7 @@ class Ui(unittest.TestCase):
         s = self.tracker()
         herdr = mock.Mock(return_value=True)
         with mock.patch.object(ui, "HOME", Path(tempfile.mkdtemp(dir=BASE))), mock.patch.object(ui, "WINDOWS", False), \
-                mock.patch.object(ui, "open_in_herdr", herdr), \
+                mock.patch.object(ui, "open_in_herdr", herdr), mock.patch.object(ui, "WINDOW_START_S", 30), \
                 mock.patch.object(ui.shutil, "which", lambda name: "/bin/false"):
             shell = ui.own_shell()
             shell.parent.mkdir(parents=True)
@@ -2089,9 +2148,9 @@ class Ui(unittest.TestCase):
         shell = folder / "gpui-shell"
         shell.write_text("#!/bin/sh\necho 'needs shell 9' >&2\nexit 3\n")
         shell.chmod(0o755)
-        with mock.patch.object(ui, "open_in_herdr", lambda *a: False), \
+        with mock.patch.object(ui, "open_in_herdr", lambda *a: False), mock.patch.object(ui, "WINDOW_START_S", 30), \
                 mock.patch.object(ui.shutil, "which", lambda name: str(shell)):
-            said = run("--tracker", s, "open", code=2)
+            said = run("--tracker", s, "open", code=2)  # it ends the wait: only a machine under load nears the limit
             self.assertIn("exit 3", said)
             self.assertIn("needs shell 9", said)
             shell.write_text("#!/bin/sh\nexec sleep 2\n")  # still up when `open` stops waiting: the window runs
@@ -2108,7 +2167,7 @@ class Ui(unittest.TestCase):
     def test_commands_only_a_ui_runs_are_not_listed(self):
         parser = cli.build_parser()[0]
         listed = parser.format_help().split("positional arguments")[-1].split("options:")[0]
-        for name in ("data", "attached", "evidence"):
+        for name in ("data", "attached", "evidence", "await-change"):
             self.assertNotRegex(listed, rf"(?m)^\s+{name}\s")
         self.assertRegex(listed, r"(?m)^\s+open\s")
 
@@ -2123,6 +2182,7 @@ class Ui(unittest.TestCase):
         manifest = json.loads((ROOT / "ui/gpui-shell.json").read_text())
         self.assertEqual((manifest["shell-version"], manifest["entry"]), (ui.GPUI_SHELL_VERSION, "app.js"))
         self.assertEqual(manifest["capabilities"]["process"]["env"], ["TRACKER_OPEN", "TRACKER_CLI"])
+        self.assertEqual(manifest["capabilities"]["fs"], {"execute": "*"})  # it reads a tracker only through the CLI
 
     def test_open_uses_the_tab_it_has_else_a_new_one(self):
         s = self.tracker()

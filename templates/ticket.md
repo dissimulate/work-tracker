@@ -17,7 +17,7 @@ updated_at:
 
 ## Carry forward
 
-<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max 5 bullets once merged or done. -->
+<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max 5 bullets once done. -->
 
 ## Links
 

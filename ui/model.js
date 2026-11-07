@@ -20,11 +20,15 @@ export function naturalCompare(a, b) {
   return x.length - y.length;
 }
 
+// What a column sorts by: what its row shows, or what the CLI gives for the rest (a status's place, a level's rank).
+const SORT_BY = { step: t => t.order, ticket: t => t.id, group: t => t.group, waits: t => t.waits.length, unblocks: t => t.unblocks.length };
+
 // Rows with no value go last in either direction; equal values keep the dependency order.
 export function sortRows(rows, { key, desc }) {
   const empty = v => v === null || v === undefined || v === "";
+  const value = SORT_BY[key] ?? (t => t.sort[key]);
   return [...rows].sort((a, b) => {
-    const x = a.sort[key], y = b.sort[key];
+    const x = value(a), y = value(b);
     if (empty(x) !== empty(y)) return empty(x) ? 1 : -1;
     const by = empty(x) ? 0 : naturalCompare(x, y);
     return (desc ? -by : by) || a.order - b.order;
@@ -49,8 +53,8 @@ const MEANING_OF = new Map(Object.entries(MEANINGS).flatMap(([meaning, statuses]
 export const meaningOf = status => MEANING_OF.get(status) ?? "quiet";
 
 // A row's sessions as one status: the most urgent of them.
-export const agentStatus = agents => (!agents.length ? "agent-none" : agents.some(a => a.waiting) ? "agent-waiting"
-  : agents.some(a => a.busy) ? "agent-busy" : "agent-idle");
+export const agentStatus = agents => (!agents.length ? "agent-none" : agents.some(a => a.status === "waiting") ? "agent-waiting"
+  : agents.some(a => a.status === "busy") ? "agent-busy" : "agent-idle");
 // A move: yours to act on, your own work going on as planned, or someone else's.
 export const moveStatus = move => (!move.mine ? "them" : move.quiet ? "your-work" : "you");
 
@@ -227,4 +231,34 @@ export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${Strin
 export function liveLine(view, now) {
   return [`live ${hhmm(now)}`, view.synced ? `PRs from GitHub ${hhmm(new Date(view.synced * 1000))}` : "", view.issues]
     .filter(Boolean).join(" · ");
+}
+
+const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
+
+// How to start a machine's CLI: what the host was told, else what its hooks recorded, as the plugin's path changes with
+// each version. Read each time, so a record that comes later or moves counts at once. Here, with no record, `tracker` on
+// PATH. On another machine PATH holds no plugin, so there it is an error, which the view shows.
+export async function findCli(host, dir, machine) {
+  const told = machine ? null : host.cli?.();
+  if (told?.length) return told;
+  let argv = null;
+  try {
+    argv = JSON.parse(await host.readText(`${machine ? REMOTE_DIR : dir}/.cli.json`, machine))?.argv;
+  } catch {
+    // No hook has run yet, or the host cannot read it.
+  }
+  if (Array.isArray(argv) && argv.length) return argv;
+  if (machine) throw new Error(`No tracker CLI recorded on ${machine}: it needs this plugin version, and a session on a tracker there`);
+  return ["tracker"];
+}
+
+// Whether to ask GitHub while this shows: its data is old, and no try was made this round. `triedAt` counts because a
+// sync that reads nothing (gh missing, offline, no repo) leaves `synced` as it was.
+export const syncDue = (view, triedAt, nowS) => Boolean(view) && !view.archived && nowS - Math.max(view.synced, triedAt) >= view.sync_every;
+
+// Whether a batch of changed paths under the trackers' folder touches this view: its tracker, the sessions or the
+// watches. A path not plainly under the folder (the folder itself, which means everything; a linked folder) counts.
+export function concerns(paths, dir, slug) {
+  const mine = [`${dir}/${slug}/`, `${dir}/.sessions/`, `${dir}/.watch/`];
+  return paths.some(p => !p.startsWith(`${dir}/`) || mine.some(m => p.startsWith(m)));
 }

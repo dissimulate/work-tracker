@@ -28,6 +28,8 @@ SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
 ASKING_S = 30  # an agent that asks this long gets no answer soon: a prompt the user is at needs no notification
 BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing recorded: it may be stuck
+CHANGE_POLL_S = 1  # `await_change`: how often it looks at the files
+CHANGE_WAIT_S = 15  # when it ends with no change: a UI that has gone leaves no process, and one here reads again
 CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what changed while it was stopped
 REARM_S = 600  # a session's watch runs `--once` again and again: between two runs it still watches
 # A move of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested, an open
@@ -222,6 +224,17 @@ def state_path(slug: str) -> Path:
 
 def load_state(slug: str) -> dict:
     return read_json(state_path(slug))
+
+
+def await_change(tr: Tracker) -> None:
+    """Return when the files that hold what a UI shows of the tracker change, or at CHANGE_WAIT_S: for a UI whose host
+    has no folder watch, so that it starts the whole CLI only to read a change."""
+    def now() -> str:
+        return files_hash([*tr.data_files(), *SESSIONS_DIR.glob("*.json"), state_path(tr.slug)])
+
+    was, end = now(), time.monotonic() + CHANGE_WAIT_S
+    while time.monotonic() < end and now() == was:
+        time.sleep(CHANGE_POLL_S)
 
 
 def watcher_of(tr: Tracker) -> dict:

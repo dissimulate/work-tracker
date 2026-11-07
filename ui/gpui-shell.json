@@ -6,9 +6,6 @@
   "entry": "app.js",
   "capabilities": {
     "fs": {
-      "read": [
-        "${homeDir}/.claude/trackers"
-      ],
       "execute": "*"
     },
     "process": {

@@ -1,17 +1,16 @@
 // The tracker's one UI, in gpui-kit: the same code in a Herdr mod (main.js) and in its own window (app.js). All it
 // knows of its host is the object they pass in, and all it knows of the tracker is the `tracker` CLI's JSON:
 //
-//   home()              the user's home folder
-//   readText(path, machine)      a file's text, or null. A null machine is this one; on another, a path is from its home
 //   run(command, args, machine)  a program's { code, stdout, stderr }
-//   changed(cx, dir)    resolves when something under dir may have changed
+//   changed(cx, dir, slug)  resolves when what shows of the tracker `slug` may have changed
 //   colors()            the colours by Herdr's names (theme() in herdr.d.ts)
 //   font()              the font for numbers and ids
 //   sized(el, set)      tells set(width, cx) this view's width, and gives the element back. Herdr measures the element;
 //                       public gpui-shell has no element measure, so its window is the view
 //   start()             what `tracker open` asked for: { slug, id }, each or null
 //   nextOpen()          optional: resolves with each later request, as "<slug>/<id>"
-//   trackersDir()       optional: the trackers' folder, when it is not the default
+//   dir()               optional: the trackers' folder, for a host that watches it or reads the CLI's record there
+//   readText(path, machine)  optional: a file's text, or null. A null machine is this one; on another, a path is from its home
 //   cli()               optional: how to start the CLI, when the host was told
 //   framed()            optional: true when the view stands as a card of its own among others, so it draws its frame
 //   titleBar(row, t)    optional: the view's header row as the window's title bar, when the window has none of its own
@@ -20,13 +19,12 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, bodyParts, filterRows, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
-  plainInline, rowStatus, rowWord, sortRows } from "./model.js";
+import { agentStatus, bodyParts, filterRows, findCli, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
+  plainInline, rowStatus, rowWord, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
-const SCHEMA = 4; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 5; // viewmodel.VIEW_SCHEMA
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
-const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 
 export function trackerView(host) {
@@ -52,7 +50,8 @@ export function trackerView(host) {
       this.trackers = null;
       this.slug = start.slug;
       this.machine = null; // where this tracker lives: another machine when the agent followed runs there
-      this.clis = new Map(); // per machine, how to start the CLI
+      this.syncing = false;
+      this.syncTried = 0; // when this tracker last asked GitHub, in s
       this.shown = "";
       this.live = "";
       this.follows = Boolean(host.agentAt) && !start.slug;
@@ -60,12 +59,12 @@ export function trackerView(host) {
       this.agentAddress = undefined; // the agent followed
       this.followed = undefined; // that agent and its tracker: when they change, a tracker picked by hand gives way
       this.following = false;
-      const dir = this.dir = host.trackersDir?.() ?? `${host.home()}/.claude/trackers`;
+      this.dir = host.dir?.();
       cx.spawn(async cx => {
-        await this.findCli(null);
         await this.listTrackers(cx);
         await this.followAgent(cx, true);
         await this.load(cx);
+        if (this.selected) this.select(this.selected, cx); // what `tracker open` asked for takes Escape too
         if (this.follows) {
           cx.spawn(async cx => {
             for (;;) {
@@ -75,22 +74,9 @@ export function trackerView(host) {
           });
         }
         for (;;) {
-          await host.changed(cx, dir);
+          await host.changed(cx, this.dir, this.slug);
           await cx.sleep(150); // a command writes several files
           await this.followAgent(cx, true); // `tracker start` links a session with the focus still on it
-          await this.load(cx);
-        }
-      });
-      // While this shows, PR state stays current. `sync --live` asks GitHub only if no sync ran lately.
-      cx.spawn(async cx => {
-        for (;;) {
-          await cx.sleep((this.view?.sync_every ?? 120) * 1000);
-          if (!this.slug || !this.view || this.view.archived) continue;
-          try {
-            await this.tracker("--tracker", this.slug, "sync", "--live");
-          } catch {
-            // gh missing, or offline: the next round tries again, and the live line says when GitHub was last read.
-          }
           await this.load(cx);
         }
       });
@@ -106,31 +92,10 @@ export function trackerView(host) {
       }
     }
 
-    // Where a machine's CLI is: the plugin's path changes with each version, so its hooks record it. Here, else `tracker`
-    // on PATH. On another machine PATH holds no plugin, so with no record the view says so.
-    async findCli(machine) {
-      if (this.clis.has(machine)) return this.clis.get(machine);
-      let argv = machine ? null : host.cli?.();
-      if (!argv?.length) {
-        try {
-          argv = JSON.parse(await host.readText(`${machine ? REMOTE_DIR : this.dir}/.cli.json`, machine))?.argv;
-        } catch {
-          // No hook has run yet, or the host cannot read it.
-        }
-      }
-      if (!Array.isArray(argv) || !argv.length) {
-        if (machine) throw new Error(`No tracker CLI recorded on ${machine}: it needs this plugin version, and a session on a tracker there`);
-        argv = ["tracker"];
-      }
-      this.clis.set(machine, argv);
-      return argv;
-    }
-
     async trackerOn(machine, ...args) {
-      const [command, ...rest] = await this.findCli(machine);
+      const [command, ...rest] = await findCli(host, this.dir, machine);
       const r = await host.run(command, [...rest, ...args], machine);
       if (r.code === 0) return r.stdout;
-      this.clis.delete(machine); // a plugin update moves it: read the record again
       throw new Error(r.stderr.trim() || `tracker ${args.join(" ")} failed (${r.code})`);
     }
 
@@ -192,6 +157,25 @@ export function trackerView(host) {
 
     async load(cx) {
       if (!this.slug) return;
+      await this.read(cx);
+      this.syncWhenDue(cx);
+    }
+
+    // While this shows, PR state stays current, from the first read on. `sync --live` asks GitHub only if no sync ran
+    // lately. If gh is missing or offline, the next round tries again, and the live line says when GitHub was last read.
+    syncWhenDue(cx) {
+      const now = Date.now() / 1000;
+      if (this.syncing || !syncDue(this.view, this.syncTried, now)) return;
+      this.syncing = true;
+      this.syncTried = now;
+      cx.spawn(async cx => {
+        await this.tracker("--tracker", this.slug, "sync", "--live").catch(() => {});
+        this.syncing = false;
+        await this.load(cx);
+      });
+    }
+
+    async read(cx) {
       const slug = this.slug, machine = this.machine;
       const moved = () => slug !== this.slug || machine !== this.machine; // another tracker came to show meanwhile
       try {
@@ -229,6 +213,7 @@ export function trackerView(host) {
       this.filters.clear();
       this.view = null;
       this.shown = "";
+      this.syncTried = 0;
       cx.notify();
       cx.spawn(async cx => { await this.load(cx); });
     }
@@ -242,7 +227,7 @@ export function trackerView(host) {
       cx.spawn(async cx => {
         try {
           await this.tracker(...args);
-          then?.();
+          then?.(cx);
         } catch (e) {
           this.refused = String(e.message ?? e);
         }
@@ -641,14 +626,10 @@ export function trackerView(host) {
     }
 
     deleteQuestion(x, t) {
-      const gone = () => {
+      const gone = cx => {
         this.doomed = null;
         this.moreOpen = null;
-        if (x.slug !== this.slug) return;
-        this.slug = null; // listTrackers then takes the next one left
-        this.view = null;
-        this.shown = "";
-        this.selected = null;
+        if (x.slug === this.slug) this.show(null, cx); // listTrackers then takes the next one left
       };
       return v_flex().flex_none().p(SPACE.sm).mt(SPACE.xs).gap(SPACE.sm).text_size(TEXT.small).border_t(1).border_color(t.border)
         .child(div().child(`Delete ${x.title}? Its folder goes to the system's trash: ${x.root}`))
