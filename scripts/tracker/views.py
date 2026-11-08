@@ -392,6 +392,12 @@ ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time wi
              "field the issue tracker lacks; pass it empty when the issue's value means none. Never guess a value.")
 
 
+def shown_ids(due: list[Record]) -> str:
+    """`T-1, T-2 +3`: the first ISSUE_SHOWN ids, and how many more."""
+    more = len(due) - ISSUE_SHOWN
+    return ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{more}" if more > 0 else "")
+
+
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
     """The request for the issue fields to read (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
     session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The model reads
@@ -399,7 +405,7 @@ def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
     due = sorted(tr.issues_to_read(), key=lambda t: t not in first)
     if not due:
         return ""
-    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    ids = shown_ids(due)
     return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
             "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
             "them: never guess a value.")
@@ -421,7 +427,7 @@ def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
     due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
     if not due:
         return ""
-    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    ids = shown_ids(due)
     return (f"[work-tracker] Issue updates to write for {len(due)} ticket(s): {ids}. With a tool for their issue "
             "tracker, run `tracker issue` for what to write, write it, then `tracker issue <id> --written`; with "
             f"none, leave them and {ISSUE_UPDATES_OFF}.")

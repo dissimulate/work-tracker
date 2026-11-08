@@ -71,7 +71,7 @@ def stage_of(kind: str, status) -> Stage:
 # ---------------------------------------------------------------- scales
 # A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
 # it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
-# amount (two XS are not an S): a sum, an average or a score adds the scale's weights (`weight`), never levels.
+# amount (two XS are not an S): nothing adds levels.
 # A new scale is one SCALES entry: its ticket key, the CLI flags (`new`, `set`, `issue`), `check`, `tracker rules` and
 # the UI's column follow from it.
 
@@ -80,8 +80,6 @@ class Scale:
     meaning: str  # what the key says of a ticket; `tracker rules` gives it with the key
     levels: range
     names: tuple[str, ...]  # each level's name in the views, in order
-    weights: tuple[float, ...]  # each level's amount in `unit`, in order: what a sum adds
-    unit: str  # what a weight counts
     ends: str  # what its ends mean
     rule: str  # how a level is chosen; `tracker rules` prints it
 
@@ -97,18 +95,24 @@ class Scale:
     def name(self, n: int) -> str:
         return self.names[self.levels.index(n)]
 
-    def weight(self, n: int) -> float:
-        return self.weights[self.levels.index(n)]
+
+# An issue tracker's priority words, each with its level: the rule names them; `migrate` turns schema 1's into levels.
+PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
+                  "low": 3, "lowest": 4, "trivial": 4}
+
+
+def or_list(words: list[str]) -> str:
+    return " or ".join([", ".join(words[:-1]), words[-1]] if len(words) > 1 else words)
 
 
 SCALES = {
-    "priority": Scale("how urgent the ticket is", range(5), ("P0", "P1", "P2", "P3", "P4"), (8, 5, 3, 2, 1),
-                      "urgency points", "0 is the most urgent, 4 the least",
-                      "0 (most urgent) to 4 (least): Urgent, Highest or Blocker 0, High 1, Medium or Normal 2, Low 3, "
-                      "Lowest or Trivial 4, and P0-P4 their digit. Yours: from how urgent the work is"),
-    # The weights are the amounts the rule names, in days of work: XS a quarter day, an XL 8 days at least.
-    "size": Scale("how much work the ticket is", range(1, 6), ("XS", "S", "M", "L", "XL"), (0.25, 1, 3, 5, 8),
-                  "days of work", "1 is XS, 5 XL",
+    "priority": Scale("how urgent the ticket is", range(5), ("P0", "P1", "P2", "P3", "P4"),
+                      "0 is the most urgent, 4 the least",
+                      "0 (most urgent) to 4 (least): "
+                      + ", ".join(f"{or_list([w.capitalize() for w, n in PRIORITY_WORDS.items() if n == i])} {i}"
+                                  for i in range(5))
+                      + ", and P0-P4 their digit. Yours: from how urgent the work is"),
+    "size": Scale("how much work the ticket is", range(1, 6), ("XS", "S", "M", "L", "XL"), "1 is XS, 5 XL",
                   "1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a "
                   "week, XL more. A T-shirt size is its letter; points take their place on the issue tracker's "
                   "sequence (Fibonacci 1, 2, 3, 5, 8+; powers of two 1, 2, 4, 8, 16+); a time estimate goes by its "
@@ -133,12 +137,6 @@ def level(t: Record, key: str) -> int | None:
 def level_name(t: Record, key: str) -> str:
     """A ticket's level by its name (P1, XS); a value `check` refuses as it is; "" for none."""
     return show_value(key, t.get(key))
-
-
-def weight(t: Record, key: str) -> float | None:
-    """A ticket's level as its scale's amount (in the scale's unit), which adds up; None when it has no level."""
-    n = level(t, key)
-    return SCALES[key].weight(n) if n is not None else None
 
 
 # Every frontmatter key per file: what writes it ("set" = `tracker set`, or the command that owns it) and what it holds.
@@ -220,11 +218,11 @@ OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`",
 STATE_KEEP_DAYS = 14
 STATE_RULES = {
     "mark": "the HEAD up to which a branch's commits are logged. The hooks log them against its tickets under way "
-            "(after a commit, at a turn's end, at session start) and move it; `step`, `synced` and `pause` log any "
+            "(after a commit, at a turn's end, at session start) and move it; `step` and `synced` log any "
             "they missed. With no ticket under way, commits wait unlogged for the ticket the session starts. It also "
             "counts the commits logged since the branch's tickets' `next` last changed. Uncommitted files written "
             "after it are work the tracker may not show yet",
-    "handoff": "`pause \"<text>\"` (or `step --pause`) leaves the state of unfinished work on a branch for the next "
+    "handoff": "`step --pause \"<text>\"` leaves the state of unfinished work on a branch for the next "
                "session; the brief shows it first; the next `step` or `synced` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
@@ -619,8 +617,7 @@ KINDS = {
 
 def kind_names(kinds=KINDS) -> str:
     """`ticket, decision or action`: the kinds named, in KINDS order."""
-    names = [k for k in KINDS if k in kinds]
-    return " or ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names)
+    return or_list([k for k in KINDS if k in kinds])
 
 
 def a_kind(kind: str) -> str:
@@ -818,6 +815,36 @@ def load_record(path: Path, kind: str) -> Record:
 
 
 _writes = 0  # tracker files this process wrote: a Tracker rebuilds its index after any write (Tracker.index)
+_first_writes: tuple = ()  # while first_writes lasts: its callback, and the tracker folders written so far
+
+
+@contextmanager
+def first_writes(callback):
+    """While this lasts, run `callback` with each tracker's folder before the first write in it."""
+    global _first_writes
+    _first_writes = (callback, set())
+    try:
+        yield
+    finally:
+        _first_writes = ()
+
+
+def will_write(path: Path) -> None:
+    """Note a write to come: when it is the first in a tracker's folder, first_writes' callback sees that folder as it
+    still is."""
+    if not _first_writes:
+        return
+    try:
+        parts = path.resolve().relative_to(HOME.resolve()).parts
+    except ValueError:
+        return
+    if len(parts) < 2 or parts[0].startswith("."):  # HOME's own files and folders: sessions, watches, the archive
+        return
+    callback, written = _first_writes
+    root = HOME / parts[0]
+    if root not in written:
+        written.add(root)
+        callback(root)
 
 
 @contextmanager
@@ -825,6 +852,7 @@ def atomic_file(path: Path):
     """Write through an exclusively created file, then replace the destination. Keep its permissions; a new file
     is owner-only. Never open the destination for writing, including when another writer replaces it with a link."""
     global _writes
+    will_write(path)
     mode = 0o600
     try:
         previous = path.lstat()
@@ -884,6 +912,7 @@ def record_cli() -> None:
 def create(path: Path, text: str) -> None:
     """Write a new file; refuse one that exists, even one another session made a moment ago."""
     global _writes
+    will_write(path)
     try:
         with open(path, "x") as f:
             f.write(text)
@@ -1311,8 +1340,8 @@ class Tracker:
                 *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
 
 
-def files_hash(files: list[Path], extra: str = "") -> str:
-    """Changes when any of the files (or `extra`) does: their names, times and sizes. A missing file counts as none."""
+def files_hash(files: list[Path]) -> str:
+    """Changes when any of the files does: their names, times and sizes. A missing file counts as none."""
     stats = []
     for p in files:
         try:
@@ -1320,7 +1349,7 @@ def files_hash(files: list[Path], extra: str = "") -> str:
         except OSError:
             continue
         stats.append(f"{p.name}:{s.st_mtime_ns}:{s.st_size}")
-    return hashlib.sha1(("|".join(stats) + extra).encode()).hexdigest()[:12]
+    return hashlib.sha1("|".join(stats).encode()).hexdigest()[:12]
 
 
 def sort_key(ident: str):
@@ -1360,6 +1389,11 @@ def archived_trackers() -> list[Tracker]:
 
 def archived_at(slug: str) -> Tracker | None:
     return tracker_at(slug, ARCHIVE)
+
+
+def any_tracker(slug: str) -> Tracker | None:
+    """The tracker named `slug`, archived or not: a UI shows both."""
+    return tracker_at(slug) or archived_at(slug)
 
 
 RESOLUTION_LINE = re.compile(r"^(?:- )?\d{4}-\d{2}-\d{2}\b")
@@ -1735,14 +1769,15 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
         old = t.prs
         now = sorted(prs, key=lambda x: int(x["number"]))
         written = [f"{x['number']}:{x['state']}" for x in now]
-        diff = {"prs": written} if list(map(str, t.list("prs"))) != written else {}
-        if diff:
-            t.change(diff)
-            changes.append(f"{t.id}: PRs " + ", ".join(written))
-        if t.pr_state == "merged":
+        updates = {"prs": written} if list(map(str, t.list("prs"))) != written else {}
+        if next((s for s in PR_STATES if any(x["state"] == s for x in now)), "") == "merged":  # as Record.pr_state
             merged = max(x["merged_at"] for x in now if x["state"] == "merged")
             if str(t.get("merged_at")) != merged:
-                t.change({"merged_at": merged})
+                updates["merged_at"] = merged
+        if updates:
+            t.change(updates)  # one write
+        if "prs" in updates:
+            changes.append(f"{t.id}: PRs " + ", ".join(written))
         for x in now:
             if old.get(str(x["number"])) != x["state"]:
                 name = f"{repo}#{x['number']}" if len(tr.repos) > 1 else f"#{x['number']}"

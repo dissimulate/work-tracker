@@ -8,6 +8,12 @@ export function filterRows(tickets, filters) {
   return filters.length ? tickets.filter(t => filters.some(f => (f === "blocked" ? blocked(t) : t.stage === f))) : tickets;
 }
 
+// The sequence's filters in the order they show, each with how many tickets it keeps: `blocked`, then each of `stages`
+// (the tracker's, in order) that a ticket is at.
+export function filterCounts(tickets, stages) {
+  return ["blocked", ...stages].map(key => [key, filterRows(tickets, [key]).length]).filter(([key, n]) => n || key === "blocked");
+}
+
 // The numbers in a value compare as numbers ("T-2" before "T-10"). QuickJS's localeCompare takes no `numeric` option.
 export function naturalCompare(a, b) {
   const parts = s => String(s).toLowerCase().match(/\d+|\D+/g) ?? [];
@@ -256,9 +262,20 @@ export async function findCli(host, dir, machine) {
 // sync that reads nothing (gh missing, offline, no repo) leaves `synced` as it was.
 export const syncDue = (view, triedAt, nowS) => Boolean(view) && !view.archived && nowS - Math.max(view.synced, triedAt) >= view.sync_every;
 
-// Whether a batch of changed paths under the trackers' folder touches this view: its tracker, the sessions or the
-// watches. A path not plainly under the folder (the folder itself, which means everything; a linked folder) counts.
-export function concerns(paths, dir, slug) {
-  const mine = [`${dir}/${slug}/`, `${dir}/.sessions/`, `${dir}/.watch/`];
-  return paths.some(p => !p.startsWith(`${dir}/`) || mine.some(m => p.startsWith(m)));
+// What a batch of changed paths under the trackers' folder holds for this view: `tracker`, whether its tracker's files
+// or its watch changed; `sessions`, the session files that changed, whose tracker the view still has to read. null when
+// it cannot tell: no paths (a timer, a host with no folder watch), or a path not plainly under the folder (the folder
+// itself, which means everything; a linked folder).
+export function changesOf(paths, dir, slug) {
+  if (!paths || paths.some(p => !p.startsWith(`${dir}/`))) return null;
+  const sessions = `${dir}/.sessions/`; // <session id>.json; a write's temporary file starts with a dot
+  return {
+    tracker: Boolean(slug) && paths.some(p => p.startsWith(`${dir}/${slug}/`) || p === `${dir}/.watch/${slug}.json`),
+    sessions: paths.filter(p => p.startsWith(sessions) && /^[^./][^/]*\.json$/.test(p.slice(sessions.length))),
+  };
 }
+
+// Whether a session file's text puts it on the tracker `slug`.
+export const sessionOn = (text, slug) => {
+  try { return JSON.parse(text)?.tracker === slug; } catch { return false; }
+};

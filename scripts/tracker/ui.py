@@ -16,7 +16,8 @@ from .system import DETACH, WINDOWS, cli_for_ui
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
-GPUI_SHELL_VERSION = "0.9.0"  # ui/gpui-shell.json's, the one the window is checked on
+# The version the window is checked on
+GPUI_SHELL_VERSION = json.loads((UI_DIR / "gpui-shell.json").read_text())["shell-version"]
 RELEASES = "https://github.com/longbridge/gpui-kit/releases"
 SHELL_ARCHIVES = {  # (platform.system(), platform.machine().lower()): GPUI_SHELL_VERSION's archive, and its SHA-256
     ("Darwin", "arm64"): ("gpui-shell-aarch64-apple-darwin.tar.gz",

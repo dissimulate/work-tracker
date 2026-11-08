@@ -9,19 +9,19 @@ const COLORS = {
   hover: "#23252b", selected: "#2c2f38", accent: "#6fb3ea", working: "#e8b35f", blocked: "#ee7d7d", ansi2: "#7ecf86",
 };
 
-const AT_LEAST_MS = 15000; // when `tracker await-change` cannot run: it ends by itself at about this long
-
 const FONTS = { darwin: "Menlo", win32: "Consolas" }; // each platform's own monospace font
 
 const cli = () => JSON.parse(process.env.TRACKER_CLI || "null"); // `tracker open` says; run by hand, `tracker` on PATH
 
 export default trackerView({
   run: (command, args) => process.run(command, args),
-  // No folder watch here: the CLI waits, in a process of its own, which ends by itself once the window has gone.
-  changed: async (cx, _dir, slug) => {
+  // No folder watch here: the CLI waits, in a process of its own, which ends by itself once the window has gone. It
+  // cannot say what changed: null.
+  changed: async (cx, _dir, slug, atLeastMs) => {
     const [command, ...rest] = cli() ?? [];
     const waited = command && slug ? await process.run(command, [...rest, "await-change", slug]).catch(() => null) : null;
-    if (!waited || waited.code) await cx.sleep(AT_LEAST_MS);
+    if (!waited || waited.code) await cx.sleep(atLeastMs);
+    return null;
   },
   colors: () => COLORS,
   font: () => FONTS[os.platform()] ?? "DejaVu Sans Mono",

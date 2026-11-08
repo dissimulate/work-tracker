@@ -13,7 +13,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The view's colours mean one thing each, on any host and in any part: red needs you, yellow waits on someone else, green is moving, blue can start, grey has nothing to do. Closed tickets are now grey, and a `todo` ticket shows its blocked or stacked colour everywhere. A move of `draft` or `no PR yet` is still yours, but is grey: red is for a move that has stopped to wait for you.
 - A ticket under way with a `PR:` link that `sync` has not read now has the move `PR not synced`, or `PR in <repo>` for a repo `sync` does not read, in place of `no PR yet`.
 - A ticket whose PR merged is now `done`: one status for finished work, set by `sync` or by you. The PR's own state stays `merged`, as in `PR #12 merged` in the log.
-- `tracker refresh`: pull PR state now, and have the next session prompt read the issue fields again.
+- The view's Refresh (`tracker refresh`): pull PR state now, and have the next session prompt read the issue fields again.
 - In a Herdr layout, the view follows the focused agent: it shows that agent's tracker, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes. An agent on another Herdr machine shows its tracker from that machine.
 - Issue updates: with `tracker set tracker issue_updates=on`, the agent writes a linked ticket's status, its summary once it closes, and each decision settled on it to the ticket's issue with its own tool for the issue tracker, then records it with `tracker issue <id> --written`. `tracker issue` lists what is due, and the agent is asked right after the change, in the brief, and at your next message when a new update is due. Off by default.
 
@@ -25,13 +25,22 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The view has a new look: its header holds the tracker's status, its name as a dropdown, its owner and its date; actions, decisions and Current items are rounded cards with status pills, and their ids line up. An action's Done and Drop are green and grey pills, and a section's heading is only its title, with no counts.
 - The sequence's filters are `blocked` and each status, and turn on and off together; with none on, all tickets show. Its columns fit their content, and the title takes the rest.
 - Links in a record open only `http` and `https`: a `mailto:` link no longer opens.
+- One hook runs after every tool, in place of four, and starts Python only when the tool needs it. A Bash command whose output, not the command, names `git commit` or `gh pr` no longer starts it.
+- In Herdr, the view runs the `tracker` CLI only when its tracker, or a session on it, changes: another tracker's sessions no longer make it read again. Its own window waits the same way. Run `scripts/install-herdr-mod.sh` again: the view and the plugin must be the same version.
+- The `blocked` filter's count is the number of tickets it shows.
+- Only `/work-tracker:watch` (`$work-tracker:watch` in Codex) starts or ends a watch: a bare `/watch` may be another plugin's.
+
+### Fixed
+
+- A write to a ticket of another tracker (`tracker step <slug>:<id> ...`, or an id found only in another tracker) now reports what it unblocked and the `check` problems it added in that tracker, not in the session's tracker.
 
 ### Removed
 
-- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer that is already running stops when your trackers migrate to the new format.
+- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer of 0.31.1 or earlier that is already running is not stopped for you, and it writes the old format: before you update, stop it (`kill` the `pid` in `~/.claude/trackers/.viewer.json`) and delete that file.
 - The sort in the address (`?sort=`): the view starts in dependency order.
 - `tracker migrate`: migration is automatic.
 - The settings `TRACKER_VIEWER_SYNC` and `TRACKER_WATCH_SYNC`: use `TRACKER_SYNC`.
+- `tracker pause "<text>"`: use `tracker step <id> "..." --pause "<text>"`.
 
 ## 0.31.1 - 2026-10-12
 

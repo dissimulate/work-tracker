@@ -104,16 +104,17 @@ def load_session(sid: str) -> dict:
 
 
 def save_session(sid: str, **fields) -> None:
-    """Update one session's file; a None value removes that field. Keeps the newest SESSIONS_MAX sessions."""
+    """Update one session's file; a None value removes that field. A new session's file removes all but the newest
+    SESSIONS_MAX."""
     path = session_path(sid)
     if not path:
         return
     with locked():
+        new = not path.exists()
         entry = {**load_session(sid), **fields}
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         write_json(path, {k: v for k, v in entry.items() if v is not None})
-        old = sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-SESSIONS_MAX]
-        for f in old:
+        for f in sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-SESSIONS_MAX] if new else ():
             f.unlink(missing_ok=True)
 
 
@@ -460,7 +461,7 @@ def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:
 
 def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
                     refs: list[str] | None = None) -> list[str]:
-    """`synced`, `pause` and `step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
+    """`synced` and `step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
     the mark to HEAD, and set or clear the handoff. Returns what it did."""
     tr, done = m.tracker, []
     mark = get_mark(tr, cwd, m.branch)
@@ -481,9 +482,14 @@ def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
     return [f"{m.branch} up to date at {head[:9]}" if head else f"{m.branch} not marked: git did not run", *done]
 
 
-def on_branch(args) -> tuple[Match, Path]:
+def matched(args) -> tuple[Match | None, Path]:
+    """What the command's tracker and this session's branch work on, and the work dir."""
     cwd = work_dir()
-    m = match_cwd(cwd, tracker=find_tracker(args))
+    return match_cwd(cwd, tracker=find_tracker(args)), cwd
+
+
+def on_branch(args) -> tuple[Match, Path]:
+    m, cwd = matched(args)
     if not m:
         die(f"this session and branch '{branch_of(cwd) or '?'}' are on no tracker: `tracker start <name>`")
     if not m.branch:

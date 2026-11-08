@@ -105,12 +105,10 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a s
 |---|---|
 | SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief, with the issue fields to read and the issue updates to write. With none: links the session, or has the agent offer the link, as [Usage](#usage) step 2 says. |
 | UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. Once each: an issue update newly due, the issue fields a Refresh in the view asked for. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
-| PostToolUse (Bash) | After a commit: logs it, and once per next action asks whether a step ended. After `git push` or `gh pr …`: records the branch on its ticket and syncs PR state. |
-| PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
-| PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
+| PostToolUse | One hook for every tool, which starts Python only when one of these applies. Bash: after a commit, logs it, and once per next action asks whether a step ended; after `git push` or `gh pr …`, records the branch on its ticket and syncs PR state. Edit, Write, MultiEdit, apply_patch: counts a hand edit of a tracker file as this session's own. AskUserQuestion, request_user_input: asks the agent to record the answer when it settles a direction decision. Any tool: ends that agent's "needs you" mark. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
 | PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
-| PostToolUse, PostToolUseFailure (any tool), SubagentStop | Ends that agent's mark, in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
+| PostToolUseFailure, SubagentStop | Ends that agent's mark, in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
 | Stop | Logs the commits no other hook saw. |
 | StopFailure | Marks the session idle after a failed turn. |
 | SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |

@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -914,7 +913,27 @@ class Writes(unittest.TestCase):
             self.assertIn("no tracker", run("--tracker", name, "index", code=2))
             self.assertIn("no tracker", run("context", f"{name}:L-1", code=2))
 
+    def test_templates_take_the_contract_limits(self):
+        s = slug()
+        run("init", s, "--title", "Limits", "--owner", "me")
+        run("--tracker", s, "new", "M-1", "--title", "One")
+        readme, ticket = (model.HOME / s / "README.md").read_text(), (model.HOME / s / "tickets/M-1.md").read_text()
+        self.assertIn(f"~{model.README_TOKEN_BUDGET:,} tokens", readme)
+        self.assertIn(f"Max {model.MERGED_CARRY_FORWARD_MAX} bullets", ticket)
+        self.assertNotIn("{{", readme + ticket)
+        self.assertIn("\nstatus: todo\n", ticket)
 
+    def test_a_write_reports_on_the_tracker_it_wrote(self):
+        """`slug:ID` writes another tracker than the one the command is on: what it unblocks and adds to `check` is
+        that tracker's."""
+        here, there = slug(), slug()
+        run("init", here, "--title", "Here", "--owner", "me")
+        run("init", there, "--title", "There", "--owner", "me")
+        run("--tracker", there, "new", "W-1", "--title", "One")
+        run("--tracker", there, "new", "W-2", "--title", "Two", "--depends", "W-1")
+        out = run("--tracker", here, "step", f"{there}:W-1", "--done", "all of it")
+        self.assertIn("nothing blocks W-2 now", out)
+        self.assertEqual(out.count("`check`:"), 1)
 
     def test_writes_log_what_history_needs(self):
         self.addCleanup(os.chdir, os.getcwd())
@@ -999,55 +1018,15 @@ class Upgrade(unittest.TestCase):
         model.Tracker(model.HOME / s).readme.save({"schema": schema})
         return s, ("--tracker", s)
 
-    def test_a_migration_stops_the_old_viewer_and_only_it(self):
-        s, _ = self.old_tracker()
-        server = ("import http.server\n"
-                  "class H(http.server.BaseHTTPRequestHandler):\n"
-                  "    def do_GET(self):\n"
-                  "        self.send_response(200); self.end_headers(); self.wfile.write(ANSWER)\n"
-                  "    def log_message(self, *a): pass\n"
-                  "s = http.server.HTTPServer(('127.0.0.1', 0), H)\n"
-                  "print(s.server_address[1], flush=True)\n"
-                  "s.serve_forever()\n")
-
-        def serving(answer: bytes):
-            p = subprocess.Popen([sys.executable, "-c", f"ANSWER = {answer!r}\n{server}"], stdout=subprocess.PIPE,
-                                 text=True)
-            self.addCleanup(p.stdout.close)
-            self.addCleanup(p.kill)
-            return p, int(p.stdout.readline())
-
-        viewer, port = serving(b"work-tracker abc /old/plugin")
-        (model.HOME / ".viewer.json").write_text(json.dumps({"port": port, "pid": viewer.pid}))
-        run("list")
-        self.assertEqual(viewer.wait(10), -signal.SIGTERM)
-        self.assertFalse((model.HOME / ".viewer.json").exists())
-        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
-
-        # A pid that the file's viewer no longer has: something else on the port, or nothing on it.
-        other, port = serving(b"something else")
-        for named in ({"port": port, "pid": other.pid}, {"port": 1, "pid": other.pid}, {"pid": "x"}):
-            s, _ = self.old_tracker()
-            (model.HOME / ".viewer.json").write_text(json.dumps(named))
-            run("list")
-            self.assertIsNone(other.poll())
-            self.assertFalse((model.HOME / ".viewer.json").exists())
-
     def test_any_command_migrates_every_older_tracker_once(self):
         s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
         other, _ = self.old_tracker(schema=model.SCHEMA)
         model.tracker_at(s).readme.save({"schema": 3})
         model.tracker_at(other).readme.save({"schema": 2})
         (model.HOME / s / ".DS_Store").write_text("finder")
-        (model.HOME / ".viewer.json").write_text("{}")
-        leftover = session.SESSIONS_DIR / f"old{time.monotonic_ns()}.edits"
-        session.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        leftover.write_text("1")
         run("list")
         for name in (s, other):
             self.assertEqual(model.tracker_at(name).schema, model.SCHEMA)
-        self.assertFalse((model.HOME / ".viewer.json").exists())
-        self.assertFalse(leftover.exists())
         backup = model.HOME / ".backups" / f"{s}-schema3"
         self.assertEqual(re.search(r"schema: (\d+)", (backup / "README.md").read_text())[1], "3")
         self.assertFalse((backup / ".DS_Store").exists())  # the backup holds the tracker, not Finder's files
@@ -1141,6 +1120,11 @@ def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> d
     return json.loads(out) if out.strip() else None
 
 
+def tool(name: str, sid: str, cwd: Path, **extra) -> dict | None:
+    """The hook after the tool `name` (PostToolUse)."""
+    return hook("post-tool", sid, cwd, tool_name=name, **extra)
+
+
 def said(out: dict | None) -> str:
     return json.dumps(out or {})
 
@@ -1156,7 +1140,7 @@ class Hooks(unittest.TestCase):
         def status():
             return session.load_session(sid)["activity"]["status"]
 
-        self.assertIsNone(hook("resumed", sid, work, tool_name="Read"))  # no wait: the shell filter ends it
+        self.assertIsNone(tool("Read", sid, work))  # no wait: the shell filter ends it
         self.assertNotIn("activity", session.load_session(sid))
         self.assertIsNone(hook("prompt", sid, work, prompt="go") and None)
         self.assertEqual(status(), "busy")
@@ -1165,16 +1149,16 @@ class Hooks(unittest.TestCase):
         live = session.live_sessions(s)
         self.assertEqual([x.status for x in live], ["waiting"])
         self.assertEqual(viewmodel.agent_word(live[0]).split(" since")[0], "needs you")
-        hook("resumed", sid, work, tool_name="Bash")
+        tool("Bash", sid, work)
         self.assertEqual(status(), "busy")
         hook("waiting", sid, work, tool_name="AskUserQuestion", agent_id="sub")  # a subagent's wait is the session's
         self.assertEqual(status(), "waiting")
-        hook("resumed", sid, work, tool_name="Read", agent_id="other")  # another agent's tool: "sub" still asks
+        tool("Read", sid, work, agent_id="other")  # another agent's tool: "sub" still asks
         self.assertEqual(status(), "waiting")
         hook("waiting", sid, work, tool_name="Bash")
-        hook("resumed", sid, work, tool_name="Bash", agent_id="sub")
+        tool("Bash", sid, work, agent_id="sub")
         self.assertEqual(status(), "waiting")  # the session's own wait holds
-        hook("resumed", sid, work, tool_name="Bash")
+        hook("resumed", sid, work, tool_name="Bash")  # PostToolUseFailure and SubagentStop
         self.assertEqual(status(), "busy")
         self.assertNotIn("asking", session.load_session(sid))
         hook("waiting", sid, work, tool_name="Bash", agent_id="sub")
@@ -1249,11 +1233,13 @@ class Hooks(unittest.TestCase):
         self.assertIn(model.ISOLATION_RULE, brief)  # stated once, carried into every session with a tracker
         self.assertIn(model.ISOLATION_RULE, run("rules"))
         self.assertIn("H-1 in-progress", said(hook("prompt", sid, work, prompt="go")))
-        self.assertIsNone(hook("post-bash", sid, work, tool_input={"command": "ls"}))
+        self.assertIsNone(tool("Bash", sid, work, tool_input={"command": "ls"}))
+        self.assertIsNone(tool("Bash", sid, work, tool_input={"command": "git log"},
+                               tool_response={"stdout": "commit abc: gh pr"}))  # its output names no command
         go = {"questions": [{"question": "Push?", "options": [{"label": "Yes, push"}, {"label": "Not now"}]}]}
-        self.assertIsNone(hook("answered", sid, work, tool_input=go))  # approval, not direction
+        self.assertIsNone(tool("AskUserQuestion", sid, work, tool_input=go))  # approval, not direction
         pick = {"questions": [{"question": "Store?", "options": [{"label": "Postgres"}, {"label": "Yes, SQLite"}]}]}
-        self.assertIn("direction decision", said(hook("answered", sid, work, tool_input=pick)))
+        self.assertIn("direction decision", said(tool("AskUserQuestion", sid, work, tool_input=pick)))
 
         helper = said(hook("subagent-start", sid, work, agent_id="a1", agent_type="Explore"))
         self.assertIn("do not write it", helper)
@@ -1263,12 +1249,12 @@ class Hooks(unittest.TestCase):
         # The hooks log every commit; the model is asked only whether `next` still holds, once per `next`.
         committed = {"tool_input": {"command": "git commit -m x"}}
         commit(work, "hook work")
-        self.assertIsNone(hook("post-bash", sid, work, agent_id="a1", **committed))  # a subagent's: logged, no ask
+        self.assertIsNone(tool("Bash", sid, work, agent_id="a1", **committed))  # a subagent's: logged, no ask
         ask = said(hook("prompt", sid, work, prompt="done?"))  # the session is asked at its next message
         self.assertIn("1 commit(s) on feat/H-1 since `next` last changed", ask)
         self.assertIsNone(hook("prompt", sid, work, prompt="again"))
         commit(work, "more work")
-        self.assertIsNone(hook("post-bash", sid, work, **committed))  # logged; `next` is the one already asked about
+        self.assertIsNone(tool("Bash", sid, work, **committed))  # logged; `next` is the one already asked about
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             self.assertIn("H-1: next set; feat/H-1 up to date", run("step", "--next", "Ship it", cwd=work))
         commit(work, "last work")  # as in the terminal: no post-bash hook sees it
@@ -1316,11 +1302,11 @@ class Hooks(unittest.TestCase):
         self.assertIn("C-1", said(hook("prompt", sid, work, env=env, prompt="work")))
         self.assertEqual(session.load_session(sid)["activity"]["status"], "busy")
         go = {"questions": [{"title": "Push?", "options": ["Yes, push", "Not now"]}]}
-        self.assertIsNone(hook("answered", sid, work, tool_input=go))
+        self.assertIsNone(tool("AskUserQuestion", sid, work, tool_input=go))
         pick = {"questions": [{"title": "Store?", "options": ["Postgres", "SQLite"]}]}
-        self.assertIn("direction decision", said(hook("answered", sid, work, tool_input=pick)))
+        self.assertIn("direction decision", said(tool("AskUserQuestion", sid, work, tool_input=pick)))
         commit(work, "Codex commit")
-        hook("post-bash", sid, work, env=env, tool_name="Bash", tool_input={"command": "git commit -m x"})
+        tool("Bash", sid, work, env=env, tool_input={"command": "git commit -m x"})
         self.assertIsNone(hook("stop", sid, work, env=env))
         self.assertEqual(session.load_session(sid)["activity"]["status"], "idle")
         self.assertEqual([x.sid for x in session.live_sessions(s)], [sid])
@@ -1353,11 +1339,11 @@ class Hooks(unittest.TestCase):
         cases = [(work, {"file_path": str(path)}),
                  (work, {"command": f"*** Begin Patch\n*** Update File: {path}\n*** End Patch"}),
                  (root, {"command": "*** Begin Patch\n*** Update File: tickets/E-1.md\n*** End Patch"})]
-        for (cwd, tool), status in zip(cases, ("in-progress", "todo", "in-progress")):
-            with self.subTest(tool=tool):
+        for (cwd, used), status in zip(cases, ("in-progress", "todo", "in-progress")):
+            with self.subTest(tool=used):
                 before = session.load_session(sid)["seen"]
                 path.write_text(re.sub(r"^status: .*", f"status: {status}", path.read_text(), flags=re.M))
-                hook("edit", sid, cwd, tool_input=tool)
+                tool("apply_patch" if "command" in used else "Edit", sid, cwd, tool_input=used)
                 self.assertNotEqual(session.load_session(sid)["seen"], before)
                 self.assertNotIn("Changed since your brief", said(hook("prompt", sid, work, prompt="next")))
 
@@ -1429,7 +1415,7 @@ class Hooks(unittest.TestCase):
         env = {**os.environ, "TRACKER_SESSION": sid}
         subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, check=True)
         commit(work, "early work")
-        self.assertIsNone(hook("post-bash", sid, work, tool_input={"command": "git commit"}))  # no ticket under way
+        self.assertIsNone(tool("Bash", sid, work, tool_input={"command": "git commit"}))  # no ticket under way
         marks = model.tracker_at(s).raw_state()["synced"]
         self.assertEqual([x.get("waiting") for x in marks.values()], [git.head_of(work)])  # the HEAD it waits at
         with mock.patch.object(session, "new_commits") as scan:  # the next turn's end: git is not asked again
@@ -1483,7 +1469,7 @@ class Hooks(unittest.TestCase):
         told = said(hook("prompt", sid, work, prompt="again"))
         self.assertIn("No ticket in progress on feat/G-1; 1 uncommitted file(s) since", told)
         self.assertIsNone(hook("prompt", sid, work, prompt="and again"))  # once per mark
-        self.assertIsNone(hook("edit", sid, work, tool_input={"file_path": str(work / "edited.txt")}))
+        self.assertIsNone(tool("Edit", sid, work, tool_input={"file_path": str(work / "edited.txt")}))
 
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):  # this session's own change: not reported
             run("set", "G-1", "status=in-progress", cwd=work)
@@ -1964,17 +1950,26 @@ class Ui(unittest.TestCase):
         tr = model.tracker_at(s)
         session.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         watcher.WATCH_DIR.mkdir(parents=True, exist_ok=True)
-        for path in (tr.root / "tickets/T-1.md", session.SESSIONS_DIR / f"{slug()}.json", watcher.state_path(s)):
+        on = json.dumps({"tracker": s})
+        for path, text in ((tr.root / "tickets/T-1.md", None), (session.SESSIONS_DIR / f"{slug()}.json", on),
+                           (watcher.state_path(s), None)):
             with self.subTest(path=path.name), mock.patch.object(watcher, "CHANGE_WAIT_S", 30), \
                     mock.patch.object(watcher, "CHANGE_POLL_S", 0.01):
-                later = threading.Timer(0.1, lambda: path.write_text(f"{path.read_text() if path.exists() else ''}\n"))
+                old = path.read_text() if path.exists() else ""
+                later = threading.Timer(0.1, lambda: path.write_text(text or f"{old}\n"))
                 later.start()
                 began = time.monotonic()
                 watcher.await_change(tr)
                 later.join()
                 self.assertLess(time.monotonic() - began, 10)
-        with mock.patch.object(watcher, "CHANGE_WAIT_S", 0.1), mock.patch.object(watcher, "CHANGE_POLL_S", 0.01):
-            run("await-change", s)  # nothing changes: it ends all the same
+        with mock.patch.object(watcher, "CHANGE_WAIT_S", 0.3), mock.patch.object(watcher, "CHANGE_POLL_S", 0.01):
+            other = session.SESSIONS_DIR / f"{slug()}.json"
+            later = threading.Timer(0.05, lambda: other.write_text(json.dumps({"tracker": f"{s}x"})))
+            later.start()
+            began = time.monotonic()
+            run("await-change", s)  # another tracker's session changes nothing here: it ends at its limit
+            later.join()
+            self.assertGreaterEqual(time.monotonic() - began, 0.3)
         self.assertIn(f"no tracker '{s}x'", run("await-change", f"{s}x", code=2))
 
     def test_the_install_script_gives_the_mod_only_its_own_files(self):
@@ -2167,7 +2162,7 @@ class Ui(unittest.TestCase):
     def test_commands_only_a_ui_runs_are_not_listed(self):
         parser = cli.build_parser()[0]
         listed = parser.format_help().split("positional arguments")[-1].split("options:")[0]
-        for name in ("data", "attached", "evidence", "await-change"):
+        for name in ("data", "attached", "evidence", "await-change", "refresh", "pause"):
             self.assertNotRegex(listed, rf"(?m)^\s+{name}\s")
         self.assertRegex(listed, r"(?m)^\s+open\s")
 
@@ -2506,8 +2501,9 @@ class Watch(unittest.TestCase):
             self.assertIn("starts only when the user asks", run("watch", self.s, "--once", code=4))
         with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):  # a Claude session whose hooks did not run
             run("watch", self.s, "--once", code=4)
-        self.assertIsNone(hook("prompt", sid, cwd, prompt="/watchlist"))
-        self.assertFalse(watcher.granted(sid))
+        for other in ("/watchlist", "/watch", "$watch payments"):  # another plugin's command
+            self.assertIsNone(hook("prompt", sid, cwd, prompt=other))
+            self.assertFalse(watcher.granted(sid))
 
         self.assertIsNone(hook("prompt", sid, cwd, prompt=f"/work-tracker:watch {self.s}"))  # only the user types it
         self.assertTrue(watcher.granted(sid))
@@ -2842,19 +2838,16 @@ class Values(unittest.TestCase):
     def tr(self) -> model.Tracker:
         return model.Tracker(self.root)
 
-    def test_a_scale_names_and_weighs_its_levels(self):
+    def test_a_scale_names_its_levels(self):
         for key, scale in model.SCALES.items():
             self.assertEqual(len(scale.names), len(scale.levels))
-            self.assertEqual(len(scale.weights), len(scale.levels))
             self.assertEqual(model.KEYS["ticket"][key][0], "set")  # `tracker set` takes it, from the entry alone
             self.assertEqual(model.ISSUE_FIELDS[key], key)  # so does `tracker issue --<key>`
         run(*self.t, "set", "T-1", "priority=0", "size=4")
         t = self.tr().lookup("T-1")
         self.assertEqual([model.level_name(t, k) for k in ("priority", "size")], ["P0", "L"])
-        self.assertEqual([model.weight(t, k) for k in ("priority", "size")], [8, 5])  # amounts that add up
-        self.assertEqual((model.SCALES["size"].unit, model.SCALES["size"].weight(1)), ("days of work", 0.25))  # XS
         run(*self.t, "set", "T-1", "size=")
-        self.assertIsNone(model.weight(self.tr().lookup("T-1"), "size"))
+        self.assertEqual(model.level_name(self.tr().lookup("T-1"), "size"), "")
 
     def test_the_views_show_the_levels_and_ready_puts_the_urgent_first(self):
         run(*self.t, "new", "T-2", "--title", "Two", "--priority", "1", "--size", "3")

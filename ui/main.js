@@ -1,21 +1,16 @@
 // The tracker as a Herdr mod. All of Herdr that the UI uses is here.
 import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
-import { concerns } from "./model.js";
 import { trackerView } from "./view.js";
-
-const AT_LEAST_MS = 15000; // a session that ends with no hook, and another machine's tracker, change nothing watched here
 
 export default trackerView({
   dir: () => props()?.trackers ?? `${home()}/.claude/trackers`,
   readText: (path, machine) => readTextFile(path, { on: machine ?? null }),
   run: (command, args, machine) => exec(command, args, { on: machine ?? null }),
-  // A folder that cannot be watched yet, or at all, rejects: wait, and look again.
-  changed: async (cx, dir, slug) => {
-    const atLeast = cx.sleep(AT_LEAST_MS);
-    for (;;) {
-      const paths = await Promise.race([watchFolder(dir).catch(() => atLeast), atLeast]);
-      if (!paths || concerns(paths, dir, slug)) return;
-    }
+  // The next batch of changed paths in the folder, or null at `atLeastMs`. A folder that cannot be watched yet, or at
+  // all, rejects: wait, and look again.
+  changed: async (cx, dir, _slug, atLeastMs) => {
+    const atLeast = cx.sleep(atLeastMs);
+    return (await Promise.race([watchFolder(dir).catch(() => atLeast), atLeast])) ?? null;
   },
   colors: () => theme(),
   font: () => settings()?.font_family || "JetBrains Mono",

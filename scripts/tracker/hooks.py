@@ -137,8 +137,8 @@ def hook_session_end(data: dict) -> None:
 def adopt_branch(m: Match, cwd: str | Path) -> None:
     """A branch that holds one ticket's id in its name (made when the user asked): record it on the ticket
     (`set_branch`)."""
-    if m.how != "name" or len(m.tickets) != 1 or m.branch in default_branches(cwd):
-        return
+    if m.how != "name" or len(m.tickets) != 1 or m.tickets[0].get("branch") or m.branch in default_branches(cwd):
+        return  # the ticket's branch read first: it costs no git run and no lock
     with locked():
         tr = Tracker(m.tracker.root)
         t = tr.lookup(m.tickets[0].id)
@@ -249,7 +249,7 @@ def refresh(m: Match, entry: dict, fields: dict) -> None:
         pass
 
 
-WATCH_PROMPT = re.compile(r"[/$](?:work-tracker:)?watch\b(.*)", re.S)
+WATCH_PROMPT = re.compile(r"[/$]work-tracker:watch\b(.*)", re.S)  # not a bare /watch: another plugin's
 
 
 def watch_request(data: dict) -> bool:
@@ -374,22 +374,29 @@ HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": 
 HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks that call gh 15 s
 
 
-def run_hook(event: str) -> None:
+STATUS_OF = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle", "session-end": "ended",
+             "waiting": "waiting", "resumed": "busy"}  # the session's status after each event
+
+
+def run_hook(*events: str) -> None:
+    """Run each handler that scripts/hook.sh chose for one hook event, in order (after a tool: its own, then
+    `resumed`)."""
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
+    event = events[0] if events else ""
     try:
         upgrade_trackers()
         sid = where(data)[1]
         os.environ["TRACKER_SESSION"] = sid  # command_context, session_id() and spawned commands read it
-        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle",
-                  "session-end": "ended", "waiting": "waiting", "resumed": "busy"}.get(event)
-        if event == "session-end" and not data.get("agent_id"):
-            session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
-        HOOKS[event](data)
-        # A subagent's turn is not the session's, but its wait on the user is.
-        asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
-        if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
-            session_activity(sid, status, asker)
+        for event in events:
+            status = STATUS_OF.get(event)
+            if event == "session-end" and not data.get("agent_id"):
+                session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
+            HOOKS[event](data)
+            # A subagent's turn is not the session's, but its wait on the user is.
+            asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
+            if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
+                session_activity(sid, status, asker)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         print(f"work-tracker hook {event} failed: {exc}", file=sys.stderr)
         sys.exit(0)

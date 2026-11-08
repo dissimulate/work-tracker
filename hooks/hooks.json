@@ -63,38 +63,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" resumed",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" post-bash",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" post-tool",
             "timeout": 15
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|MultiEdit|apply_patch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" edit",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "AskUserQuestion|request_user_input",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" answered",
-            "timeout": 5
           }
         ]
       }

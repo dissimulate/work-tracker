@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 import re
-import signal
 import sys
 
 from .markdown import headings, link_ident, parse_links, section
 from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, HOME,
     ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN,
-    OPEN_PR, OWN_VALUE_RULE, OWNER_HINT, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS,
+    OPEN_PR, OWN_VALUE_RULE, OWNER_HINT, PR_STAGE, PRIORITY_WORDS, README_INSTRUCTIONS, README_KEYS, README_SECTIONS,
     README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS,
     STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, all_trackers, append_log,
     append_to_section, archived_trackers, blocker_link, days_since, kind_names, level, locked, names, norm_id, pr_key,
-    read_json, relabel, resolution, sequence, stage_of, unknown_dep, valid_value, value_form, Record, Tracker)
-from .session import SESSIONS_DIR
+    relabel, resolution, sequence, stage_of, unknown_dep, valid_value, value_form, Record, Tracker)
 
 # ---------------------------------------------------------------- check
 
@@ -216,7 +213,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         *(line for kind in KINDS for line in files(kind)),
         "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
         "a note no other write holds. The hooks add the branch's new commits (`"
-        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `pause` the handoff's first words.",
+        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `step --pause` the handoff's first words.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
@@ -254,12 +251,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
     ]
 
 
-# Schema 1 kept an issue's priority in its issue tracker's words; these become levels, as P0-P4 do. Any other word
-# goes, and the issue is read again.
-PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
-                  "low": 3, "lowest": 4, "trivial": 4}
-
-
+# Schema 1 kept an issue's priority in its issue tracker's words; these become levels (PRIORITY_WORDS), as P0-P4 do.
+# Any other word goes, and the issue is read again.
 def priority_from_word(word: str) -> int | None:
     word = word.strip().lower()
     if re.fullmatch(r"p\d", word) and int(word[1]) in SCALES["priority"].levels:
@@ -378,32 +371,12 @@ def upgrade(tr: Tracker) -> None:
         append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
 
 
-def stop_browser_viewer() -> None:
-    """End the browser viewer of an older plugin version: it runs on while any tracked session does, and its sync writes
-    the older format. Only one that answers as that viewer: the pid in its file may be another process's by now."""
-    import urllib.request  # only here: a hook loads this module, and rarely gets this far
-    file = HOME / ".viewer.json"
-    try:
-        info = read_json(file)
-        with urllib.request.urlopen(f"http://127.0.0.1:{int(info['port'])}/ping", timeout=1) as answer:
-            if answer.read().decode().startswith("work-tracker"):
-                os.kill(int(info["pid"]), signal.SIGTERM)
-    except Exception:  # none runs, or none that can be stopped: this stops no command and no hook
-        pass
-    file.unlink(missing_ok=True)
-
-
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format: each command and hook starts here, so no other
     code reads an older format. A tracker that fails stays as it is, says why, and tries again next time."""
-    old = [tr for tr in (*all_trackers(), *archived_trackers()) if tr.schema < SCHEMA]
-    if old:
-        stop_browser_viewer()
-    for tr in old:
-        try:
-            upgrade(tr)
-        except (Exception, SystemExit) as exc:  # one bad tracker stops no command and no hook
-            print(f"work-tracker: could not migrate {tr.slug} to format {SCHEMA}: {exc}", file=sys.stderr)
-    if old:  # what an older session file format left behind
-        for f in SESSIONS_DIR.glob("*.edits"):
-            f.unlink(missing_ok=True)
+    for tr in (*all_trackers(), *archived_trackers()):
+        if tr.schema < SCHEMA:
+            try:
+                upgrade(tr)
+            except (Exception, SystemExit) as exc:  # one bad tracker stops no command and no hook
+                print(f"work-tracker: could not migrate {tr.slug} to format {SCHEMA}: {exc}", file=sys.stderr)

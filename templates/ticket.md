@@ -2,7 +2,7 @@
 id:
 title:
 group:
-status: todo
+status:
 branch:
 depends_on: []
 next:
@@ -17,7 +17,7 @@ updated_at:
 
 ## Carry forward
 
-<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max 5 bullets once done. -->
+<!-- Only facts a LATER ticket must know: a contract, a shared module, a rule that changed. Max {{carry_max}} bullets once done. -->
 
 ## Links
 

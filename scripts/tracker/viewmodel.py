@@ -13,10 +13,10 @@ from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, 
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .github import pr_url
-from .views import dep_facts, duration, span_lines, stage_counts
+from .views import dep_facts, duration, span_lines
 from .watcher import in_use, watcher_of
 
-VIEW_SCHEMA = 5  # a UI that reads another number asks to be updated
+VIEW_SCHEMA = 6  # a UI that reads another number asks to be updated
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -28,13 +28,6 @@ def ticket_state(tr: Tracker, t: Record) -> str:
 def dep_tone(d: Dep) -> str:
     """The status colour of a dependency: met, under way, or in the way."""
     return "done" if d.done else "stack" if d.rec and d.rec.in_flight else "blocked"
-
-
-def filter_counts(tr: Tracker) -> list[tuple[str, int]]:
-    """The sequence's filters in the order they show, each with how many tickets it keeps."""
-    counts = stage_counts(tr)
-    blocked = sum(1 for t in tr.tickets if not t.closed and tr.blockers(t))
-    return [("blocked", blocked), *((s, counts[s]) for s in STAGES if s in counts)]
 
 
 def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -283,7 +276,7 @@ def view_model(tr: Tracker) -> dict:
         "check": {"errors": errors, "warnings": warnings},
         "actions": [action_view(tr, a) for a in tr.open_actions()],
         "now": now_view(tr),
-        "scales": list(SCALES), "filters": filter_counts(tr), "spans": span_lines(tr),
+        "scales": list(SCALES), "stages": list(STAGES), "spans": span_lines(tr),
         "tickets": [ticket_view(tr, t, i, seq.step[t.id], links[t.id])
                     for i, t in enumerate(graph_order(tr, seq.waits, seq.step))],
         "decisions": [decision_view(tr, d) for d in tr.open_decisions()],

@@ -2,7 +2,8 @@
 // knows of its host is the object they pass in, and all it knows of the tracker is the `tracker` CLI's JSON:
 //
 //   run(command, args, machine)  a program's { code, stdout, stderr }
-//   changed(cx, dir, slug)  resolves when what shows of the tracker `slug` may have changed
+//   changed(cx, dir, slug, atLeast)  resolves when what shows of the tracker `slug` may have changed, and at the
+//                       latest after `atLeast` ms: with the changed paths under `dir`, or null when it cannot tell which
 //   colors()            the colours by Herdr's names (theme() in herdr.d.ts)
 //   font()              the font for numbers and ids
 //   sized(el, set)      tells set(width, cx) this view's width, and gives the element back. Herdr measures the element;
@@ -19,13 +20,16 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, bodyParts, filterRows, findCli, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
-  plainInline, rowStatus, rowWord, sortRows, syncDue } from "./model.js";
+import { agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
+  plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
-const SCHEMA = 5; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 6; // viewmodel.VIEW_SCHEMA
 const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
+// The longest the view waits for a change: a session that ends with no hook, and another machine's tracker, change
+// nothing a host watches. `tracker await-change` ends by itself at about this long too (CHANGE_WAIT_S).
+const AT_LEAST_MS = 15000;
 
 export function trackerView(host) {
   return class TrackerView extends View {
@@ -60,6 +64,7 @@ export function trackerView(host) {
       this.followed = undefined; // that agent and its tracker: when they change, a tracker picked by hand gives way
       this.following = false;
       this.dir = host.dir?.();
+      this.sessionFiles = new Set(); // the session files last seen on this tracker: one that leaves it changes the view
       cx.spawn(async cx => {
         await this.listTrackers(cx);
         await this.followAgent(cx, true);
@@ -74,10 +79,11 @@ export function trackerView(host) {
           });
         }
         for (;;) {
-          await host.changed(cx, this.dir, this.slug);
+          const changes = changesOf(await host.changed(cx, this.dir, this.slug, AT_LEAST_MS), this.dir, this.slug);
           await cx.sleep(150); // a command writes several files
-          await this.followAgent(cx, true); // `tracker start` links a session with the focus still on it
-          await this.load(cx);
+          // `tracker start` links a session with the focus still on it. Each step runs a CLI: only for what changed.
+          if (!changes || changes.sessions.length) await this.followAgent(cx, true);
+          if (!changes || changes.tracker || await this.sessionsChanged(changes.sessions)) await this.load(cx);
         }
       });
       if (host.nextOpen) {
@@ -112,6 +118,19 @@ export function trackerView(host) {
         this.error = String(e.message ?? e);
       }
       cx.notify();
+    }
+
+    // Whether any of these changed session files is, or was, on this view's tracker.
+    async sessionsChanged(paths) {
+      if (!host.readText) return paths.length > 0;
+      let changed = false;
+      for (const path of paths) {
+        const on = sessionOn(await host.readText(path, null).catch(() => null), this.slug); // gone: the session ended
+        if (on || this.sessionFiles.has(path)) changed = true;
+        if (on) this.sessionFiles.add(path);
+        else this.sessionFiles.delete(path);
+      }
+      return changed;
     }
 
     async attachedTo(agent) {
@@ -214,6 +233,7 @@ export function trackerView(host) {
       this.view = null;
       this.shown = "";
       this.syncTried = 0;
+      this.sessionFiles.clear();
       cx.notify();
       cx.spawn(async cx => { await this.load(cx); });
     }
@@ -463,13 +483,14 @@ export function trackerView(host) {
 
     sequence(view, width, t) {
       // A filter whose button has gone with its last ticket no longer counts, or nothing could turn it off.
-      const rows = sortRows(filterRows(view.tickets, view.filters.map(([key]) => key).filter(key => this.filters.has(key))), this.sort);
+      const filters = filterCounts(view.tickets, view.stages);
+      const rows = sortRows(filterRows(view.tickets, filters.map(([key]) => key).filter(key => this.filters.has(key))), this.sort);
       const layout = graphLayout(rows, SIZE.row, this.focusId);
       const cols = this.columns(view, rows, width, t);
       const graphW = Math.max(layout.width, 28);
       return v_flex().w_full()
         .children(view.spans.map(line => div().text_size(TEXT.tiny).text_color(t.dim).child(line)))
-        .child(h_flex().flex_wrap().pb(SPACE.md).gap(SPACE.xs).children(view.filters.map(([key, count]) =>
+        .child(h_flex().flex_wrap().pb(SPACE.md).gap(SPACE.xs).children(filters.map(([key, count]) =>
           toggle(`f-${key}`, `${key} ${count}`, t, cx => { if (!this.filters.delete(key)) this.filters.add(key); cx.notify(); }, this.filters.has(key)))))
         .child(h_flex().h(SIZE.control).px(SPACE.lg).gap(SPACE.lg).items_center().text_size(TEXT.tiny).border_b(1).border_color(rule(t))
           .child(this.heading("step", "Step", t, el => el.w(graphW).flex_none()))

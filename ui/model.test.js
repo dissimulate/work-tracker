@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { GRAPH, MEANINGS, agentStatus, bodyParts, concerns, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
-  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sortRows, syncDue } from "./model.js";
+import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
   id, step, links, state: "ready", stage: "todo", closed: false, gate: { state: "ready" }, order: step, sort: {}, ...extra,
@@ -17,6 +17,13 @@ test("filters: none is all, and several keep what any of them keeps", () => {
   assert.deepEqual(ids("blocked", "done"), ["T-1", "T-4", "T-5"]);
   assert.deepEqual(ids("done"), ["T-1"]);
   assert.deepEqual(ids("done", "in-review"), ["T-1", "T-2"]);
+});
+
+test("filter counts: what each filter keeps, blocked always, a stage only while a ticket is at it", () => {
+  const rows = [row("T-1", 1, [], { stage: "done", closed: true, gate: { state: "" } }), row("T-2", 2, [], { gate: { state: "stack" } }),
+    row("T-3", 3)];
+  assert.deepEqual(filterCounts(rows, ["todo", "in-progress", "done"]), [["blocked", 1], ["todo", 2], ["done", 1]]);
+  assert.deepEqual(filterCounts([], ["todo"]), [["blocked", 0]]);
 });
 
 test("numbers compare as numbers", () => {
@@ -78,18 +85,24 @@ test("a sync is due at once when the data is old, then only once per round, also
   assert.equal(syncDue(null, 0, 5000), false);
 });
 
-test("a change in the folder concerns the view: this tracker, the sessions, the watches, or what cannot be told", () => {
-  const says = (...paths) => concerns(paths, "/t", "mine");
-  assert.equal(says("/t/mine/tickets/T-1.md"), true);
-  assert.equal(says("/t/.sessions/abc.json"), true);
-  assert.equal(says("/t/.watch/mine.json"), true);
-  assert.equal(says("/t"), true); // a batch that holds the root means everything
-  assert.equal(says("/private/t/other/log.md"), true); // a linked folder's path says nothing
-  assert.equal(says("/t/other/log.md"), false);
-  assert.equal(says("/t/mine2/log.md"), false);
-  assert.equal(says("/t/.lock", "/t/.backups/x/README.md"), false);
-  assert.equal(says("/t/other/log.md", "/t/mine/log.md"), true);
-  assert.equal(concerns(["/t/.sessions/a.json"], "/t", null), true);
+test("a change in the folder: this tracker's files or watch, the session files, or what cannot be told", () => {
+  const says = (...paths) => changesOf(paths, "/t", "mine");
+  assert.deepEqual(says("/t/mine/tickets/T-1.md"), { tracker: true, sessions: [] });
+  assert.deepEqual(says("/t/.watch/mine.json"), { tracker: true, sessions: [] });
+  assert.deepEqual(says("/t/.watch/other.json", "/t/other/log.md", "/t/mine2/log.md"), { tracker: false, sessions: [] });
+  assert.deepEqual(says("/t/.lock", "/t/.backups/x/README.md"), { tracker: false, sessions: [] });
+  assert.deepEqual(says("/t/.sessions/abc.json", "/t/.sessions/.abc.json.1.x.tmp"), { tracker: false, sessions: ["/t/.sessions/abc.json"] });
+  assert.equal(says("/t"), null); // a batch that holds the root means everything
+  assert.equal(says("/private/t/other/log.md"), null); // a linked folder's path says nothing
+  assert.equal(changesOf(null, "/t", "mine"), null); // a timer
+  assert.deepEqual(changesOf(["/t/.sessions/a.json"], "/t", null), { tracker: false, sessions: ["/t/.sessions/a.json"] });
+});
+
+test("a session file names its tracker", () => {
+  assert.equal(sessionOn('{"tracker": "mine", "cwd": "/x"}', "mine"), true);
+  assert.equal(sessionOn('{"tracker": "other"}', "mine"), false);
+  assert.equal(sessionOn("not json", "mine"), false);
+  assert.equal(sessionOn(null, "mine"), false);
 });
 
 test("a heading's second click turns the sort, and Step has no direction", () => {

@@ -1,7 +1,7 @@
 ---
 id:
 title:
-status: open
+status:
 refs: []
 owner:
 created_at:
