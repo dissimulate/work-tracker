@@ -30,7 +30,7 @@ from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lin
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
 from .watcher import REFUSED, agent_session, await_change, granted, session_name, Watcher
-from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker, Refused
+from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import GPUI_SHELL_VERSION, NO_HOST, install_window, open_ui
 
@@ -1013,12 +1013,10 @@ def cmd_watch(args):
 
 
 def move_folder(move, failed: str) -> None:
-    """Archive, unarchive or delete a tracker: print what `move` did. A refusal exits REFUSED; a failure says `failed`
-    and why."""
+    """Archive, unarchive or delete a tracker: print what `move` did. A refusal exits REFUSED inside `move`; a failure
+    says `failed` and why."""
     try:
         print(move())
-    except Refused as exc:
-        die(str(exc), REFUSED)
     except OSError as exc:
         die(f"{failed}: {exc}")
 

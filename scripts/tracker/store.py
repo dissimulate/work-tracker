@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -128,7 +127,6 @@ class Busy(Exception):
 
 
 LOCK_TIMEOUT_S = 20
-_thread_lock = threading.Lock()  # the file lock is per process; this orders threads within one
 
 if WINDOWS:  # a lock on the file's first byte
     import msvcrt
@@ -157,30 +155,31 @@ else:
     def unlock(f) -> None:
         fcntl.flock(f, fcntl.LOCK_UN)
 
-_held = threading.local()  # lock depth per thread: reentrant within a thread, exclusive across threads
+_depth = 0  # how deep this process holds the lock: a second flock on another open file would block against the first
 
 
 @contextmanager
 def locked():
     """One writer at a time, across every session and worktree: held around each read-modify-write of tracker
-    files. Reentrant within a thread; other threads of this process wait."""
-    if getattr(_held, "depth", 0):
-        _held.depth += 1
+    files. Reentrant."""
+    global _depth
+    if _depth:
+        _depth += 1
         try:
             yield
         finally:
-            _held.depth -= 1
+            _depth -= 1
         return
     HOME.mkdir(parents=True, exist_ok=True)
-    with _thread_lock, open(HOME / ".lock", "a") as f:
+    with open(HOME / ".lock", "a") as f:
         deadline = time.monotonic() + LOCK_TIMEOUT_S
         while not try_lock(f):
             if time.monotonic() > deadline:
                 raise Busy(f"another tracker command has held the lock for {LOCK_TIMEOUT_S}s; try again")
             time.sleep(0.05)
-        _held.depth = 1
+        _depth = 1
         try:
             yield
         finally:
-            _held.depth = 0
+            _depth = 0
             unlock(f)

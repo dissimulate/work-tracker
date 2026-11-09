@@ -4,19 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .system import to_trash
+from .system import die, to_trash
 from .store import HOME, locked
 from .model import ARCHIVE, Tracker
 from .session import SESSIONS_DIR, drop_session, live_sessions, load_session, Live
-from .watcher import state_path, watcher_of
+from .watcher import REFUSED, state_path, watcher_of
 
 # ---------------------------------------------------------------- archive and delete
 # A tracker leaves HOME only while no agent session or watch is on it: it would go from under them mid-work. Anyone
 # may archive one, as `tracker unarchive` brings it back; only the user deletes one, to the system's trash.
-
-
-class Refused(Exception):
-    """A tracker that cannot be archived, brought back or deleted now; the message says why and what to do."""
 
 
 def in_use(tr: Tracker, own_sid: str = "", live: dict[str, list[Live]] | None = None) -> str:
@@ -36,8 +32,8 @@ def in_use(tr: Tracker, own_sid: str = "", live: dict[str, list[Live]] | None = 
 def refuse_in_use(tr: Tracker, verb: str, own_sid: str = "") -> None:
     using = in_use(tr, own_sid)
     if using:
-        raise Refused(f"{tr.slug} is in use by {using}: end them (or run `tracker start --clear` in each session), "
-                      f"then {verb} it")
+        die(f"{tr.slug} is in use by {using}: end them (or run `tracker start --clear` in each session), "
+            f"then {verb} it", REFUSED)
 
 
 def forget(slug: str) -> None:
@@ -51,7 +47,7 @@ def forget(slug: str) -> None:
 def move_tracker(tr: Tracker, dest: Path) -> None:
     """Move the folder; a linked folder's link moves, made absolute, so it still names its folder."""
     if dest.exists() or dest.is_symlink():
-        raise Refused(f"{dest} exists: delete or rename it, then try again")
+        die(f"{dest} exists: delete or rename it, then try again", REFUSED)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if tr.root.is_symlink():
         dest.symlink_to(tr.root.resolve(), target_is_directory=True)
@@ -61,10 +57,10 @@ def move_tracker(tr: Tracker, dest: Path) -> None:
 
 
 def archive_tracker(tr: Tracker, own_sid: str = "") -> str:
-    """Move the tracker to ARCHIVE: out of every list, lookup and hook. Raises Refused while it is in use."""
+    """Move the tracker to ARCHIVE: out of every list, lookup and hook. Exits REFUSED while it is in use."""
     with locked():
         if tr.archived:
-            raise Refused(f"{tr.slug} is archived already")
+            die(f"{tr.slug} is archived already", REFUSED)
         refuse_in_use(tr, "archive", own_sid)
         move_tracker(tr, ARCHIVE / tr.slug)
         forget(tr.slug)
@@ -74,14 +70,14 @@ def archive_tracker(tr: Tracker, own_sid: str = "") -> str:
 def unarchive_tracker(tr: Tracker) -> str:
     with locked():
         if not tr.archived:
-            raise Refused(f"{tr.slug} is not archived")
+            die(f"{tr.slug} is not archived", REFUSED)
         move_tracker(tr, HOME / tr.slug)
     return f"brought {tr.slug} back from the archive"
 
 
 def delete_tracker(tr: Tracker) -> str:
     """Delete the tracker, archived or not: its folder to the system's trash (of a linked folder, only the link goes).
-    Raises Refused while it is in use, and OSError when the trash refuses the folder, which then stays. Says what it
+    Exits REFUSED while it is in use; raises OSError when the trash refuses the folder, which then stays. Says what it
     did."""
     with locked():
         refuse_in_use(tr, "delete")
