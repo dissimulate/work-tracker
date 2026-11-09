@@ -116,7 +116,7 @@ def hook_session_start(data: dict) -> None:
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
     record_cli()
-    changes = sync(m.tracker, force=False)
+    changes = sync(m.tracker)
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
     remember(sid, m, cwd)
@@ -194,7 +194,7 @@ def hook_post_bash(data: dict) -> None:
     out = []
     if pr:
         adopt_branch(m, cwd)
-        changes = sync(m.tracker, force=True)
+        changes = sync(m.tracker, every=0)
         if changes and not subagent:
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
     if commit:

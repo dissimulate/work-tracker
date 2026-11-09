@@ -811,7 +811,7 @@ def cmd_check(args):
 
 def cmd_sync(args):
     tr = resolve(args)
-    changes = sync(tr, force=False, min_interval=LIVE_SYNC_S) if args.live else sync(tr, force=True)
+    changes = sync(tr, every=LIVE_SYNC_S if args.live else 0)
     print("\n".join(changes) if changes else "no changes")
 
 
@@ -1123,7 +1123,7 @@ def cmd_refresh(args):
         state = tr.raw_state()
         state.setdefault("issues", {})["requested"] = time.time()
         tr.save_state(state)
-    print("\n".join(sync(tr, force=False, min_interval=REFRESH_SYNC_S)) or "no changes")
+    print("\n".join(sync(tr, every=REFRESH_SYNC_S)) or "no changes")
 
 
 def cmd_evidence(args):

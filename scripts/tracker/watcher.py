@@ -339,7 +339,7 @@ class Watcher:
         self.synced = now
         budget(GH_BUDGET_S)
         try:
-            changes = sync(tr, force=False, min_interval=LIVE_SYNC_S)
+            changes = sync(tr, every=LIVE_SYNC_S)
         except (Exception, SystemExit) as exc:  # a busy lock, a bad file: try again next time
             changes = [f"{SKIPPED}: {exc}"]
         finally:

@@ -182,13 +182,14 @@ def skipped(changes: list[str]) -> bool:
     return bool(changes) and changes[0].startswith(SKIPPED)
 
 
-def sync(tr: Tracker, force: bool, min_interval: float = SYNC_MIN_INTERVAL_S) -> list[str]:
-    """Pull PR state from GitHub: each ticket's PRs into its frontmatter (`prs`, `merged_at`), the
-    open PRs' PR_FACTS into .state.json `prs` (`model.apply_prs`). Returns change lines. GitHub is asked first, in
-    one call (`gh_prs`) and without the lock; the tracker is then reloaded and written under it."""
+def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S) -> list[str]:
+    """Pull PR state from GitHub, unless the last sync is under `every` seconds old (0: always): each ticket's PRs into
+    its frontmatter (`prs`, `merged_at`), the open PRs' PR_FACTS into .state.json `prs` (`model.apply_prs`). Returns
+    change lines. GitHub is asked first, in one call (`gh_prs`) and without the lock; the tracker is then reloaded and
+    written under it."""
     if not tr.repos:
         return []
-    if not force and time.time() - tr.state().get("last_sync", 0) < min_interval:
+    if every and time.time() - tr.state().get("last_sync", 0) < every:
         return []
     # Only started work has a PR: a todo ticket on a branch that holds a PR is not in it yet. A merged ticket is final,
     # but for a PR newly linked to it: a later PR from a branch the ticket shared is other tickets' work.
