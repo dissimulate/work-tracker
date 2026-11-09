@@ -858,16 +858,15 @@ def issue_urls(t: Record) -> str:
     return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
 
 
-def cmd_synced(args):
-    m, cwd = on_branch(args)
-    print("; ".join(mark_up_to_date(m, cwd)))
-
-
 def cmd_step(args):
     """A step in one command: the ticket's next action (or its close), Carry forward and a log line; then, when the
     ticket is on the current branch, the branch's commits that the hooks have not logged are logged, its mark moves
     and its handoff goes (with --pause, one is left). A step on another branch's ticket leaves this branch's mark and
-    handoff to its own tickets."""
+    handoff to its own tickets. With no arguments, only the branch: its commits, its mark and its handoff."""
+    if not (args.id or args.message or args.next or args.done or args.pause or args.carry):
+        m, cwd = on_branch(args)
+        print("; ".join(mark_up_to_date(m, cwd)))
+        return
     for kind, text in [("log", args.message), ("next", args.next), ("summary", args.done),
                        *(("carry", c) for c in args.carry or [])]:
         fit(kind, text)

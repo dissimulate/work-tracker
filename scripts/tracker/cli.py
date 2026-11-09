@@ -23,7 +23,7 @@ from .ui import GPUI_SHELL_VERSION
 from .commands import (cmd_act, cmd_actions, cmd_add, cmd_archive, cmd_attach, cmd_attached, cmd_await_change,
     cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence, cmd_find, cmd_here,
     cmd_history, cmd_index, cmd_init, cmd_install_window, cmd_issue, cmd_list, cmd_log, cmd_new, cmd_open, cmd_put,
-    cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start, cmd_step, cmd_sync, cmd_synced,
+    cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start, cmd_step, cmd_sync,
     cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
 
 # ---------------------------------------------------------------- main
@@ -204,12 +204,11 @@ def build_parser():
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
     sp.add_argument("--written", action="store_true", help="every update `tracker issue` last listed for the "
                                                            "ticket is written to its issue; a change since stays due")
-    add("synced", cmd_synced, "log the current branch's commits that the hooks have not logged (they log each "
-                              "commit on a branch with a ticket under way), mark it at HEAD, and clear its handoff")
     sp = add("step", cmd_step, "record a step in one command: the next action (or --done), Carry forward and a log "
-                               "line; then, for a ticket on this branch, log the commits the hooks have not and clear "
-                               "its handoff, as `synced` does (with --pause, leave one for the next session, which "
-                               "its brief shows first)")
+                               "line; then, for a ticket on this branch, log the commits the hooks have not (they log "
+                               "each commit on a branch with a ticket under way), mark it at HEAD and clear its "
+                               "handoff (with --pause, leave one for the next session, which its brief shows first). "
+                               "With no arguments, only that last part, for the current branch")
     sp.add_argument("id", nargs="?", help="the ticket; left out: this session's one ticket")
     sp.add_argument("message", nargs="?", help="what changed and why that the commit subjects do not say (the hooks "
                                               "log those): a log line")
@@ -272,7 +271,7 @@ def build_parser():
     return p, sub
 
 
-WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "synced", "step", "use",
+WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "step", "use",
                   "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 

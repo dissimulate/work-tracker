@@ -649,7 +649,7 @@ class Flow(unittest.TestCase):
 
         run(*t, "set", "T-2", "status=in-progress", cwd=work)
         self.assertEqual(model.tracker_at(s).lookup("T-2").get("branch"), "feat/T-2-api")
-        run(*t, "synced", cwd=work)  # the first mark is the baseline: only later commits are new work
+        run(*t, "step", cwd=work)  # the first mark is the baseline: only later commits are new work
         commit(work, "api routes")
         step = run(*t, "step", "T-2", "Routes built", "--next", "Auth middleware", "--carry", "GET /users is public",
                    cwd=work)
@@ -970,8 +970,8 @@ class Writes(unittest.TestCase):
             self.assertIn("only one text", run("step", "P-1", "-", "--next", "-", cwd=work, code=2))
             commit(work, "more")
             folder = store.HOME / s
-            self.assertIn("feat/P-1 up to date", run("synced", cwd=folder))  # from the tracker folder: the project's
-        self.assertIn("run it from the project", run(*t, "synced", cwd=folder, code=2))  # no session to ask
+            self.assertIn("feat/P-1 up to date", run("step", cwd=folder))  # from the tracker folder: the project's
+        self.assertIn("run it from the project", run(*t, "step", cwd=folder, code=2))  # no session to ask
         tr = model.tracker_at(s)
         self.assertEqual(tr.lookup("P-1").get("next"), "Ship it")
         self.assertIn('[P-1] Fixed the "quoted" `thing`', (tr.root / "log.md").read_text())
@@ -1432,7 +1432,7 @@ class Hooks(unittest.TestCase):
         self.assertIsNone(hook("prompt", sid, work, prompt="4"))
         self.assertIn("G-1 in-progress; 1 uncommitted file(s)", said(hook("prompt", sid, work, prompt="5")))
         self.assertIn("The tracker may lag the work: 1 uncommitted file(s)", run("--tracker", s, "here", cwd=work))
-        run("--tracker", s, "synced", cwd=work)
+        run("--tracker", s, "step", cwd=work)
         self.assertNotIn("may lag", run("--tracker", s, "here", cwd=work))
 
     def test_one_ticket_of_a_busy_branch(self):

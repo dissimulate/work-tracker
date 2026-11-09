@@ -42,6 +42,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker migrate`: migration is automatic.
 - The settings `TRACKER_VIEWER_SYNC` and `TRACKER_WATCH_SYNC`: use `TRACKER_SYNC`.
 - `tracker pause "<text>"`: use `tracker step <id> "..." --pause "<text>"`.
+- `tracker synced`: run `tracker step` with no arguments, which now does the same.
 
 ## 0.31.1 - 2026-10-12
 

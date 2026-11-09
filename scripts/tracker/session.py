@@ -391,7 +391,7 @@ def handoff_where(h: dict) -> str:
 
 
 def handoff_line(h: dict, label: str = "handoff") -> str:
-    return f"{label} ({handoff_where(h)}; the next `step` or `synced` clears it): {h.get('text', '')}"
+    return f"{label} ({handoff_where(h)}; the next `step` clears it): {h.get('text', '')}"
 
 
 def ago(ts: float) -> str:
@@ -463,7 +463,7 @@ def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:
 
 def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
                     refs: list[str] | None = None) -> list[str]:
-    """`synced` and `step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
+    """`step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
     the mark to HEAD, and set or clear the handoff. Returns what it did."""
     tr, done = m.tracker, []
     mark = get_mark(tr, cwd, m.branch)

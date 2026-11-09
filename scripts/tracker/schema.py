@@ -193,12 +193,12 @@ OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`",
 STATE_KEEP_DAYS = 14
 STATE_RULES = {
     "mark": "the HEAD up to which a branch's commits are logged. The hooks log them against its tickets under way "
-            "(after a commit, at a turn's end, at session start) and move it; `step` and `synced` log any "
+            "(after a commit, at a turn's end, at session start) and move it; `step` logs any "
             "they missed. With no ticket under way, commits wait unlogged for the ticket the session starts. It also "
             "counts the commits logged since the branch's tickets' `next` last changed. Uncommitted files written "
             "after it are work the tracker may not show yet",
     "handoff": "`step --pause \"<text>\"` leaves the state of unfinished work on a branch for the next "
-               "session; the brief shows it first; the next `step` or `synced` clears it",
+               "session; the brief shows it first; the next `step` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
     "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
