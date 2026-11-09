@@ -2260,11 +2260,12 @@ class Watch(unittest.TestCase):
         for i in (1, 2, 3):
             run(*self.t, "new", f"W-{i}", "--title", f"Part {i}", *(["--depends", "W-1"] if i == 3 else []))
         self.root = store.HOME / self.s
+        at_once = mock.patch.object(watcher, "SETTLE_S", 0)  # a batch at once, not after the change settles
+        at_once.start()
+        self.addCleanup(at_once.stop)
 
     def watcher(self, sid: str = "") -> watcher.Watcher:
-        w = watcher.Watcher(model.Tracker(self.root), sid)
-        w.settle = 0  # a batch at once, not after the change settles
-        return w
+        return watcher.Watcher(model.Tracker(self.root), sid)
 
     def test_reports_what_changed(self):
         w, now = self.watcher(), time.time()
@@ -2548,7 +2549,7 @@ class Actions(unittest.TestCase):
     def test_an_action_is_added_noted_and_closed(self):
         out = run(*self.t, "act", "--refs", "T-1", "Ask Sam whether the billing API keeps v1", "--note", "T-1 needs it")
         self.assertIn("A-01 added", out)
-        a = self.tr().action("a-1")
+        a = self.tr().lookup("a-1")
         self.assertEqual((a.get("status"), a.list("refs")), ("open", ["T-1"]))
         self.assertIn("- T-1 needs it\n", a.body)
         run(*self.t, "act", "A-1", "--note", "Reply: v1 stays", "--note", "Reply: until March")
@@ -2581,7 +2582,7 @@ class Actions(unittest.TestCase):
         run(*self.t, "act", "Ask Sam whether the billing API keeps v1", "--refs", "T-1")
         run(*self.t, "act", "Get read access to the prod DB")
         run(*self.t, "act", "A-02", "--done")
-        self.tr().action("A-01").save({"created_at": "2026-01-01T09:00:00Z"})
+        self.tr().lookup("A-01").save({"created_at": "2026-01-01T09:00:00Z"})
         index = run(*self.t, "index")
         self.assertIn("Open actions for the user", index)
         self.assertRegex(index, r"A-01 \(open \d+ days: ask the user whether it is done\): Ask Sam .* \(T-1\)")
@@ -2617,15 +2618,15 @@ class Actions(unittest.TestCase):
                                "A-03": {"text": "2 Jan 2020", "late": "overdue"},
                                "A-01": None})  # A-01 has none, and shows no age instead
         run(*self.t, "act", "A-03", "--due", "none")
-        self.assertEqual(self.tr().action("A-03").get("due"), "")
-        self.tr().action("A-02").save({"due": "soon"})
+        self.assertEqual(self.tr().lookup("A-03").get("due"), "")
+        self.tr().lookup("A-02").save({"due": "soon"})
         self.assertIn("A-02: due 'soon' is not a day (YYYY-MM-DD)", contract.check(self.tr())[0])
 
     def test_an_action_gets_a_new_title(self):
         run(*self.t, "act", "Reply to Sam on SC-1", "--refs", "T-1")
         run(*self.t, "act", "Reply to Kim", "--title", "Reply to Kim on SC-2", code=2)
         self.assertIn("A-01 updated", run(*self.t, "act", "A-01", "--title", "Reply to Sam on SC-1 (login copy)"))
-        self.assertEqual(self.tr().action("A-01").get("title"), "Reply to Sam on SC-1 (login copy)")
+        self.assertEqual(self.tr().lookup("A-01").get("title"), "Reply to Sam on SC-1 (login copy)")
         self.assertIn("A-01 renamed: Reply to Sam on SC-1 → Reply to Sam on SC-1 (login copy)",
                       (self.root / "log.md").read_text())
 
@@ -2634,7 +2635,7 @@ class Actions(unittest.TestCase):
         self.assertIn("A-01 added, blocks T-1",
                       run(*self.t, "act", "Get read access to the prod DB", "--blocks", "T-1", "--refs", "T-1,T-2"))
         tr = self.tr()
-        t1, a = tr.lookup("T-1"), tr.action("A-01")
+        t1, a = tr.lookup("T-1"), tr.lookup("A-01")
         self.assertEqual((t1.list("depends_on"), a.list("refs")), (["A-01"], ["T-2"]))  # a block is not a ref
         self.assertEqual([d.ident for d in tr.blockers(t1)], ["A-01"])
         self.assertIn("waits on: A-01 open: Get read access to the prod DB", run(*self.t, "context", "T-1"))
@@ -2644,13 +2645,13 @@ class Actions(unittest.TestCase):
         self.assertEqual(moves.whose_move(self.tr(), self.tr().lookup("T-1")).text(), "you: A-01 open")
 
         run(*self.t, "wait", "T-2", "on", "a-1")  # the wait takes the ticket out of refs
-        self.assertEqual((self.tr().lookup("T-2").list("depends_on"), self.tr().action("A-01").list("refs")),
+        self.assertEqual((self.tr().lookup("T-2").list("depends_on"), self.tr().lookup("A-01").list("refs")),
                          (["A-01"], []))
-        self.tr().action("A-01").save({"refs": ["T-2"]})
+        self.tr().lookup("A-01").save({"refs": ["T-2"]})
         self.assertIn("A-01: refs T-2, which also waits on it — drop it from refs (`tracker act A-01 --unref T-2`)",
                       "\n".join(contract.check(self.tr())[1]))
         run(*self.t, "act", "A-01", "--unref", "T-2")
-        self.assertEqual(self.tr().action("A-01").list("refs"), [])
+        self.assertEqual(self.tr().lookup("A-01").list("refs"), [])
         self.assertIn("no action A-09", run(*self.t, "wait", "T-1", "on", "A-09", code=2))
         run(*self.t, "act", "A-01", "--done", "--blocks", "T-2", code=2)
         self.assertIn("nothing blocks T-1, T-2 now", run(*self.t, "act", "A-01", "--done"))
@@ -2766,7 +2767,7 @@ class Values(unittest.TestCase):
         run(*self.t, "act", "A-01", "--done")
         self.assertRegex(self.tr().lookup("D-01").get("closed_at"), utc)
         self.assertTrue(self.tr().lookup("D-01").closed)
-        self.assertRegex(self.tr().action("A-01").get("closed_at"), utc)
+        self.assertRegex(self.tr().lookup("A-01").get("closed_at"), utc)
         self.tr().lookup("T-1").save({"started_at": "last week"})
         self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(contract.check(self.tr())[0]))
         self.tr().lookup("T-1").save({"started_at": None, "status": "in-progress", "closed_at": "2026-09-01T00:00:00Z"})
@@ -2800,7 +2801,7 @@ class Values(unittest.TestCase):
         run(*self.t, "act", "Ask Sam about v1")
         run(*self.t, "act", "A-01", "--done")
         tr = self.tr()
-        for r in (tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")):
+        for r in (tr.lookup("T-1"), tr.lookup("D-01"), tr.lookup("A-01")):
             old = {new: name for name, new in schema.RENAMED_KEYS[r.kind].items()}
             keys = {k: v for k, v in r.meta.items() if k in old or k == "closed_at"}
             r.save({**{k: None for k in keys}, **{old[k]: "2026-09-01" for k in keys if k in old}})
@@ -2809,7 +2810,7 @@ class Values(unittest.TestCase):
         readme.save({"created_at": None, "created": "2026-08-01", "schema": 2})
         run("list")
         tr = self.tr()
-        t, d, a = tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")
+        t, d, a = tr.lookup("T-1"), tr.lookup("D-01"), tr.lookup("A-01")
         self.assertEqual((t.get("updated_at"), t.get("issue_created_at")), ("2026-09-01", "2026-08-30T10:00:00Z"))
         self.assertEqual((d.get("created_at"), d.get("closed_at")), ("2026-09-01", schema.today()))  # Resolution's day
         self.assertEqual(a.get("closed_at"), "2026-09-01")  # an action's `updated` was when it closed

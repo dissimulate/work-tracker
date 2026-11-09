@@ -1131,7 +1131,7 @@ def cmd_evidence(args):
     shows in its folder. The agent reads evidence itself, and has no reason to put a window on the user's screen."""
     if agent_session()[0]:
         die("only the user opens evidence this way: read the file instead", REFUSED)
-    slug = getattr(args, "tracker", None)
+    slug = args.tracker
     tr = (slug and any_tracker(slug)) or resolve(args)  # an archived tracker still opens in a UI
     folder = (tr.root / EVIDENCE_DIR).resolve()
     path = folder.joinpath(*Path(args.file).parts).resolve()

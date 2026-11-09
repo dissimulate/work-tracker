@@ -259,7 +259,6 @@ class Watcher:
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal"):
         self.root, self.slug, self.sid, self.who = tr.root, tr.slug, sid, who
-        self.settle = SETTLE_S
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -317,7 +316,7 @@ class Watcher:
         sig = files_hash(tr.data_files())
         if sig != self.sig and not self.changed:
             self.changed = now
-        if force or self.changed and now - self.changed >= self.settle:
+        if force or self.changed and now - self.changed >= SETTLE_S:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
             logged, self.st["offset"] = read_log(tr, self.st.get("offset", 0))

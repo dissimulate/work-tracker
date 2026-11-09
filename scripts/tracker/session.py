@@ -267,7 +267,7 @@ def trackers_for_repo(cwd: str | Path) -> list[Tracker]:
 def find_tracker(args) -> Tracker | None:
     """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`tracker start`) or the repo (the
     only tracker that lists it) points to."""
-    slug = getattr(args, "tracker", None) or os.environ.get("TRACKER")
+    slug = args.tracker or os.environ.get("TRACKER")
     if slug:
         return tracker_at(slug) or die(no_tracker(slug))
     cwd = Path.cwd()
@@ -312,7 +312,7 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
     rec = tr and (tr.lookup(ident) or tr.by_pr_or_branch(ident))
     if rec:
         return tr, rec
-    if getattr(args, "tracker", None) or os.environ.get("TRACKER"):
+    if args.tracker or os.environ.get("TRACKER"):
         tr.find(ident)  # dies: no such record in the named tracker
     for group in (trackers_for_repo(work_dir()), all_trackers()):
         hits = [(t, r) for t in group if (r := t.lookup(ident)) and r.kind == "ticket"]

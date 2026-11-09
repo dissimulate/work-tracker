@@ -302,9 +302,6 @@ class Tracker:
         """The record of this kind with this id; case and leading zeros do not count."""
         return next((r for r in self.records_of(kind) if norm_id(r.id) == norm_id(ident)), None)
 
-    def action(self, ident: str) -> Record | None:
-        return self.one_of("action", ident)
-
     def next_id(self, kind: str) -> str:
         """A new numbered id of the kind (`D-07`): one past its highest, and the id of no other record."""
         prefix = KINDS[kind].prefix
