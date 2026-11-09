@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
-  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
+  naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue , isLoading } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
   id, step, links, state: "ready", stage: "todo", closed: false, gate: { state: "ready" }, order: step, sort: {}, ...extra,
@@ -256,4 +256,13 @@ test("the view colours a status only through the table", () => {
   const view = readFileSync(new URL("./view.js", import.meta.url), "utf8");
   assert.deepEqual(view.match(/\bt\.(blocked|working|done|ansi2)\b/g), null);
   assert.equal(view.match(/\bt\.accent\b/g)?.length, 1); // a PR's link, which is no status
+});
+
+test("the view loads until it has a page or a reason it has none", () => {
+  const first = { view: null, error: "", starting: true, slug: null };
+  assert.equal(isLoading(first), true); // the first look: which tracker is not known yet
+  assert.equal(isLoading({ ...first, starting: false }), false); // no tracker to show
+  assert.equal(isLoading({ ...first, starting: false, slug: "a" }), true); // a tracker is being read
+  assert.equal(isLoading({ ...first, starting: false, slug: "a", error: "gone" }), false); // it could not be read
+  assert.equal(isLoading({ ...first, view: {}, slug: "a" }), false);
 });

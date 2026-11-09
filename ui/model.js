@@ -206,6 +206,10 @@ export function followNotice(agent, slug) {
   return agent.machine ? `The focused agent on ${agent.machine} has no tracker.` : "The focused agent has no tracker.";
 }
 
+// Whether the view waits for what it will show: it has no page, nothing went wrong, and its first look still runs or
+// a tracker is being read.
+export const isLoading = ({ view, error, starting, slug }) => !view && !error && (starting || Boolean(slug));
+
 // The width of a column of ids in a monospace font, in px: room for the longest, within limits so that a short list
 // keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size: only a whisker over, so the gap after the longest id is the row's gap.
 export function idWidth(ids, size) {

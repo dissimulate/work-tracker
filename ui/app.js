@@ -1,6 +1,6 @@
 // The tracker in its own window, for `gpui-shell run --dir ui`: no Herdr needed.
 import os from "os";
-import { TitleBar } from "gpui-component";
+import { Spinner, TitleBar } from "gpui-component";
 import { parseOpen } from "./model.js";
 import { trackerView } from "./view.js";
 
@@ -25,6 +25,7 @@ export default trackerView({
   },
   colors: () => COLORS,
   font: () => FONTS[os.platform()] ?? "DejaVu Sans Mono",
+  spinner: color => Spinner.new().icon("loader_circle").size("medium").color(color), // public gpui-shell has no spin()
   sized: (el, set) => { set(window.viewport_size().width); return el; },
   start: () => parseOpen(process.env.TRACKER_OPEN),
   cli,

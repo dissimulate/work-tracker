@@ -6,6 +6,7 @@
 //                       latest after `atLeast` ms: with the changed paths under `dir`, or null when it cannot tell which
 //   colors()            the colours by Herdr's names (theme() in herdr.d.ts)
 //   font()              the font for numbers and ids
+//   spinner(color)      a turning ring in this colour, for while the view loads
 //   sized(el, set)      tells set(width, cx) this view's width, and gives the element back. Herdr measures the element;
 //                       public gpui-shell has no element measure, so its window is the view
 //   start()             what `tracker open` asked for: { slug, id }, each or null
@@ -20,7 +21,7 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
+import { agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
@@ -51,6 +52,7 @@ export function trackerView(host) {
       this.refused = ""; // why a change the user asked for did not happen: stays until they act again
       this.busy = false;
       this.view = null;
+      this.starting = true; // the first look at which tracker to show still runs
       this.trackers = null;
       this.slug = start.slug;
       this.machine = null; // where this tracker lives: another machine when the agent followed runs there
@@ -69,6 +71,8 @@ export function trackerView(host) {
         await this.listTrackers(cx);
         await this.followAgent(cx, true);
         await this.load(cx);
+        this.starting = false;
+        cx.notify();
         if (this.selected) this.select(this.selected, cx); // what `tracker open` asked for takes Escape too
         if (this.follows) {
           cx.spawn(async cx => {
@@ -174,6 +178,13 @@ export function trackerView(host) {
       }
     }
 
+    // Whether the focus has left the agent the view last asked about: what the view says of that agent is out of date.
+    focusMoved() {
+      if (!this.follows) return false;
+      const agent = host.agentAt();
+      return agent !== undefined && (agent?.address ?? null) !== this.agentAddress;
+    }
+
     async load(cx) {
       if (!this.slug) return;
       await this.read(cx);
@@ -223,6 +234,7 @@ export function trackerView(host) {
       if (machine !== this.machine) this.trackers = null; // the menu's list is the machine's
       this.machine = machine;
       this.slug = slug;
+      this.error = ""; // the last tracker's
       this.notice = "";
       this.refused = "";
       this.menu = false;
@@ -697,14 +709,17 @@ export function trackerView(host) {
         root.child(div().id("refused").flex_none().px(SPACE.page).py(SPACE.sm).text_size(TEXT.small).text_color(tone("error", t)).cursor_pointer()
           .on_click((_e, cx) => { this.refused = ""; cx.notify(); }).child(this.refused));
       }
+      // Before the notice: a panel that shows again still holds its answer for the agent focused before.
+      const starting = this.starting || (!view && this.focusMoved());
+      if (isLoading({ view, error: this.error, starting, slug: this.slug })) return root.child(h_flex().w_full().flex_1().min_h(0).items_center().justify_center().child(host.spinner(t.muted)));
       if (this.notice && !view) {
         return root.child(v_flex().p(SPACE.page).gap(SPACE.xs).text_size(TEXT.small).text_color(t.dim)
           .child(div().child(this.notice))
           .child(div().child("Pick one with the switcher above, or ask the agent to start one.")));
       }
       if (!view) {
-        return root.child(div().p(SPACE.page).text_size(TEXT.small).text_color(t.dim)
-          .child(this.slug ? "Loading…" : "No tracker open: pick one above, or ask the agent to make one."));
+        return root.when(!this.slug, el => el.child(div().p(SPACE.page).text_size(TEXT.small).text_color(t.dim)
+          .child("No tracker open: pick one above, or ask the agent to make one.")));
       }
       return root.child(this.page(view, this.width, t))
         .when(Boolean(this.selected), el => {

@@ -16,6 +16,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The view's Refresh (`tracker refresh`): pull PR state now, and have the next session prompt read the issue fields again.
 - In a Herdr layout, the view follows the focused agent: it shows that agent's tracker, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes. An agent on another Herdr machine shows its tracker from that machine.
 - Issue updates: with `tracker set tracker issue_updates=on`, the agent writes a linked ticket's status, its summary once it closes, and each decision settled on it to the ticket's issue with its own tool for the issue tracker, then records it with `tracker issue <id> --written`. `tracker issue` lists what is due, and the agent is asked right after the change, in the brief, and at your next message when a new update is due. Off by default.
+- The view shows a spinner in its centre while it loads, when it opens and when it changes to another tracker or agent, in place of an empty page or a short "No tracker open".
 
 ### Changed
 

@@ -1,4 +1,5 @@
 // The tracker as a Herdr mod. All of Herdr that the UI uses is here.
+import { svg } from "gpui-kit";
 import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
 import { trackerView } from "./view.js";
 
@@ -14,7 +15,10 @@ export default trackerView({
   },
   colors: () => theme(),
   font: () => settings()?.font_family || "JetBrains Mono",
-  sized: (el, set) => el.on_size_change((size, cx) => set(size.width, cx)),
+  spinner: color => svg("mods/workspace-chrome/spinner.svg").size(16).flex_none().text_color(color).spin(900), // the agents' ring
+  sized: (el, set) => el
+    .when(Boolean(props()?.layoutFramed), el => el.bg("#00000000"))
+    .on_size_change((size, cx) => set(size.width, cx)),
   start: () => ({ slug: props()?.slug ?? null, id: props()?.open ?? null }),
   // `tracker open` on a tab that runs: `work-tracker.open:<slug>/<id>`.
   nextOpen: async () => {
@@ -23,7 +27,7 @@ export default trackerView({
       if (command.startsWith("open:")) return command.slice(5);
     }
   },
-  framed: () => !props()?.slug, // a layout's block; the tab of `tracker open` asks for a tracker, and has a pane's frame
+  framed: () => !props()?.slug && !props()?.layoutFramed, // a pane or framed layout block already has a frame
   agentAt: () => {
     const focus = focused();
     const address = focus?.shown ?? focus?.terminal ?? focus?.agent;
