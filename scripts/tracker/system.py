@@ -1,5 +1,5 @@
 """The operating system: this Python and the CLI as processes, whether a process runs, and the system's trash. The
-tracker's own files are model's."""
+tracker's own files are store's and model's."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from pathlib import Path
 
 WINDOWS = os.name == "nt"
 PACKAGE = Path(__file__).resolve().parent
+ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
+BIN = ROOT / "bin" / "tracker"  # the CLI
 # This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode
 PYTHON = [sys.executable, "-I", "-X", "utf8"]
 # The CLI on this Python, as bin/tracker starts it: Windows starts no shell script as a process
@@ -22,6 +24,11 @@ CLI_ENV = ("TRACKER_HOME", "TRACKER_SYNC", "CLAUDE_CONFIG_DIR", "HOME", "USERPRO
 # What makes a process outlive this one
 DETACH = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
           else {"start_new_session": True})
+
+
+def die(msg: str, code: int = 2) -> None:
+    print(f"tracker: {msg}", file=sys.stderr)
+    sys.exit(code)
 
 
 def env_int(name: str, default: int, least: int = 0) -> int:

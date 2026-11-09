@@ -33,8 +33,8 @@ for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAU
             "CODEX_THREAD_ID", "PLUGIN_ROOT"):
     os.environ.pop(var, None)
 sys.path.insert(0, str(ROOT / "scripts"))
-from tracker import (cli, contract, git, github, hooks, markdown, model, session, system, ui, viewmodel, views,  # noqa: E402
-                     watcher)
+from tracker import (cli, commands, contract, git, github, hooks, lifecycle, markdown, model, moves,  # noqa: E402
+                     schema, session, store, system, ui, viewmodel, views, watcher)
 
 
 def slug() -> str:
@@ -129,7 +129,7 @@ class Format(unittest.TestCase):
         run(*t, "new", "T-2", "--title", "Two", "--depends", "T-1")
         run(*t, "set", "T-1", f"next=Do {bad}", "status=in-progress")
         run(*t, "add", "T-1", "link", f"Issue: [SC-1 {bad}](https://issues.example/1)")
-        model.Tracker(model.HOME / s).lookup("T-1").save({"priority": bad})  # check refuses it; the UI shows it
+        model.Tracker(store.HOME / s).lookup("T-1").save({"priority": bad})  # check refuses it; the UI shows it
         got = data(s)
         row = next(x for x in got["tickets"] if x["id"] == "T-1")
         self.assertEqual((got["title"], row["title"], row["group"], row["levels"]["priority"]),
@@ -194,7 +194,7 @@ class Format(unittest.TestCase):
             run(*t, "sync")  # the user's or the agent's: always
             self.assertEqual(len(calls), 2)
         with mock.patch.object(github, "gh", lambda *args, **kw: None):  # gh failed: nothing is written
-            tr = model.Tracker(model.HOME / s)
+            tr = model.Tracker(store.HOME / s)
             tr.save_state({**tr.raw_state(), "last_sync": 0})
             self.assertIn("sync skipped", run(*t, "sync", "--live"))
 
@@ -206,9 +206,9 @@ def ticket(root: Path, ident: str, **meta) -> None:
 
 class MachineState(unittest.TestCase):
     def setUp(self):
-        self.root = model.HOME / slug()
+        self.root = store.HOME / slug()
         (self.root / "tickets").mkdir(parents=True)
-        (self.root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: [a/x, b/y]\n---\n")
+        (self.root / "README.md").write_text(f"---\ntitle: T\nschema: {schema.SCHEMA}\nrepo: [a/x, b/y]\n---\n")
         ticket(self.root, "T-1", status="done", branch="f1", repo="a/x")
         ticket(self.root, "T-2", status="in-progress", branch="f2", repo="a/x")
         ticket(self.root, "T-3", status="in-progress", branch="f3", repo="a/x", prs=["5:open"])
@@ -299,13 +299,13 @@ class Moves(unittest.TestCase):
         def synced():
             with mock.patch.object(github, "gh", answers(prs)):
                 run(*t, "sync")
-            tr = model.Tracker(model.HOME / s)
+            tr = model.Tracker(store.HOME / s)
             return tr, tr.lookup("S-1")
 
         tr, one = synced()
         self.assertEqual((one.prs, one.stage), ({"11": "open", "12": "open"}, "in-review"))
         self.assertEqual(set(tr.prs), {"a/x#11", "a/x#12"})
-        self.assertEqual(model.whose_move(tr, one).text(), "you: #11 checks failing")  # the most urgent, and yours
+        self.assertEqual(moves.whose_move(tr, one).text(), "you: #11 checks failing")  # the most urgent, and yours
         self.assertIs(tr.by_pr_or_branch("#11"), one)
         self.assertEqual(views.pr_label(one), "#11 open, #12 open")
         self.assertEqual([x["number"] for x in viewmodel.pr_views(tr, one)], ["11", "12"])
@@ -314,7 +314,7 @@ class Moves(unittest.TestCase):
         prs[1] = pull(12, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")
         tr, one = synced()
         self.assertEqual((one.prs, one.stage), ({"11": "open", "12": "merged"}, "in-review"))
-        self.assertEqual(model.whose_move(tr, one).text(), "you: checks failing")  # one open PR: nothing to tell apart
+        self.assertEqual(moves.whose_move(tr, one).text(), "you: checks failing")  # one open PR: nothing to tell apart
         self.assertIn("PR #12 merged", (tr.root / "log.md").read_text())
 
         # A PR from another branch, by a link; a closed one drops out while another is not closed
@@ -349,7 +349,7 @@ class Moves(unittest.TestCase):
         def waits():
             with mock.patch.object(github, "gh", answers(prs)):
                 run(*t, "sync")
-            tr = model.Tracker(model.HOME / s)
+            tr = model.Tracker(store.HOME / s)
             return [d.ident for d in tr.deps(tr.lookup("S-1"))]
 
         self.assertEqual(waits(), ["S-0"])
@@ -364,14 +364,14 @@ class Moves(unittest.TestCase):
         run(*t, "set", "S-0", "status=in-progress")
         run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
         run(*t, "set", "S-1", "status=in-progress")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         tr.lookup("S-1").save({"pr": "11", "pr_state": "open", "base": "main2"})
         tr.save_state({**tr.raw_state(), "prs": {"a/x#11": {"review": "changes", "changes": ["rev"]}},
                        "reviews": {"old": 1}, "synced": {"a/x:f9": "abc123"}})
         tr.readme.save({"schema": 3})
 
         run(*t, "list")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         one = tr.lookup("S-1")
         self.assertEqual((one.list("prs"), one.prs, one.stage), (["11:open"], {"11": "open"}, "in-review"))
         self.assertFalse(one.meta.keys() & {"pr", "pr_state", "base"})
@@ -382,7 +382,7 @@ class Moves(unittest.TestCase):
         merged = pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")
         with mock.patch.object(github, "gh", answers([merged])):
             run(*t, "sync")
-        one = model.Tracker(model.HOME / s).lookup("S-1")
+        one = model.Tracker(store.HOME / s).lookup("S-1")
         self.assertEqual((one.prs, one.stage, one.get("merged_at")), ({"11": "merged"}, "done", "2026-10-01T06:30:00Z"))
 
     def test_a_closed_pr_that_a_link_names_stays_and_a_merged_ticket_is_read_no_more(self):
@@ -396,7 +396,7 @@ class Moves(unittest.TestCase):
                                                             merged_at="2026-10-01T06:30:00Z")]
         with mock.patch.object(github, "gh", answers(prs)):
             run(*t, "sync")
-        one = model.Tracker(model.HOME / s).lookup("S-1")
+        one = model.Tracker(store.HOME / s).lookup("S-1")
         self.assertEqual((one.prs, one.stage), ({"1": "closed", "2": "merged"}, "done"))
         with mock.patch.object(github, "gh") as gh:
             run(*t, "sync")
@@ -411,10 +411,10 @@ class Moves(unittest.TestCase):
         closed = [pull(1, branch="f1", state="CLOSED"), pull(2, branch="f1", state="CLOSED")]
         with mock.patch.object(github, "gh", answers(closed)):
             run(*t, "sync")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         one = tr.lookup("S-1")
         self.assertEqual((one.prs, one.pr_state), ({"1": "closed", "2": "closed"}, "closed"))
-        self.assertEqual(model.whose_move(tr, one).text(), "you: PR closed")
+        self.assertEqual(moves.whose_move(tr, one).text(), "you: PR closed")
 
     def test_review_facts(self):
         bot = {"author": {"__typename": "Bot", "login": "lint"}, "state": "CHANGES_REQUESTED",
@@ -425,15 +425,15 @@ class Moves(unittest.TestCase):
                                          threads=2, pushed="2026-09-03T00:00:00Z"))
         self.assertEqual(facts, {"review": "changes", "changes": ["rev"], "reviewed": 1788307200,
                                  "pushed": 1788393600, "checks": "passing", "threads": 2})  # a clean merge: none
-        self.assertLessEqual(set(facts), set(model.PR_FACTS))  # the tracker's words, not GitHub's
+        self.assertLessEqual(set(facts), set(moves.PR_FACTS))  # the tracker's words, not GitHub's
         merge = github.review_facts(pull(2, merge="DIRTY", checks="ERROR", decision="REVIEW_REQUIRED"))
         self.assertEqual((merge["merge"], merge["checks"], merge.get("review")), ("conflict", "failing", None))
 
     def test_rules(self):
-        root = model.HOME / slug()
+        root = store.HOME / slug()
         for d in ("tickets", "decisions"):
             (root / d).mkdir(parents=True)
-        (root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: a/x\n---\n")
+        (root / "README.md").write_text(f"---\ntitle: T\nschema: {schema.SCHEMA}\nrepo: a/x\n---\n")
         (root / "decisions" / "D-01.md").write_text("---\nid: D-01\ntitle: Store\nstatus: open\nowner: Ryan\n---\n")
         facts = {1: {"merge": "conflict", "checks": "failing"}, 2: {"checks": "failing"},
                  3: {"review": "changes", "changes": ["rev"], "reviewed": 100, "pushed": 50, "threads": 2},
@@ -452,8 +452,8 @@ class Moves(unittest.TestCase):
         ticket(root, "M-14", status="in-progress")
         ticket(root, "M-15")
         tr = model.Tracker(root)
-        moves = {t.id: (m.text() if (m := model.whose_move(tr, t)) else None) for t in tr.tickets}
-        self.assertEqual(moves, {
+        whose = {t.id: (m.text() if (m := moves.whose_move(tr, t)) else None) for t in tr.tickets}
+        self.assertEqual(whose, {
             "M-1": "you: merge conflicts", "M-2": "you: checks failing",
             "M-3": "you: changes requested by rev (2 unresolved review threads)",
             "M-4": "you: pushed since rev requested changes; review not re-requested",
@@ -483,7 +483,7 @@ class Moves(unittest.TestCase):
             self.assertEqual(len(fake.queries), 1)
             self.assertIn('b0: pullRequests(headRefName: "f1"', fake.queries[0])
             self.assertNotIn('"f3"', fake.queries[0])
-            tr = model.Tracker(model.HOME / s)
+            tr = model.Tracker(store.HOME / s)
             self.assertEqual([list(t.prs) for t in tr.tickets], [["11"], ["12"], []])  # not the fork's PR from f1
             self.assertEqual(set(tr.prs), {"a/x#11", "a/x#12"})
             index = run(*t, "index")
@@ -499,13 +499,13 @@ class Moves(unittest.TestCase):
             self.assertEqual(len(fake.queries), 2)
             self.assertIn("p11: pullRequest(number: 11)", fake.queries[1])  # a known PR: by its number
             self.assertIn('pullRequests(headRefName: "f1"', fake.queries[1])  # and its branch, for another PR from it
-            tr = model.Tracker(model.HOME / s)
+            tr = model.Tracker(store.HOME / s)
             self.assertEqual(session.changes_since(tr, seen, session.watch(tr, [tr.lookup("S-1")])),
                              ["S-1 move now: you — approved by rev; ready to merge"])
         # A repo GitHub does not answer for: nothing is written
         with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False: {"data": {"r0": None}}):
             self.assertEqual(run(*t, "sync"), "sync skipped: gh failed or timed out for a/x\n")
-        self.assertEqual(set(model.Tracker(model.HOME / s).prs), {"a/x#11", "a/x#12"})
+        self.assertEqual(set(model.Tracker(store.HOME / s).prs), {"a/x#11", "a/x#12"})
         # Of the session's own tickets, only a move that becomes its own and a ticket's end are news.
         own = {"S-1": {"role": "own", "stage": "in-progress", "move": "rev — review requested", "mine": False}}
         for now, said_ in (({"stage": "in-review"}, []), ({"stage": "done"}, ["S-1 is now done"]),
@@ -518,11 +518,11 @@ class Moves(unittest.TestCase):
         s, work = slug(), repo("feat/R-1")
         run("init", s, "--title", "Fresh", "--owner", "me", "--repo", "a/x")
         run("--tracker", s, "new", "R-1", "--title", "Fresh work", "--branch", "feat/R-1")
-        m = session.match_cwd(work, tracker=model.Tracker(model.HOME / s))
+        m = session.match_cwd(work, tracker=model.Tracker(store.HOME / s))
         with mock.patch.object(hooks, "spawn") as spawn:
             hooks.refresh(m, {}, {})  # no ticket under way: nothing to learn
             run("--tracker", s, "set", "R-1", "status=in-progress", cwd=work)
-            m = session.match_cwd(work, tracker=model.Tracker(model.HOME / s))
+            m = session.match_cwd(work, tracker=model.Tracker(store.HOME / s))
             fields = {}
             hooks.refresh(m, {}, fields)
             hooks.refresh(m, fields, {})  # asked already: not again within the interval
@@ -534,10 +534,10 @@ class Starts(unittest.TestCase):
 
     def test_start_points(self):
         s = slug()
-        root = model.HOME / s
+        root = store.HOME / s
         for d in ("tickets", "decisions"):
             (root / d).mkdir(parents=True)
-        (root / "README.md").write_text(f"---\ntitle: T\nschema: {model.SCHEMA}\nrepo: a/x\n---\n")
+        (root / "README.md").write_text(f"---\ntitle: T\nschema: {schema.SCHEMA}\nrepo: a/x\n---\n")
         (root / "decisions" / "D-01.md").write_text("---\nid: D-01\ntitle: Store\nstatus: open\n---\n")
         ticket(root, "A-1", status="in-progress", branch="fa")
         ticket(root, "A-2", status="in-progress", branch="fb", prs=["7:open"])  # on A-1's branch
@@ -625,7 +625,7 @@ class LiveSessions(unittest.TestCase):
         running("agent-d", os.getpid(), tracker="other")
         running("agent-e", os.getpid(), tracker="")  # no `tracker start`
         (claude / f"bad{n}.json").write_text("{")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual([x.name for x in session.live_sessions(s)], ["agent-a", "agent-b"])
 
         now = viewmodel.now_view(tr)
@@ -671,7 +671,7 @@ class Flow(unittest.TestCase):
         self.assertNotIn("Decided D-01", context)  # the log line says it again: left out
 
         run(*t, "set", "T-2", "status=in-progress", cwd=work)
-        self.assertEqual(model.Tracker(model.HOME / s).lookup("T-2").get("branch"), "feat/T-2-api")
+        self.assertEqual(model.Tracker(store.HOME / s).lookup("T-2").get("branch"), "feat/T-2-api")
         run(*t, "synced", cwd=work)  # the first mark is the baseline: only later commits are new work
         commit(work, "api routes")
         step = run(*t, "step", "T-2", "Routes built", "--next", "Auth middleware", "--carry", "GET /users is public",
@@ -687,10 +687,10 @@ class Flow(unittest.TestCase):
         self.assertEqual(here.count("T-1: Table users(id) is the contract"), 1)  # what T-2 builds on, once
         self.assertIn("D-01: Auth scheme → ", here)
         self.assertNotIn("✗", run(*t, "check"))
-        log = (model.HOME / s / "log.md").read_text()
+        log = (store.HOME / s / "log.md").read_text()
         self.assertIn("[T-2] Routes built", log)
         self.assertIn("[T-2] Commits on feat/T-2-api:", log)
-        t2 = model.Tracker(model.HOME / s).lookup("T-2")
+        t2 = model.Tracker(store.HOME / s).lookup("T-2")
         self.assertEqual((t2.get("next"), t2.carry_forward), ("Auth middleware", ["GET /users is public"]))
         self.assertEqual(data(s)["records"]["T-2"]["line"], {"label": "next", "text": "Auth middleware"})
         self.assertIn("Decided D-01 Auth scheme (me): JWT", log)
@@ -712,7 +712,7 @@ class FileSafety(unittest.TestCase):
         outside, path = self.root / "outside", self.root / "record.md"
         outside.write_text("keep me")
         self.link(path.with_suffix(".md.tmp"), outside)
-        model.atomic_write(path, "new ünicode\n")
+        store.atomic_write(path, "new ünicode\n")
         self.assertEqual(path.read_text(), "new ünicode\n")
         self.assertEqual(outside.read_text(), "keep me")
         self.assertTrue(path.with_suffix(".md.tmp").is_symlink())
@@ -727,7 +727,7 @@ class FileSafety(unittest.TestCase):
                 path = self.root / f"record-{exists}.md"
                 self.link(path, outside)
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-                    model.atomic_write(path, "replacement")
+                    store.atomic_write(path, "replacement")
                 self.assertTrue(path.is_symlink())
                 self.assertEqual(outside.read_text() if exists else outside.exists(), "keep me" if exists else False)
 
@@ -741,7 +741,7 @@ class FileSafety(unittest.TestCase):
                     if mode is not None:
                         path.write_text("old")
                         path.chmod(mode)
-                    with model.atomic_file(path) as f:
+                    with store.atomic_file(path) as f:
                         self.assertEqual(stat.S_IMODE(os.fstat(f.fileno()).st_mode), 0o600)
                         f.write(b"new")
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode if mode is not None else 0o600)
@@ -753,7 +753,7 @@ class FileSafety(unittest.TestCase):
         outside, path = self.root / "outside", self.root / "record.md"
         outside.write_text("keep me")
         path.write_text("old")
-        with model.atomic_file(path) as f:
+        with store.atomic_file(path) as f:
             path.unlink()
             self.link(path, outside)
             f.write(b"replacement")
@@ -765,21 +765,21 @@ class FileSafety(unittest.TestCase):
         path = self.root / "record.md"
         path.write_text("keep me")
         with self.assertRaises(ValueError):
-            with model.atomic_file(path) as f:
+            with store.atomic_file(path) as f:
                 f.write(b"partial")
                 raise ValueError("interrupted write")
         self.assertEqual(path.read_text(), "keep me")
         self.assertEqual(list(self.root.glob("*.tmp")), [])
-        with mock.patch.object(model.os, "replace", side_effect=PermissionError), \
-                mock.patch.object(model.time, "sleep"), self.assertRaises(PermissionError):
-            model.atomic_write(path, "replacement")
+        with mock.patch.object(store.os, "replace", side_effect=PermissionError), \
+                mock.patch.object(store.time, "sleep"), self.assertRaises(PermissionError):
+            store.atomic_write(path, "replacement")
         self.assertEqual(path.read_text(), "keep me")
         self.assertEqual(list(self.root.glob("*.tmp")), [])
 
     def test_attach_rejects_symlinks_even_with_force(self):
         s = slug()
         run("init", s, "--title", "Safe attachments", "--owner", "me")
-        folder = model.HOME / s / "evidence"
+        folder = store.HOME / s / "evidence"
         folder.mkdir()
         source = self.root / "source.txt"
         source.write_text("new")
@@ -799,7 +799,7 @@ class FileSafety(unittest.TestCase):
     def test_attach_rejects_an_evidence_directory_outside_the_tracker(self):
         s = slug()
         run("init", s, "--title", "Safe directory", "--owner", "me")
-        self.link(model.HOME / s / "evidence", self.root)
+        self.link(store.HOME / s / "evidence", self.root)
         source = self.root / "source.txt"
         source.write_text("keep me")
         out = run("--tracker", s, "attach", str(source), "--name", "copy.txt", code=2)
@@ -812,7 +812,7 @@ class FileSafety(unittest.TestCase):
         source = self.root / "source.bin"
         source.write_bytes(b"\x00\xff\r\n")
         run("--tracker", s, "attach", str(source))
-        dest = model.HOME / s / "evidence/source.bin"
+        dest = store.HOME / s / "evidence/source.bin"
         self.assertEqual(dest.read_bytes(), source.read_bytes())
         if not system.WINDOWS:
             self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o600)
@@ -835,9 +835,9 @@ class Writes(unittest.TestCase):
         self.assertIn("over 400: one concrete action", run(*t, "set", "L-1", f"next={long}", code=2))
         self.assertIn("the log line is", run(*t, "log", long, code=2))
         self.assertIn("over 600", run(*t, "add", "L-1", "carry", long * 2, code=2))
-        log = (model.HOME / s / "log.md").read_text()
+        log = (store.HOME / s / "log.md").read_text()
         run(*t, "step", "L-1", "Short", "--carry", "fits", "--carry", long * 2, code=2)
-        self.assertEqual((model.HOME / s / "log.md").read_text(), log)  # refused before any write
+        self.assertEqual((store.HOME / s / "log.md").read_text(), log)  # refused before any write
 
         for i in range(6):
             run(*t, "add", "L-1", "carry", f"Fact {i}")
@@ -850,8 +850,8 @@ class Writes(unittest.TestCase):
         run(*t, "new", "L-2", "--title", "Two")
         run(*t, "log", "about two", "--ref", "l-2")
         self.assertEqual(run(*t, "history", "--ref", "L-2").splitlines(),
-                         [f"{model.today()} [L-2] Added L-2 Two", f"{model.today()} [L-2] about two"])
-        self.assertEqual(run(*t, "history", "--last", "1"), f"{model.today()} [L-2] about two\n")
+                         [f"{schema.today()} [L-2] Added L-2 Two", f"{schema.today()} [L-2] about two"])
+        self.assertEqual(run(*t, "history", "--last", "1"), f"{schema.today()} [L-2] about two\n")
         self.assertEqual(run(*t, "history", "--since", "2999-01-01"), "no log lines\n")
         self.assertIn("about two", run(*t, "show", "log"))  # the log is no record, but `show log` reads it
 
@@ -871,7 +871,7 @@ class Writes(unittest.TestCase):
         self.assertIn("`--append -`", run(*t, "attach", str(made), code=2))
         with piped("## Run 2\n\nIt `works`."):
             self.assertIn("`check`: no new problems", run(*t, "attach", "run.md", "--ref", "L-1", "--append", "-"))
-        self.assertEqual((model.HOME / s / "evidence/run.md").read_text(), "run 1\n\n## Run 2\n\nIt `works`.\n")
+        self.assertEqual((store.HOME / s / "evidence/run.md").read_text(), "run 1\n\n## Run 2\n\nIt `works`.\n")
         self.assertEqual(run(*t, "show", "L-1", "--section", "links").count("evidence/run.md"), 1)
         self.assertIn("no file evidence/../README.md", run(*t, "attach", "../README.md", "--append", "x", code=2))
 
@@ -904,12 +904,12 @@ class Writes(unittest.TestCase):
         self.assertIn("1 settled", listed)
         self.assertIn("Settled one", run(*t, "decisions", "--all"))
 
-        path = model.HOME / s / "tickets" / "L-1.md"
+        path = store.HOME / s / "tickets" / "L-1.md"
         path.write_text(path.read_text().replace("## Carry forward", "## carry Forward"))  # a hand edit
         run(*t, "add", "L-1", "carry", "Fact 6")
         self.assertEqual(path.read_text().lower().count("## carry forward"), 1)  # found, not added again
 
-        for name in ("..", f"../{Path(model.HOME).name}/{s}"):  # a slug is a folder in TRACKER_HOME, not a path
+        for name in ("..", f"../{Path(store.HOME).name}/{s}"):  # a slug is a folder in TRACKER_HOME, not a path
             self.assertIn("no tracker", run("--tracker", name, "index", code=2))
             self.assertIn("no tracker", run("context", f"{name}:L-1", code=2))
 
@@ -917,9 +917,9 @@ class Writes(unittest.TestCase):
         s = slug()
         run("init", s, "--title", "Limits", "--owner", "me")
         run("--tracker", s, "new", "M-1", "--title", "One")
-        readme, ticket = (model.HOME / s / "README.md").read_text(), (model.HOME / s / "tickets/M-1.md").read_text()
-        self.assertIn(f"~{model.README_TOKEN_BUDGET:,} tokens", readme)
-        self.assertIn(f"Max {model.MERGED_CARRY_FORWARD_MAX} bullets", ticket)
+        readme, ticket = (store.HOME / s / "README.md").read_text(), (store.HOME / s / "tickets/M-1.md").read_text()
+        self.assertIn(f"~{schema.README_TOKEN_BUDGET:,} tokens", readme)
+        self.assertIn(f"Max {schema.MERGED_CARRY_FORWARD_MAX} bullets", ticket)
         self.assertNotIn("{{", readme + ticket)
         self.assertIn("\nstatus: todo\n", ticket)
 
@@ -944,9 +944,9 @@ class Writes(unittest.TestCase):
         run(*t, "new", "G-1", "--title", "One")
         run(*t, "new", "G-2", "--title", "Two", "--depends", "G-1")
         run(*t, "new", "G-3", "--title", "Three", "--depends", "G-2")
-        log = model.HOME / s / "log.md"
+        log = store.HOME / s / "log.md"
         def last() -> str:
-            return log.read_text().splitlines()[-1].removeprefix(f"- {model.today()} ")
+            return log.read_text().splitlines()[-1].removeprefix(f"- {schema.today()} ")
 
         # A todo ticket's Plan is a draft: it changes freely, and a change with no reason logs nothing.
         before = log.read_text()
@@ -972,8 +972,8 @@ class Writes(unittest.TestCase):
         self.assertIn("nothing blocks G-2 now", out)
         self.assertEqual(last(), "[G-1] G-1 done: shipped")
         run(*t, "step", "G-2", "Tested by hand", "--done", "two delivered")
-        self.assertEqual(log.read_text().splitlines()[-2:], [f"- {model.today()} [G-2] Tested by hand",
-                                                             f"- {model.today()} [G-2] G-2 done: two delivered"])
+        self.assertEqual(log.read_text().splitlines()[-2:], [f"- {schema.today()} [G-2] Tested by hand",
+                                                             f"- {schema.today()} [G-2] G-2 done: two delivered"])
         run(*t, "set", "tracker", "status=active")
         self.assertEqual(last(), "The work is active now")
     def test_put_stdin_and_the_tracker_folder(self):
@@ -1003,10 +1003,10 @@ class Writes(unittest.TestCase):
                 run("set", "next=-", cwd=work)
             self.assertIn("only one text", run("step", "P-1", "-", "--next", "-", cwd=work, code=2))
             commit(work, "more")
-            folder = model.HOME / s
+            folder = store.HOME / s
             self.assertIn("feat/P-1 up to date", run("synced", cwd=folder))  # from the tracker folder: the project's
         self.assertIn("run it from the project", run(*t, "synced", cwd=folder, code=2))  # no session to ask
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual(tr.lookup("P-1").get("next"), "Ship it")
         self.assertIn('[P-1] Fixed the "quoted" `thing`', (tr.root / "log.md").read_text())
 
@@ -1015,43 +1015,43 @@ class Upgrade(unittest.TestCase):
     def old_tracker(self, schema=3) -> tuple[str, tuple[str, str]]:
         s = slug()
         run("init", s, "--title", "Old", "--owner", "me")
-        model.Tracker(model.HOME / s).readme.save({"schema": schema})
+        model.Tracker(store.HOME / s).readme.save({"schema": schema})
         return s, ("--tracker", s)
 
     def test_any_command_migrates_every_older_tracker_once(self):
-        s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
-        other, _ = self.old_tracker(schema=model.SCHEMA)
+        s, t = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
+        other, _ = self.old_tracker(schema=schema.SCHEMA)
         model.tracker_at(s).readme.save({"schema": 3})
         model.tracker_at(other).readme.save({"schema": 2})
-        (model.HOME / s / ".DS_Store").write_text("finder")
+        (store.HOME / s / ".DS_Store").write_text("finder")
         run("list")
         for name in (s, other):
-            self.assertEqual(model.tracker_at(name).schema, model.SCHEMA)
-        backup = model.HOME / ".backups" / f"{s}-schema3"
+            self.assertEqual(model.tracker_at(name).schema, schema.SCHEMA)
+        backup = store.HOME / ".backups" / f"{s}-schema3"
         self.assertEqual(re.search(r"schema: (\d+)", (backup / "README.md").read_text())[1], "3")
         self.assertFalse((backup / ".DS_Store").exists())  # the backup holds the tracker, not Finder's files
-        log = (model.HOME / s / "log.md").read_text()
-        self.assertEqual(log.count(f"Migrated to tracker format {model.SCHEMA}"), 1)
+        log = (store.HOME / s / "log.md").read_text()
+        self.assertEqual(log.count(f"Migrated to tracker format {schema.SCHEMA}"), 1)
         self.assertIn(str(backup), log)
         run("list")
-        self.assertEqual((model.HOME / s / "log.md").read_text(), log)  # once
+        self.assertEqual((store.HOME / s / "log.md").read_text(), log)  # once
         self.assertNotIn("older", run(*t, "check"))
 
     def test_a_hook_migrates_too_and_an_archived_tracker(self):
-        s, _ = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
-        archived, _ = self.old_tracker(schema=model.SCHEMA)
+        s, _ = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
+        archived, _ = self.old_tracker(schema=schema.SCHEMA)
         run("archive", archived)
         sid, work = f"sid{time.monotonic_ns()}", repo("feat/U-1")
         session.save_session(sid, tracker=s, cwd=str(work))
         model.tracker_at(s).readme.save({"schema": 3})
         model.archived_at(archived).readme.save({"schema": 3})
         hook("stop", sid, work)
-        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
-        self.assertEqual(model.archived_at(archived).schema, model.SCHEMA)
+        self.assertEqual(model.tracker_at(s).schema, schema.SCHEMA)
+        self.assertEqual(model.archived_at(archived).schema, schema.SCHEMA)
 
     def test_a_tracker_that_fails_stays_says_why_and_stops_nothing(self):
-        s, t = self.old_tracker(schema=model.SCHEMA)  # any command migrates: the older formats go on last
-        healthy, _ = self.old_tracker(schema=model.SCHEMA)
+        s, t = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
+        healthy, _ = self.old_tracker(schema=schema.SCHEMA)
         model.tracker_at(s).readme.save({"schema": 3})
         model.tracker_at(healthy).readme.save({"schema": 3})
         real = contract.migrate
@@ -1067,48 +1067,48 @@ class Upgrade(unittest.TestCase):
             said = run("list")
             self.assertIn("it could not migrate", run(*t, "check"))
         self.assertIn("Old", said)
-        self.assertIn(f"could not migrate {s} to format {model.SCHEMA}: disk full", said)
-        self.assertEqual(model.tracker_at(healthy).schema, model.SCHEMA)
+        self.assertIn(f"could not migrate {s} to format {schema.SCHEMA}: disk full", said)
+        self.assertEqual(model.tracker_at(healthy).schema, schema.SCHEMA)
         self.assertEqual(model.tracker_at(s).schema, 3)
         self.assertIn(s, calls)
         run("list")  # it tries again, on the first backup
-        self.assertEqual(model.tracker_at(s).schema, model.SCHEMA)
-        self.assertEqual(len(list((model.HOME / ".backups").glob(f"{s}-*"))), 1)
+        self.assertEqual(model.tracker_at(s).schema, schema.SCHEMA)
+        self.assertEqual(len(list((store.HOME / ".backups").glob(f"{s}-*"))), 1)
 
     def test_a_readme_that_cannot_be_read_is_left_alone(self):
         s, _ = self.old_tracker()
-        readme = model.HOME / s / "README.md"
+        readme = store.HOME / s / "README.md"
         readme.write_text("no frontmatter at all\n")
         run("list")
         self.assertEqual(readme.read_text(), "no frontmatter at all\n")
-        self.assertFalse((model.HOME / ".backups" / f"{s}-schema0").exists())
+        self.assertFalse((store.HOME / ".backups" / f"{s}-schema0").exists())
 
     def test_migrate_turns_priority_words_into_numbers(self):
-        s, t = self.old_tracker(schema=model.SCHEMA)
+        s, t = self.old_tracker(schema=schema.SCHEMA)
         words = {"T-1": "High", "T-2": "p0", "T-3": "Lowest", "T-4": "Someday"}
         for ident, word in words.items():
             run(*t, "new", ident, "--title", ident)
             run(*t, "add", ident, "link", f"Issue: [SC-{ident[2]} Story](https://issues.example/{ident[2]})")
             run(*t, "issue", ident)
-            model.Tracker(model.HOME / s).lookup(ident).save({"priority": word})
+            model.Tracker(store.HOME / s).lookup(ident).save({"priority": word})
         self.assertIn("T-4: priority 'Someday' is not 0-4", run(*t, "check", code=1))
         self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
-        model.Tracker(model.HOME / s).readme.save({"schema": 1})
+        model.Tracker(store.HOME / s).readme.save({"schema": 1})
         run("list")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual([tr.lookup(x).meta.get("priority") for x in words], ["1", "0", "4", None])
         # Read again: T-4 for its priority, and every open ticket for the size and due day format 3 reads
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1", "T-2", "T-3", "T-4"])
         self.assertNotIn("priority", run(*t, "check"))
 
     def test_migrate_to_format_3_reads_open_issues_again(self):
-        s, t = self.old_tracker(schema=model.SCHEMA)
+        s, t = self.old_tracker(schema=schema.SCHEMA)
         for ident in ("T-1", "T-2"):
             run(*t, "new", ident, "--title", ident)
             run(*t, "add", ident, "link", f"Issue: [SC-{ident[2]} Story](https://issues.example/{ident[2]})")
             run(*t, "issue", ident)
         run(*t, "set", "T-2", "status=done")
-        model.Tracker(model.HOME / s).readme.save({"schema": 2})
+        model.Tracker(store.HOME / s).readme.save({"schema": 2})
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])  # not the closed T-2
 
 
@@ -1214,7 +1214,7 @@ class Hooks(unittest.TestCase):
             self.assertIn(f"this session is off {a} now", run("start", "--decline", cwd=mine))
         self.assertNotIn("tracker", session.load_session(f"{sid}a"))
         self.assertIsNone(hook("session-start", f"{sid}c", mine, nogh, source="startup"))  # declined: no link or offer
-        (model.HOME / ".declined.json").unlink()
+        (store.HOME / ".declined.json").unlink()
         hook("session-start", f"{sid}w", mine, nogh, source="startup")  # linked by itself; the user's watch wins
         self.assertIn(f"off {a} now: it watches",
                       said(hook("prompt", f"{sid}w", mine, nogh, prompt="/work-tracker:watch")))
@@ -1230,8 +1230,8 @@ class Hooks(unittest.TestCase):
         brief = said(hook("session-start", sid, work, source="startup"))
         self.assertIn(f"[work-tracker] {s}", brief)
         self.assertIn("Tracker protocol", brief)
-        self.assertIn(model.ISOLATION_RULE, brief)  # stated once, carried into every session with a tracker
-        self.assertIn(model.ISOLATION_RULE, run("rules"))
+        self.assertIn(schema.ISOLATION_RULE, brief)  # stated once, carried into every session with a tracker
+        self.assertIn(schema.ISOLATION_RULE, run("rules"))
         self.assertIn("H-1 in-progress", said(hook("prompt", sid, work, prompt="go")))
         self.assertIsNone(tool("Bash", sid, work, tool_input={"command": "ls"}))
         self.assertIsNone(tool("Bash", sid, work, tool_input={"command": "git log"},
@@ -1244,7 +1244,7 @@ class Hooks(unittest.TestCase):
         helper = said(hook("subagent-start", sid, work, agent_id="a1", agent_type="Explore"))
         self.assertIn("do not write it", helper)
         self.assertIn("`tracker index` for the whole work", helper)  # not `context <tracker name>`
-        self.assertIn(model.ISOLATION_RULE, helper)  # a subagent writes code and commits too
+        self.assertIn(schema.ISOLATION_RULE, helper)  # a subagent writes code and commits too
 
         # The hooks log every commit; the model is asked only whether `next` still holds, once per `next`.
         committed = {"tool_input": {"command": "git commit -m x"}}
@@ -1261,7 +1261,7 @@ class Hooks(unittest.TestCase):
         self.assertIsNone(hook("stop", sid, work))  # logs it, and never blocks
         self.assertIn("1 logged commit(s) since `next` last changed", run("--tracker", s, "here", cwd=work))
         self.assertIn("H-1 next: Ship it", said(hook("prompt", sid, work, prompt="and now?")))  # a new `next`
-        log = (model.HOME / s / "log.md").read_text()
+        log = (store.HOME / s / "log.md").read_text()
         self.assertEqual([x.split(": ", 1)[1].split(" ", 1)[1] for x in log.splitlines() if "Commits on" in x],
                          ["hook work", "more work", "last work"])  # each once
 
@@ -1310,7 +1310,7 @@ class Hooks(unittest.TestCase):
         self.assertIsNone(hook("stop", sid, work, env=env))
         self.assertEqual(session.load_session(sid)["activity"]["status"], "idle")
         self.assertEqual([x.sid for x in session.live_sessions(s)], [sid])
-        self.assertEqual((model.HOME / s / "log.md").read_text().count("Codex commit"), 1)
+        self.assertEqual((store.HOME / s / "log.md").read_text().count("Codex commit"), 1)
         hook("session-end", sid, work, env=env)
         self.assertEqual(session.live_sessions(s), [])
         self.assertEqual(session.load_session(sid)["tracker"], s)  # a resume keeps its tracker
@@ -1334,7 +1334,7 @@ class Hooks(unittest.TestCase):
         run("--tracker", s, "new", "E-1", "--title", "Edit work", "--branch", "feat/E-1")
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             run("start", s, cwd=work)
-        root = model.HOME / s
+        root = store.HOME / s
         path = root / "tickets/E-1.md"
         cases = [(work, {"file_path": str(path)}),
                  (work, {"command": f"*** Begin Patch\n*** Update File: {path}\n*** End Patch"}),
@@ -1429,7 +1429,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
         run("--tracker", s, "set", "W-1", "status=in-progress", cwd=work)
         self.assertIsNone(hook("stop", sid, work))
-        self.assertIn("[W-1] Commits on feat/W-1: ", (model.HOME / s / "log.md").read_text())  # logged for it now
+        self.assertIn("[W-1] Commits on feat/W-1: ", (store.HOME / s / "log.md").read_text())  # logged for it now
 
     def test_commits_from_main_not_logged(self):
         """A merge from the default branch or a rebase onto it brings in work its own tickets logged: only the
@@ -1451,7 +1451,7 @@ class Hooks(unittest.TestCase):
             sh(*update)
             commit(work, "after the update")
             self.assertIsNone(hook("stop", sid, work))
-            logged = [x.split(": ", 1)[1] for x in (model.HOME / s / "log.md").read_text().splitlines()
+            logged = [x.split(": ", 1)[1] for x in (store.HOME / s / "log.md").read_text().splitlines()
                       if "Commits on" in x]
             self.assertEqual([c.split(" ", 1)[1] for x in logged for c in x.split("; ")],
                              ["own work", "after the update"], update[0])
@@ -1497,7 +1497,7 @@ class Hooks(unittest.TestCase):
             run("step", "Built part 2", "--next", "Test it", cwd=work)
             run("set", "next=Ship it", cwd=work)
         self.assertIn("B-2 in-progress (next: Ship it)", said(hook("prompt", sid, work, prompt="go")))
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual((tr.lookup("B-1").get("next"), tr.lookup("B-2").get("next")), ("", "Ship it"))
         self.assertIn("[B-2] Built part 2", (tr.root / "log.md").read_text())
 
@@ -1516,7 +1516,7 @@ class BriefSize(unittest.TestCase):
         for i in range(1, 8):
             run(*t, "set", f"B-{i}", "status=done", "summary=shipped")
         run(*t, "set", "B-9", "status=in-progress", cwd=work)
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         tr.lookup("B-1").save({"colour": "red"})  # a warning on a ticket this session does not work on
         brief = run(*t, "here", cwd=work)
         self.assertIn("B-9 in-progress; also B-8 todo, 7 done", brief)  # closed ones as a count
@@ -1524,7 +1524,7 @@ class BriefSize(unittest.TestCase):
         self.assertIn("`tracker show tracker --section context` gives the links", brief)
         self.assertNotIn("https://docs.example/spec", brief)
         self.assertNotIn("Tracker check", brief)  # `check` has it, and the write that made it said so
-        model.Tracker(model.HOME / s).lookup("B-9").save({"colour": "blue"})
+        model.Tracker(store.HOME / s).lookup("B-9").save({"colour": "blue"})
         brief = run(*t, "here", cwd=work)
         self.assertIn("Tracker check, on this work:\n  ⚠ B-9: unknown frontmatter key 'colour'", brief)
         self.assertNotIn("B-1: unknown", brief)
@@ -1532,7 +1532,7 @@ class BriefSize(unittest.TestCase):
 
         for i in (8, 9):  # the session's own ticket named first
             run(*t, "add", f"B-{i}", "link", f"Issue: [SC-{i} Story](https://issues.example/{i})")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertIn("Issue fields to read for 2 ticket(s): B-9, B-8.", views.issue_request(tr, [tr.lookup("B-9")]))
         due = run(*t, "issue")
         self.assertIn("B-8  https://issues.example/8", due)
@@ -1559,7 +1559,7 @@ class SequenceSort(unittest.TestCase):
         self.assertEqual([[rows[i][k] for k in ("order", "group")] + [rows[i]["sort"]["status"]]
                           for i in ("T-2", "T-3", "T-5", "T-10", "T-4")],
                          [[0, "api", 0], [1, "", 0], [2, "", 0], [3, "ui", 0], [4, "api", 4]])
-        self.assertEqual(set(rows["T-2"]["sort"]), {"status", *model.SCALES})  # what a row does not show as it sorts
+        self.assertEqual(set(rows["T-2"]["sort"]), {"status", *schema.SCALES})  # what a row does not show as it sorts
 
         # What the ticket waits on, and what it unblocks.
         self.assertEqual((rows["T-3"]["waits"], rows["T-3"]["unblocks"]), ([{"id": "T-2", "done": False}], ["T-5"]))
@@ -1599,10 +1599,10 @@ class SequenceSort(unittest.TestCase):
         s = slug()
         run("init", s, "--title", "Work", "--owner", "me")
         run("--tracker", s, "new", "T-1", "--title", "Odd")
-        path = model.HOME / s / "tickets" / "T-1.md"
+        path = store.HOME / s / "tickets" / "T-1.md"
         path.write_text(re.sub(r"^status: .*", "status: wip", path.read_text(), flags=re.M))
         got = data(s)
-        self.assertEqual(got["tickets"][0]["sort"]["status"], len(model.STAGES))
+        self.assertEqual(got["tickets"][0]["sort"]["status"], len(schema.STAGES))
         self.assertTrue(any(x.startswith("T-1: status 'wip' not one of") for x in got["check"]["errors"]))
 
 
@@ -1620,11 +1620,11 @@ class IssueFields(unittest.TestCase):
         run(*t, "add", "T-1", "link", "Issue: [SC-1 Story one](https://issues.example/story/1)")
         run(*t, "add", "T-3", "link", "Issue: [SC-3 Story three](https://issues.example/story/3)")
         run(*t, "set", "T-3", "status=done", "summary=shipped")
-        model.Tracker(model.HOME / s).lookup("T-3").save({"started_at": "2026-09-01T00:00:00Z"})  # it has a wait time
+        model.Tracker(store.HOME / s).lookup("T-3").save({"started_at": "2026-09-01T00:00:00Z"})  # it has a wait time
         return s, t
 
     def read_at(self, s: str, ident: str, at: float) -> None:
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         state = tr.raw_state()
         state.setdefault("issues", {}).setdefault("read", {})[ident] = at
         tr.save_state(state)
@@ -1642,9 +1642,10 @@ class IssueFields(unittest.TestCase):
 
         out = run(*t, "issue", "T-1", "--priority", "1", "--created", "2026-10-01T09:30:00.123+10:00")
         self.assertIn("T-1: priority=1, issue_created_at=2026-09-30T23:30:00Z", out)
-        t1 = model.Tracker(model.HOME / s).lookup("T-1")
+        t1 = model.Tracker(store.HOME / s).lookup("T-1")
         self.assertEqual((t1.get("priority"), t1.get("issue_created_at")), ("1", "2026-09-30T23:30:00Z"))
-        self.assertEqual(model.read_value("issue_created_at", "2026-10-01T09:30:00Z"), "2026-10-01T09:30:00Z")  # Z: UTC
+        self.assertEqual(schema.read_value("issue_created_at", "2026-10-01T09:30:00Z"),
+                         "2026-10-01T09:30:00Z")  # Z: UTC
         self.assertIn("T-3: read; nothing to record", run(*t, "issue", "T-3"))  # its issue has no fields to give
         self.assertIn("no ticket's issue fields are to read", run(*t, "issue"))
 
@@ -1655,7 +1656,7 @@ class IssueFields(unittest.TestCase):
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])
 
         run(*t, "issue", "T-1", "--priority", "")
-        self.assertNotIn("priority", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its priority
+        self.assertNotIn("priority", model.Tracker(store.HOME / s).lookup("T-1").meta)  # the issue lost its priority
         self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--priority", "3", code=2))
         self.assertIn("needs a time zone", run(*t, "issue", "T-1", "--created", "2026-10-01T09:30:00", code=2))
         self.assertIn("not an ISO 8601 time", run(*t, "issue", "T-1", "--created", "last week", code=2))
@@ -1664,14 +1665,14 @@ class IssueFields(unittest.TestCase):
         s, t = self.tracker()
         run(*t, "new", "T-5", "--title", "Urgent, no issue", "--priority", "0")
         run(*t, "set", "T-2", "priority=4")  # no Issue link: the model's own call
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual([model.level(tr.lookup(x), "priority") for x in ("T-5", "T-2", "T-1")], [0, 4, None])
         for bad in ("High", "5", "-1", "P1", "1.5"):
             self.assertIn("is not 0-4", run(*t, "set", "T-2", f"priority={bad}", code=2))
         self.assertIn("is not 0-4", run(*t, "new", "T-6", "--title", "Six", "--priority", "High", code=2))
         self.assertIn("is not 0-4", run(*t, "issue", "T-1", "--priority", "High", code=2))
         run(*t, "set", "T-2", "priority=")
-        self.assertIsNone(model.level(model.Tracker(model.HOME / s).lookup("T-2"), "priority"))
+        self.assertIsNone(model.level(model.Tracker(store.HOME / s).lookup("T-2"), "priority"))
         self.assertIn("Priority: 0 (most urgent) to 4 (least)", run(*t, "rules"))
 
     def test_size_is_a_number_any_ticket_can_have(self):
@@ -1679,15 +1680,15 @@ class IssueFields(unittest.TestCase):
         run(*t, "new", "T-5", "--title", "Small, no issue", "--size", "2")
         run(*t, "set", "T-2", "size=5")  # no Issue link: the model's own estimate
         run(*t, "issue", "T-1", "--size", "3")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         self.assertEqual([model.level(tr.lookup(x), "size") for x in ("T-5", "T-2", "T-1", "T-3")], [2, 5, 3, None])
         for bad in ("M", "0", "6", "1.5"):
             self.assertIn("is not 1-5", run(*t, "set", "T-2", f"size={bad}", code=2))
         self.assertIn("is not 1-5", run(*t, "new", "T-6", "--title", "Six", "--size", "XL", code=2))
         self.assertIn("is not 1-5", run(*t, "issue", "T-1", "--size", "8", code=2))
         run(*t, "issue", "T-1", "--size", "")
-        self.assertNotIn("size", model.Tracker(model.HOME / s).lookup("T-1").meta)  # the issue lost its estimate
-        model.Tracker(model.HOME / s).lookup("T-2").save({"size": "Large"})
+        self.assertNotIn("size", model.Tracker(store.HOME / s).lookup("T-1").meta)  # the issue lost its estimate
+        model.Tracker(store.HOME / s).lookup("T-2").save({"size": "Large"})
         self.assertIn("T-2: size 'Large' is not 1-5", run(*t, "check", code=1))
         rules = run(*t, "rules")
         self.assertIn("Size: 1 (XS) to 5 (XL)", rules)
@@ -1713,7 +1714,7 @@ class IssueFields(unittest.TestCase):
         self.assertNotIn("Issue fields to read", said(hook("prompt", sid, work, prompt="again")))  # once per request
 
     def updates(self, s: str) -> list[str]:
-        return [f"{t.id}: {'; '.join(items)}" for t, items in model.Tracker(model.HOME / s).issue_updates_due()]
+        return [f"{t.id}: {'; '.join(items)}" for t, items in model.Tracker(store.HOME / s).issue_updates_due()]
 
     def write(self, t: tuple[str, str], *ids: str) -> None:
         """The model's write: list the updates, then record each ticket's as written."""
@@ -1750,7 +1751,7 @@ class IssueFields(unittest.TestCase):
         self.assertTrue(listing.startswith("no ticket's issue fields are to read"))
         self.assertIn("Issue updates to write for 2 ticket(s)", listing)
         self.assertIn("T-1  https://issues.example/story/1", listing)
-        self.assertIn(model.ISOLATION_RULE, listing)  # the isolation rule, where the writing happens
+        self.assertIn(schema.ISOLATION_RULE, listing)  # the isolation rule, where the writing happens
         self.assertNotIn("T-2", listing)  # no Issue link: nowhere to write
 
         self.assertIn("T-1: written as listed", run(*t, "issue", "T-1", "--written"))
@@ -1782,7 +1783,7 @@ class IssueFields(unittest.TestCase):
                                            "T-3: status done; summary: shipped, with the retry"])
         self.write(t, "T-1", "T-3")
         run(*t, "set", "T-3", "status=in-progress")  # reopened: its old summary is not news
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         tr.lookup("T-1").save({"prs": ["9:open"]})  # what `sync` writes: its PR is in review
         self.assertEqual(self.updates(s), ["T-1: status in-review", "T-3: status in-progress"])
         self.write(t, "T-1")
@@ -1806,15 +1807,15 @@ class IssueFields(unittest.TestCase):
         self.assertIn("T-3: size=2", out)
         self.assertIn("T-3: written", out)
         self.assertEqual(self.updates(s), [])
-        self.assertEqual(model.Tracker(model.HOME / s).lookup("T-3").get("size"), "2")
-        tr = model.Tracker(model.HOME / s)
+        self.assertEqual(model.Tracker(store.HOME / s).lookup("T-3").get("size"), "2")
+        tr = model.Tracker(store.HOME / s)
         tr.readme.save({"issue_updates": "yes"})  # a hand edit
         self.assertIn("README.md: issue_updates 'yes' is not one of on|off", run(*t, "check", code=1))
 
     def test_on_with_no_record_of_what_was_written_asks_for_nothing(self):
         s, t = self.tracker()
         run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
-        model.Tracker(model.HOME / s).readme.save({"issue_updates": "on"})  # a hand edit, or a lost .state.json
+        model.Tracker(store.HOME / s).readme.save({"issue_updates": "on"})  # a hand edit, or a lost .state.json
         self.assertEqual(self.updates(s), [])  # not every issue written again
         self.assertIn("no record of what its issues show", run(*t, "check"))
         run(*t, "set", "tracker", "issue_updates=on")  # already on: starts the record
@@ -1842,7 +1843,7 @@ class IssueFields(unittest.TestCase):
             run(*t, "new", f"T-{n}", "--title", f"Linked {n}")
             run(*t, "add", f"T-{n}", "link", f"Issue: [SC-{n} Story](https://issues.example/story/{n})")
             run(*t, "set", f"T-{n}", "status=in-progress")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         request = views.issue_update_request(tr, [tr.lookup("T-9")])
         self.assertIn("for 7 ticket(s): T-9, T-3, T-4, T-5, T-6 +2.", request)
 
@@ -1900,7 +1901,7 @@ class IssueFields(unittest.TestCase):
 
     def test_a_tracked_session_records_how_a_ui_starts_the_cli(self):
         file = Path(BASE) / f"cli{time.monotonic_ns()}.json"
-        with mock.patch.object(model, "CLI_FILE", file), \
+        with mock.patch.object(store, "CLI_FILE", file), \
                 mock.patch.dict(os.environ, {"GH_TOKEN": "secret", "PATH": "/my/bin", "HOME": "/me"}):
             hooks.record_cli()
             saved = json.loads(file.read_text())
@@ -1992,7 +1993,7 @@ class Ui(unittest.TestCase):
 
         def move():
             tracker = model.tracker_at(s)
-            return model.whose_move(tracker, tracker.lookup("T-1"))
+            return moves.whose_move(tracker, tracker.lookup("T-1"))
         self.assertEqual((move().text(), move().quiet), ("you: no PR yet", True))
         run(*t, "add", "T-1", "link", "PR: [Not a PR page](https://example.com/7)")
         self.assertEqual(move().text(), "you: no PR yet")
@@ -2013,7 +2014,7 @@ class Ui(unittest.TestCase):
         path = model.tracker_at(s).lookup("T-1").path
         path.write_text(path.read_text().replace("status: in-progress", "status: in-progress\nprs: [8:closed]", 1))
         tracker = model.tracker_at(s)
-        move = model.whose_move(tracker, tracker.lookup("T-1"))
+        move = moves.whose_move(tracker, tracker.lookup("T-1"))
         self.assertEqual((move.text(), move.quiet), ("you: PR closed", False))
 
     def test_a_current_ticket_lists_each_of_its_prs_once(self):
@@ -2168,7 +2169,7 @@ class Ui(unittest.TestCase):
 
     def test_every_status_has_a_meaning_in_the_ui(self):
         table = re.search(r"export const MEANINGS = \{(.*?)\n\};", (ROOT / "ui/model.js").read_text(), re.S).group(1)
-        for kind, stages in model.LIFECYCLES.items():
+        for kind, stages in schema.LIFECYCLES.items():
             for status in stages:
                 self.assertIn(f'"{status}"', table, kind)
 
@@ -2196,7 +2197,7 @@ class Ui(unittest.TestCase):
             self.assertEqual(calls[-1][:2], ("do", "tab.new"))
             self.assertEqual(json.loads(calls[-1][2]),
                              {"name": f"tracker: {s}", "mod": "work-tracker",
-                              "props": {"slug": s, "open": "T-1", "trackers": str(model.HOME)}})
+                              "props": {"slug": s, "open": "T-1", "trackers": str(store.HOME)}})
             have = 1
             calls.clear()
             run("--tracker", s, "open", "T-1")
@@ -2224,12 +2225,12 @@ class Ui(unittest.TestCase):
     def test_evidence_opens_only_the_trackers_files_and_runs_no_code(self):
         s = self.tracker()
         t = ("--tracker", s)
-        folder = model.HOME / s / "evidence"
+        folder = store.HOME / s / "evidence"
         folder.mkdir()
         (folder / "run.txt").write_text("hi")
         (folder / "page.html").write_text("<script>")
-        (model.HOME / s / "secret.txt").write_text("no")
-        with mock.patch.object(cli, "open_with_system") as opened:
+        (store.HOME / s / "secret.txt").write_text("no")
+        with mock.patch.object(commands, "open_with_system") as opened:
             run(*t, "evidence", "run.txt")
             self.assertEqual(opened.call_args.kwargs, {"reveal": False})
             run(*t, "evidence", "page.html")
@@ -2257,7 +2258,7 @@ class Spans(unittest.TestCase):
         if created:
             run(*t, "add", ident, "link", f"Issue: [SC-{ident} Story](https://issues.example/{ident})")
             run(*t, "issue", ident, "--created", created)
-        rec = model.Tracker(model.HOME / s).lookup(ident)
+        rec = model.Tracker(store.HOME / s).lookup(ident)
         rec.save({"status": status, **({"started_at": started} if started else {}),
                   **({"prs": ["9:merged"], "merged_at": merged} if merged else {})})
 
@@ -2268,19 +2269,19 @@ class Spans(unittest.TestCase):
         run(*t, "new", "S-1", "--title", "Starts", "--branch", "f1")
         out = run(*t, "set", "S-1", "status=in-progress")
         self.assertNotIn("started_at", out)
-        first = model.Tracker(model.HOME / s).lookup("S-1").get("started_at")
-        self.assertLessEqual(abs(model.utc_seconds(first) - time.time()), 5)
-        model.Tracker(model.HOME / s).lookup("S-1").save({"started_at": "2026-09-01T00:00:00Z"})
+        first = model.Tracker(store.HOME / s).lookup("S-1").get("started_at")
+        self.assertLessEqual(abs(schema.utc_seconds(first) - time.time()), 5)
+        model.Tracker(store.HOME / s).lookup("S-1").save({"started_at": "2026-09-01T00:00:00Z"})
         run(*t, "set", "S-1", "status=todo")
         run(*t, "set", "S-1", "status=in-progress")  # started again: the first start stays
-        self.assertEqual(model.Tracker(model.HOME / s).lookup("S-1").get("started_at"), "2026-09-01T00:00:00Z")
+        self.assertEqual(model.Tracker(store.HOME / s).lookup("S-1").get("started_at"), "2026-09-01T00:00:00Z")
         self.assertIn("the tracker writes it", run(*t, "set", "S-1", "started_at=2026-09-02T00:00:00Z", code=2))
         # Started before 0.29, so in progress with no start: set in progress again, it gets none rather than now
         run(*t, "new", "S-2", "--title", "Started earlier", "--branch", "f2")
-        path = model.HOME / s / "tickets" / "S-2.md"
+        path = store.HOME / s / "tickets" / "S-2.md"
         path.write_text(re.sub(r"^status: .*", "status: in-progress", path.read_text(), flags=re.M))
         run(*t, "set", "S-2", "status=in-progress")
-        self.assertEqual(model.Tracker(model.HOME / s).lookup("S-2").get("started_at"), "")
+        self.assertEqual(model.Tracker(store.HOME / s).lookup("S-2").get("started_at"), "")
 
     def test_sync_keeps_the_merge_time(self):
         s = slug()
@@ -2291,11 +2292,11 @@ class Spans(unittest.TestCase):
         fake = answers([pull(11, branch="f1", state="MERGED", merged_at="2026-10-01T06:30:00Z")])
         with mock.patch.object(github, "gh", fake):
             run(*t, "sync")
-            self.assertEqual(model.Tracker(model.HOME / s).lookup("S-1").get("merged_at"), "2026-10-01T06:30:00Z")
-            before = model.Tracker(model.HOME / s).raw_state()["last_sync"]
+            self.assertEqual(model.Tracker(store.HOME / s).lookup("S-1").get("merged_at"), "2026-10-01T06:30:00Z")
+            before = model.Tracker(store.HOME / s).raw_state()["last_sync"]
             run(*t, "sync")  # a merged PR is final: no ticket to ask about, so GitHub is not asked
             self.assertEqual(len(fake.queries), 1)
-            self.assertGreater(model.Tracker(model.HOME / s).raw_state()["last_sync"], before)
+            self.assertGreater(model.Tracker(store.HOME / s).raw_state()["last_sync"], before)
 
     def test_the_span_lines(self):
         s = slug()
@@ -2312,13 +2313,13 @@ class Spans(unittest.TestCase):
         self.ticket(s, "S-8", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", "2026-09-01T02:00:00Z",
                     status="dropped")
         self.ticket(s, "S-9", "2026-09-01T00:00:00Z", "2026-09-10T00:00:00Z", "2026-09-09T00:00:00Z")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         h, d = 3600, 86400
         self.assertEqual({t.id: (model.span(t, "wait"), model.span(t, "cycle")) for t in tr.tickets},
                          {"S-1": (2 * h, 6 * h), "S-2": (d, 2 * d), "S-3": (600, 12 * h), "S-4": (None, 1800),
                           "S-5": (28 * d, None), "S-6": (d, None), "S-7": (None, 2 * d), "S-8": (None, None),
                           "S-9": (9 * d, None)})
-        now = model.utc_seconds("2026-10-06T00:00:00Z")
+        now = schema.utc_seconds("2026-10-06T00:00:00Z")
         self.assertEqual(views.span_lines(tr, now), [
             "Wait time (issue created → started): median 24 h over 6 · fastest 10 min (S-3) · last 7 days: median "
             "14.0 d over 2",
@@ -2329,7 +2330,7 @@ class Spans(unittest.TestCase):
             "Cycle time (started → PR merged): median 12 h over 5 · fastest 30 min (S-4)"])
         empty = slug()
         run("init", empty, "--title", "Untimed", "--owner", "me")
-        self.assertEqual(views.span_lines(model.Tracker(model.HOME / empty), now), [])
+        self.assertEqual(views.span_lines(model.Tracker(store.HOME / empty), now), [])
         self.assertEqual([views.duration(x) for x in (59, 60, 3599, 3600, 47 * 3600 + 3599, 48 * 3600, 100 * 3600)],
                          ["1 min", "1 min", "59 min", "1 h", "47 h", "2.0 d", "4.2 d"])
 
@@ -2338,7 +2339,7 @@ class Spans(unittest.TestCase):
         run("init", s, "--title", "Timed", "--owner", "me")
         self.ticket(s, "S-1", "2026-09-01T00:00:00Z", "2026-09-01T02:00:00Z", "2026-09-01T08:00:00Z")
         self.ticket(s, "S-2", "2026-09-01T00:00:00Z", status="todo")
-        tr = model.Tracker(model.HOME / s)
+        tr = model.Tracker(store.HOME / s)
         got = data(s)["records"]
 
         # The opened ticket's first line gives its times, those it has, then its summary.
@@ -2368,7 +2369,7 @@ class Watch(unittest.TestCase):
         run("init", self.s, "--title", "Watched", "--owner", "me")
         for i in (1, 2, 3):
             run(*self.t, "new", f"W-{i}", "--title", f"Part {i}", *(["--depends", "W-1"] if i == 3 else []))
-        self.root = model.HOME / self.s
+        self.root = store.HOME / self.s
 
     def watcher(self, sid: str = "") -> watcher.Watcher:
         w = watcher.Watcher(model.Tracker(self.root), sid)
@@ -2483,17 +2484,17 @@ class Watch(unittest.TestCase):
     def test_github(self):
         s, now = slug(), time.time()
         run("init", s, "--title", "Synced", "--owner", "me", "--repo", "a/x")
-        w = watcher.Watcher(model.Tracker(model.HOME / s))
+        w = watcher.Watcher(model.Tracker(store.HOME / s))
         failed = ["sync skipped: gh failed or timed out for a/x"]
         with mock.patch.object(watcher, "sync", return_value=failed):
             w.claim(now)
             self.assertIn("! github: sync skipped: gh failed", "".join(w.poll(now)))
-            self.assertEqual(w.poll(now + model.LIVE_SYNC_S), [])  # said once
+            self.assertEqual(w.poll(now + schema.LIVE_SYNC_S), [])  # said once
         with mock.patch.object(watcher, "sync", return_value=[]):
-            self.assertEqual(w.poll(now + 2 * model.LIVE_SYNC_S), [])  # skipped for its interval: not proof it works
-            tr = model.Tracker(model.HOME / s)
+            self.assertEqual(w.poll(now + 2 * schema.LIVE_SYNC_S), [])  # skipped for its interval: not proof it works
+            tr = model.Tracker(store.HOME / s)
             tr.save_state({"last_sync": now + 1})
-            self.assertIn("github: sync works again", "".join(w.poll(now + 3 * model.LIVE_SYNC_S)))
+            self.assertIn("github: sync works again", "".join(w.poll(now + 3 * schema.LIVE_SYNC_S)))
 
     def test_only_the_user_starts_it(self):
         sid, cwd = f"sid{time.monotonic_ns()}", self.work
@@ -2551,9 +2552,9 @@ class Delete(unittest.TestCase):
     def setUp(self):
         self.s = slug()
         run("init", self.s, "--title", "Doomed", "--owner", "me")
-        self.root = model.HOME / self.s
+        self.root = store.HOME / self.s
         self.trash = Path(BASE) / "xdg" / "Trash"
-        patches = [mock.patch.object(watcher, "to_trash", system.xdg_trash),
+        patches = [mock.patch.object(lifecycle, "to_trash", system.xdg_trash),
                    mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(self.trash.parent)})]
         for p in patches:
             p.start()
@@ -2658,7 +2659,7 @@ class Actions(unittest.TestCase):
         self.t = ("--tracker", self.s)
         run("init", self.s, "--title", "Work", "--owner", "me")
         run(*self.t, "new", "T-1", "--title", "Schema")
-        self.root = model.HOME / self.s
+        self.root = store.HOME / self.s
 
     def tr(self) -> model.Tracker:
         return model.Tracker(self.root)
@@ -2671,7 +2672,7 @@ class Actions(unittest.TestCase):
         self.assertIn("- T-1 needs it\n", a.body)
         run(*self.t, "act", "A-1", "--note", "Reply: v1 stays", "--note", "Reply: until March")
         self.assertIn("- T-1 needs it\n- Reply: v1 stays\n- Reply: until March", run(*self.t, "show", "A-01"))
-        self.assertIn(f"- {model.today()} [A-01 T-1] Updated A-01: Reply: v1 stays; Reply: until March",
+        self.assertIn(f"- {schema.today()} [A-01 T-1] Updated A-01: Reply: v1 stays; Reply: until March",
                       (self.root / "log.md").read_text())
         self.assertIn("over 400", run(*self.t, "act", "A-01", "--note", "x " * 210, code=2))
         out = run(*self.t, "act", "Ask Sam if the billing API keeps v1", code=3)
@@ -2692,7 +2693,7 @@ class Actions(unittest.TestCase):
         self.assertIn("no open actions", listed)
         self.assertIn("2 closed", listed)
         self.assertIn("A-02  dropped", run(*self.t, "actions", "--all"))
-        self.assertEqual(cli.check(self.tr()), ([], ["README.md: ## Context lists nothing"]))
+        self.assertEqual(contract.check(self.tr()), ([], ["README.md: ## Context lists nothing"]))
         self.assertIn("Actions: An action is a task for the user", run("rules"))
 
     def test_the_brief_lists_open_actions_and_asks_about_old_ones(self):
@@ -2737,7 +2738,7 @@ class Actions(unittest.TestCase):
         run(*self.t, "act", "A-03", "--due", "none")
         self.assertEqual(self.tr().action("A-03").get("due"), "")
         self.tr().action("A-02").save({"due": "soon"})
-        self.assertIn("A-02: due 'soon' is not a day (YYYY-MM-DD)", cli.check(self.tr())[0])
+        self.assertIn("A-02: due 'soon' is not a day (YYYY-MM-DD)", contract.check(self.tr())[0])
 
     def test_an_action_gets_a_new_title(self):
         run(*self.t, "act", "Reply to Sam on SC-1", "--refs", "T-1")
@@ -2759,14 +2760,14 @@ class Actions(unittest.TestCase):
         self.assertIn("A-01: Get read access to the prod DB (T-2); blocks T-1", "\n".join(views.action_lines(tr)))
         self.assertEqual(data(self.s)["actions"][0]["gate"], "blocks T-1")
         t1.save({"status": "in-progress"})
-        self.assertEqual(model.whose_move(self.tr(), self.tr().lookup("T-1")).text(), "you: A-01 open")
+        self.assertEqual(moves.whose_move(self.tr(), self.tr().lookup("T-1")).text(), "you: A-01 open")
 
         run(*self.t, "wait", "T-2", "on", "a-1")  # the wait takes the ticket out of refs
         self.assertEqual((self.tr().lookup("T-2").list("depends_on"), self.tr().action("A-01").list("refs")),
                          (["A-01"], []))
         self.tr().action("A-01").save({"refs": ["T-2"]})
         self.assertIn("A-01: refs T-2, which also waits on it — drop it from refs (`tracker act A-01 --unref T-2`)",
-                      "\n".join(cli.check(self.tr())[1]))
+                      "\n".join(contract.check(self.tr())[1]))
         run(*self.t, "act", "A-01", "--unref", "T-2")
         self.assertEqual(self.tr().action("A-01").list("refs"), [])
         self.assertIn("no action A-09", run(*self.t, "wait", "T-1", "on", "A-09", code=2))
@@ -2789,7 +2790,7 @@ class Actions(unittest.TestCase):
         self.assertIn("A-<n> ids are actions", run(*self.t, "new", "A-2", "--title", "Two", code=2))
         ticket(self.root, "A-02")  # a ticket made before actions, whose id has an action's form
         self.assertIn("A-03 added", run(*self.t, "act", "Book the review room"))  # A-02 is taken
-        self.assertEqual(cli.check(self.tr())[0], [])
+        self.assertEqual(contract.check(self.tr())[0], [])
 
     def test_the_text_and_the_page_show_the_same_links(self):
         run(*self.t, "new", "T-2", "--title", "Billing")
@@ -2833,16 +2834,16 @@ class Values(unittest.TestCase):
         self.t = ("--tracker", self.s)
         run("init", self.s, "--title", "Work", "--owner", "me")
         run(*self.t, "new", "T-1", "--title", "One")
-        self.root = model.HOME / self.s
+        self.root = store.HOME / self.s
 
     def tr(self) -> model.Tracker:
         return model.Tracker(self.root)
 
     def test_a_scale_names_its_levels(self):
-        for key, scale in model.SCALES.items():
+        for key, scale in schema.SCALES.items():
             self.assertEqual(len(scale.names), len(scale.levels))
-            self.assertEqual(model.KEYS["ticket"][key][0], "set")  # `tracker set` takes it, from the entry alone
-            self.assertEqual(model.ISSUE_FIELDS[key], key)  # so does `tracker issue --<key>`
+            self.assertEqual(schema.KEYS["ticket"][key][0], "set")  # `tracker set` takes it, from the entry alone
+            self.assertEqual(schema.ISSUE_FIELDS[key], key)  # so does `tracker issue --<key>`
         run(*self.t, "set", "T-1", "priority=0", "size=4")
         t = self.tr().lookup("T-1")
         self.assertEqual([model.level_name(t, k) for k in ("priority", "size")], ["P0", "L"])
@@ -2859,7 +2860,7 @@ class Values(unittest.TestCase):
         self.assertIn({"label": "priority", "text": "P1", "code": False}, data(self.s)["records"]["T-2"]["facts"])
 
     def test_every_kind_reads_one_lifecycle(self):
-        self.assertEqual(model.STATUSES["ticket"], ("todo", "in-progress", "done", "dropped"))  # the PR adds the rest
+        self.assertEqual(schema.STATUSES["ticket"], ("todo", "in-progress", "done", "dropped"))  # the PR adds the rest
         run(*self.t, "act", "Ask Sam")
         run(*self.t, "act", "A-01", "--drop")
         a = self.tr().lookup("A-01")
@@ -2888,9 +2889,9 @@ class Values(unittest.TestCase):
         self.assertTrue(self.tr().lookup("D-01").closed)
         self.assertRegex(self.tr().action("A-01").get("closed_at"), utc)
         self.tr().lookup("T-1").save({"started_at": "last week"})
-        self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(cli.check(self.tr())[0]))
+        self.assertIn("T-1: started_at 'last week' is not a time", "\n".join(contract.check(self.tr())[0]))
         self.tr().lookup("T-1").save({"started_at": None, "status": "in-progress", "closed_at": "2026-09-01T00:00:00Z"})
-        self.assertIn("T-1: closed_at, but its status in-progress is open", "\n".join(cli.check(self.tr())[1]))
+        self.assertIn("T-1: closed_at, but its status in-progress is open", "\n".join(contract.check(self.tr())[1]))
         self.tr().readme.save({"schema": 3})
         run("list")
         self.assertNotIn("closed_at", self.tr().lookup("T-1").meta)
@@ -2913,7 +2914,7 @@ class Values(unittest.TestCase):
         run(*self.t, "issue", "T-1", "--due", "")  # the issue has none now
         self.assertNotIn("due", self.tr().lookup("T-1").meta)
         self.tr().lookup("T-2").save({"due": "soon"})
-        self.assertIn("T-2: due 'soon' is not a day (YYYY-MM-DD)", cli.check(self.tr())[0])
+        self.assertIn("T-2: due 'soon' is not a day (YYYY-MM-DD)", contract.check(self.tr())[0])
 
     def test_migrate_names_keys_by_their_form(self):
         run(*self.t, "decide", "Auth scheme", "--resolve", "OAuth")
@@ -2921,7 +2922,7 @@ class Values(unittest.TestCase):
         run(*self.t, "act", "A-01", "--done")
         tr = self.tr()
         for r in (tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")):
-            old = {new: name for name, new in model.RENAMED_KEYS[r.kind].items()}
+            old = {new: name for name, new in schema.RENAMED_KEYS[r.kind].items()}
             keys = {k: v for k, v in r.meta.items() if k in old or k == "closed_at"}
             r.save({**{k: None for k in keys}, **{old[k]: "2026-09-01" for k in keys if k in old}})
         tr.lookup("T-1").save({"issue_created": "2026-08-30T10:00:00Z"})
@@ -2931,10 +2932,10 @@ class Values(unittest.TestCase):
         tr = self.tr()
         t, d, a = tr.lookup("T-1"), tr.lookup("D-01"), tr.action("A-01")
         self.assertEqual((t.get("updated_at"), t.get("issue_created_at")), ("2026-09-01", "2026-08-30T10:00:00Z"))
-        self.assertEqual((d.get("created_at"), d.get("closed_at")), ("2026-09-01", model.today()))  # Resolution's day
+        self.assertEqual((d.get("created_at"), d.get("closed_at")), ("2026-09-01", schema.today()))  # Resolution's day
         self.assertEqual(a.get("closed_at"), "2026-09-01")  # an action's `updated` was when it closed
-        self.assertEqual((tr.meta.get("created_at"), tr.schema), ("2026-08-01", model.SCHEMA))
-        self.assertEqual(cli.check(tr), ([], ["README.md: ## Context lists nothing"]))
+        self.assertEqual((tr.meta.get("created_at"), tr.schema), ("2026-08-01", schema.SCHEMA))
+        self.assertEqual(contract.check(tr), ([], ["README.md: ## Context lists nothing"]))
 
 
 if __name__ == "__main__":

@@ -10,8 +10,10 @@ import subprocess
 import time
 from pathlib import Path
 
-from .model import (FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, apply_prs, branch_entry, linked_prs, locked,
-    pr_key, put_entry, set_branch, utc_seconds, Record, Tracker)
+from .store import locked
+from .schema import FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, utc_seconds
+from .model import apply_prs, branch_entry, pr_key, put_entry, set_branch, Record, Tracker
+from .moves import linked_prs
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
@@ -75,7 +77,7 @@ def own_prs(prs: list[dict]) -> list[dict]:
 
 
 # What sync reads of each PR: its own state, base and head (pr_of, ticket_prs), and what a ticket's move needs
-# (review_facts, for model.whose_move).
+# (review_facts, for moves.whose_move).
 PR_FRAGMENT = """fragment F on PullRequest {
   number headRefName state isDraft mergedAt baseRefName isCrossRepository reviewDecision mergeStateStatus
   reviewRequests(first: 20) { nodes { requestedReviewer {

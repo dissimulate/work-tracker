@@ -7,14 +7,16 @@ import datetime as dt
 import time
 
 from .markdown import headings, section_block, strip_comments, without_section, Link
-from .model import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, SPANS, STAGES, all_trackers, archived_trackers,
-    branch_entry, day_text, due_date, level, level_name, is_pr_link, linked_prs, sequence, show_value, sort_key, span,
-    whose_move, Dep, Move, Record, Tracker)
+from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, show_value
+from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, sequence,
+    sort_key, span, Dep, Record, Tracker)
+from .moves import is_pr_link, linked_prs, whose_move, Move
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
-from .github import pr_url
 from .views import dep_facts, duration, span_lines
-from .watcher import in_use, watcher_of
+from .github import pr_url
+from .watcher import watcher_of
+from .lifecycle import in_use
 
 VIEW_SCHEMA = 6  # a UI that reads another number asks to be updated
 

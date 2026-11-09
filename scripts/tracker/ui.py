@@ -11,8 +11,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .model import HOME, ROOT, die
-from .system import DETACH, WINDOWS, cli_for_ui
+from .system import DETACH, ROOT, WINDOWS, cli_for_ui, die
+from .store import HOME
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"

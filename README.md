@@ -165,19 +165,24 @@ Environment variables. All are optional.
 
 `scripts/tracker/`: stdlib only, run by `bin/tracker` and `scripts/hook.sh`. One module per concern; each imports only the modules before it:
 
-1. `system`: this Python and the CLI as processes, whether a process runs, the system's trash
+1. `system`: this Python and the CLI as processes, the plugin's folder, whether a process runs, the system's trash
 2. `markdown`: the file format as text (frontmatter, sections, link lines)
-3. `model`: contract constants, records, dependencies, body edits, the lock. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
-4. `git`
-5. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
-6. `contract`: `check`, `rules`, `migrate`
-7. `views`: text views and the brief
-8. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). A ticket's PRs are those from its branch and its `PR:` links, all equal, in its `prs` list; `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
-9. `watcher`: `tracker watch` and the user's grant; `tracker await-change`; archiving and deleting a tracker
-10. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
-11. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`
-12. `hooks`
-13. `cli`
+3. `store`: writing the tracker's files: atomic writes, JSON files, the lock
+4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
+5. `model`: records, the `Tracker`, dependencies, the log, body edits
+6. `moves`: whose move a ticket under way waits on
+7. `git`
+8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
+9. `contract`: `check`, `rules`, `migrate`
+10. `views`: text views and the brief
+11. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). A ticket's PRs are those from its branch and its `PR:` links, all equal, in its `prs` list; `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
+12. `watcher`: `tracker watch` and the user's grant; `tracker await-change`
+13. `lifecycle`: archiving and deleting a tracker
+14. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
+15. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`
+16. `hooks`
+17. `commands`: one function per command
+18. `cli`: the parser, and what runs around each write command
 
 ### Evals
 

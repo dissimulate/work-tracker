@@ -10,9 +10,10 @@ import sys
 import time
 from pathlib import Path
 
-from .model import (DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, locked, record_cli,
-    set_branch, short, Tracker)
 from .system import env_int, spawn
+from .store import locked, record_cli
+from .schema import DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
+from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,

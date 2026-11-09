@@ -14,11 +14,11 @@ tracker issue DEMO-6 --created 2026-08-29T00:00:00Z
 python3 - "$root/scripts" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
-from tracker import github, model
+from tracker import github, model, store
 tr = model.tracker_at("demo")
 def pr(n, merged):
     return ("acme/users", {"number": n, "state": "MERGED", "isDraft": False, "mergedAt": merged, "baseRefName": "main"})
-with model.locked():
+with store.locked():
     for ident, started in (("DEMO-4", "2026-09-01T00:00:00Z"), ("DEMO-5", "2026-09-02T00:00:00Z"),
                            ("DEMO-6", "2026-09-03T00:00:00Z")):
         tr.lookup(ident).save({"started_at": started})
