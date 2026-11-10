@@ -66,7 +66,7 @@ Add this folder to a [personal or repo marketplace](https://developers.openai.co
 
 ### Data
 
-Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes the root). The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other. For history, run `git init` in the folder.
+Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes the root). The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other. For history, run `git init` in the folder. On macOS and Linux, Python keeps its compiled code in `$TRACKER_HOME/.pycache/`, so each hook and command starts fast; you can delete that folder at any time.
 
 | File | Holds |
 |---|---|

@@ -233,11 +233,12 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
 
 def carry_lines(tr: Tracker, tickets: list[Record], deep: bool = False, limit: int = 0) -> list[str]:
     """What the tickets build on, each fact once: their direct dependencies' Carry forward, then the rest of the
-    chain's. `limit` (a brief) caps the direct bullets at that many characters and names the rest of the chain only."""
+    chain's. `limit` (a brief) caps the direct bullets at that many characters, a single longer one too, and names the
+    rest of the chain only."""
     direct = list({d.ident: d.rec for t in tickets for d in tr.deps(t) if d.kind == "ticket"}.values())
     which = tickets[0].id if len(tickets) == 1 else "<id>"
     out = []
-    cf = [(t.id, b) for t in direct for b in t.carry_forward]
+    cf = [(t.id, cut(b, limit)) for t in direct for b in t.carry_forward]
     shown, size = [], 0
     for i, b in cf:
         size += len(i) + len(b) + 4
@@ -306,7 +307,6 @@ def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log:
 def protocol(slug: str) -> str:
     """The protocol each session-start brief carries: each event and the command that records it. The skill holds
     the rest."""
-    most = {k: v[0] for k, v in TEXT_MAX.items()}
     return "\n".join([
         f"Tracker protocol (CLI `tracker`; fallback `{BIN.as_posix()} --tracker {slug} <command>`):",
         f"- {ISOLATION_RULE}",
@@ -318,10 +318,8 @@ def protocol(slug: str) -> str:
         "`set <id> status=in-progress`",
         "- the hooks log each commit on the branch of a ticket under way. A step ends or `next` changes: "
         f"`step <id> --next \"...\"`, with {STEP_MESSAGE}, and `--carry \"...\"` for each fact a later ticket "
-        "needs. `next` is your own next action: a `move:` "
-        "line shows what the PR waits on. "
-        f"Limits in characters: the message {most['log']}, `next` {most['next']}, `--done` {most['summary']}, each "
-        f"`--carry` {most['carry']}; the detail goes in the PR",
+        f"needs. `next` is your own next action, in at most {TEXT_MAX['next'][0]} characters: a `move:` "
+        "line shows what the PR waits on",
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
         "- as they happen: a direction choice `decide`; an order or blocker `wait`; a result file "

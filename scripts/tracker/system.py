@@ -13,8 +13,10 @@ WINDOWS = os.name == "nt"
 PACKAGE = Path(__file__).resolve().parent
 ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
 BIN = ROOT / "bin" / "tracker"  # the CLI
-# This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode
-PYTHON = [sys.executable, "-I", "-X", "utf8"]
+# This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode; its
+# compiled bytecode kept where this process keeps it
+PYTHON = [sys.executable, "-I", "-X", "utf8",
+          *(["-X", f"pycache_prefix={sys.pycache_prefix}"] if sys.pycache_prefix else [])]
 # The CLI on this Python, as bin/tracker starts it: Windows starts no shell script as a process
 CLI_START = "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()"
 CLI = [*PYTHON, "-c", CLI_START, str(PACKAGE.parent)]

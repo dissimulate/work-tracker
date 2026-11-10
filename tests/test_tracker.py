@@ -117,6 +117,9 @@ class InstructionsMatchTheCli(unittest.TestCase):
                         for flag in re.findall(r"(?<![\w-])--[a-z][a-z-]*", span) if flag not in known]
         self.assertEqual(bad, [])
 
+    def test_the_skill_names_the_link_labels(self):
+        self.assertIn(", ".join(schema.DEFAULT_LABELS), (ROOT / "skills/tracker/SKILL.md").read_text())
+
 
 class Format(unittest.TestCase):
     def test_frontmatter_round_trip(self):
@@ -805,11 +808,12 @@ class Writes(unittest.TestCase):
         run(*t, "new", "L-1", "--title", "One")
         long = "word " * 100
         self.assertIn("over 400: one concrete action", run(*t, "set", "L-1", f"next={long}", code=2))
-        self.assertIn("the log line is", run(*t, "log", long, code=2))
-        self.assertIn("over 600", run(*t, "add", "L-1", "carry", long * 2, code=2))
+        run(*t, "log", long)  # only `next` has a limit: every brief prints it whole
+        self.assertIn(" ".join(long.split()), (store.HOME / s / "log.md").read_text())
         log = (store.HOME / s / "log.md").read_text()
-        run(*t, "step", "L-1", "Short", "--carry", "fits", "--carry", long * 2, code=2)
+        run(*t, "step", "L-1", "Short", "--carry", "fits", "--next", long, code=2)
         self.assertEqual((store.HOME / s / "log.md").read_text(), log)  # refused before any write
+        self.assertNotIn("fits", run(*t, "show", "L-1"))
 
         for i in range(6):
             run(*t, "add", "L-1", "carry", f"Fact {i}")
@@ -818,6 +822,19 @@ class Writes(unittest.TestCase):
         self.assertEqual(done.count("Carry forward has 6"), 1)
         # The problem was there before. Each write ends by saying what `check` found, so no `check` follows it.
         self.assertTrue(run(*t, "set", "L-1", "title=One thing").endswith("\n`check`: no new problems\n"))
+
+        # A Carry forward bullet and a summary of any length are kept whole; a brief cuts the bullet to its own limit.
+        run(*t, "new", "L-3", "--title", "Three", "--depends", "L-1")
+        fact = "fact " * 2000
+        run(*t, "set", "L-3", "status=in-progress")
+        run(*t, "step", "L-3", "--carry", fact, "--done", long)
+        three = model.tracker_at(s).lookup("L-3")
+        self.assertEqual((three.carry_forward, three.get("summary").strip()), ([fact.strip()], long.strip()))
+        run(*t, "new", "L-4", "--title", "Four", "--depends", "L-3")
+        tr = model.tracker_at(s)
+        shown = views.carry_lines(tr, [tr.lookup("L-4")], limit=views.BRIEF_CARRY_CHARS)
+        self.assertEqual([len(x) <= views.BRIEF_CARRY_CHARS + 8 for x in shown if x.startswith("  L-3: ")], [True])
+        self.assertIn(fact.strip(), "\n".join(views.carry_lines(tr, [tr.lookup("L-4")])))  # `context` has it whole
 
         run(*t, "new", "L-2", "--title", "Two")
         run(*t, "log", "about two", "--ref", "l-2")
@@ -958,6 +975,12 @@ class Writes(unittest.TestCase):
         self.assertNotIn("P-1", run(*t, "check"))  # its sections keep their order
         with piped(""):
             self.assertIn("put takes the section's whole new text", run(*t, "put", "P-1", "plan", code=2))
+        plan = '- `api/y.py` answers "ready"\n- Done when $HOME is not read\n'
+        with piped(plan):  # a ticket with its Plan in one command
+            self.assertIn("no new problems", run(*t, "new", "P-4", "--title", "Four", "--plan", "-"))
+        self.assertEqual(markdown.section(run(*t, "show", "P-4"), "Plan").strip(), plan.strip())
+        self.assertIn("no new problems", run(*t, "add", "P-4", "link", "Code: [api/y.py](https://x.y/api/y.py) — it"))
+        self.assertIn(", Code, ", run(*t, "add", "--help"))  # the labels, where the link line is written
         with piped("- Nonsense: [x](https://x.y)\n"):
             self.assertIn("label 'Nonsense'", run(*t, "put", "P-1", "links", "-", code=2))
 
@@ -1366,6 +1389,34 @@ class Hooks(unittest.TestCase):
         for cmd, stdin in runs:
             subprocess.run(cmd, input=stdin, cwd=work, capture_output=True, text=True)
             self.assertFalse(ran.exists(), cmd[0])
+
+    @unittest.skipIf(system.WINDOWS, "Python there keeps its bytecode beside the source")
+    def test_python_keeps_its_bytecode(self):
+        """With `-I`, Apple's Python compiles every module again at each start unless it is told where to keep the
+        bytecode: scripts/python.sh names the folder, and spawn() and a UI start the CLI with the same one."""
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        env = {**os.environ, "TRACKER_HOME": str(home)}
+        kept = f"{str(ROOT).lstrip('/')}/scripts/tracker"
+        for cmd, stdin, module in (([str(ROOT / "bin/tracker"), "list"], "", "cli"),
+                                   ([str(ROOT / "scripts/hook.sh"), "prompt"], '{"prompt": "/work-tracker:watch"}',
+                                    "hooks")):
+            subprocess.run(cmd, input=stdin, env=env, capture_output=True, text=True, check=True)
+            self.assertTrue(list((home / ".pycache" / kept).glob(f"{module}.*.pyc")), cmd)
+        code = "import sys; sys.path.insert(0, sys.argv[1]); from tracker import system; print(system.PYTHON[-1])"
+        flags = ["-I", "-X", f"pycache_prefix={home / '.pycache'}"]
+        out = subprocess.run([sys.executable, *flags, "-c", code, str(ROOT / "scripts")], capture_output=True,
+                             text=True, check=True).stdout
+        self.assertEqual(out.strip(), f"pycache_prefix={home / '.pycache'}")
+        # A plugin version that is gone leaves its bytecode: the next version removes it, and no other folder.
+        gone, other = home / ".pycache/old/1.0/scripts/tracker", home / ".pycache/old/1.0/lib"
+        for d in (gone, other):
+            d.mkdir(parents=True)
+        with mock.patch.object(store, "PYCACHE", home / ".pycache"):
+            store.prune_bytecode()  # this process keeps its bytecode elsewhere: not the tracker's to remove
+            self.assertTrue(gone.exists())
+            with mock.patch.object(sys, "pycache_prefix", str(home / ".pycache")):
+                store.prune_bytecode()
+        self.assertEqual((gone.exists(), other.exists(), (home / ".pycache" / kept).exists()), (False, True, True))
 
     def test_commits_wait_for_a_ticket(self):
         (s, _), sid, work = new_tracker("Waits"), f"sid{time.monotonic_ns()}", repo("feat/W-1")
@@ -1845,7 +1896,7 @@ class IssueFields(unittest.TestCase):
                                              "CLAUDE_CONFIG_DIR": "/c", "TRACKER_SYNC": "60"}):
             hooks.record_cli()
             saved = json.loads(file.read_text())
-            self.assertEqual(saved["package"], str(system.PACKAGE))
+            self.assertEqual((saved["package"], saved["python"]), (str(system.PACKAGE), system.PYTHON))
             self.assertNotIn("secret", file.read_text())
             self.assertIn("/my/bin", saved["argv"][-2])
             self.assertIn("'CLAUDE_CONFIG_DIR': '/c'", saved["argv"][-2])
@@ -2556,7 +2607,8 @@ class Actions(unittest.TestCase):
         self.assertIn("- T-1 needs it\n- Reply: v1 stays\n- Reply: until March", run(*self.t, "show", "A-01"))
         self.assertIn(f"- {schema.today()} [A-01 T-1] Updated A-01: Reply: v1 stays; Reply: until March",
                       (self.root / "log.md").read_text())
-        self.assertIn("over 400", run(*self.t, "act", "A-01", "--note", "x " * 210, code=2))
+        run(*self.t, "act", "A-01", "--note", "x " * 210)  # a note of any length
+        self.assertIn("x " * 209 + "x\n", self.tr().lookup("A-01").body)
         out = run(*self.t, "act", "Ask Sam if the billing API keeps v1", code=3)
         self.assertIn("similar open action: A-01", out)
         run(*self.t, "act", "Get read access to the prod DB", "--refs", "T-9", code=2)

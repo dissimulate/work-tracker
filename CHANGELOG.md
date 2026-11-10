@@ -17,6 +17,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - In a Herdr layout, the view follows the focused agent: it shows that agent's tracker, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes. An agent on another Herdr machine shows its tracker from that machine.
 - Issue updates: with `tracker set tracker issue_updates=on`, the agent writes a linked ticket's status, its summary once it closes, and each decision settled on it to the ticket's issue with its own tool for the issue tracker, then records it with `tracker issue <id> --written`. `tracker issue` lists what is due, and the agent is asked right after the change, in the brief, and at your next message when a new update is due. Off by default.
 - The view shows a spinner in its centre while it loads, when it opens and when it changes to another tracker or agent, in place of an empty page or a short "No tracker open".
+- `tracker new <ID> --plan -` takes the ticket's Plan when it creates the ticket, so no `tracker put <id> plan -` has to follow.
+- `Code` is a link label in every tracker, for a place in the code: `- Code: [title](url) — why`. `tracker add --help` lists the labels.
 
 ### Changed
 
@@ -30,9 +32,11 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - In Herdr, the view runs the `tracker` CLI only when its tracker, or a session on it, changes: another tracker's sessions no longer make it read again. Its own window waits the same way. Run `scripts/install-herdr-mod.sh` again: the view and the plugin must be the same version.
 - The `blocked` filter's count is the number of tickets it shows.
 - Only `/work-tracker:watch` (`$work-tracker:watch` in Codex) starts or ends a watch: a bare `/watch` may be another plugin's.
+- Only a ticket's `next` has a length limit (400 characters): every brief prints it whole. A log line (`tracker log`, a `step` message, `--why`), a summary, a Carry forward bullet, an action and an action's note take a text of any length.
 
 ### Fixed
 
+- With the macOS system Python, each hook and command starts about three times faster: Python compiled the plugin's code again at every start. It now keeps the compiled code in `$TRACKER_HOME/.pycache/`, on macOS and Linux.
 - A write to a ticket of another tracker (`tracker step <slug>:<id> ...`, or an id found only in another tracker) now reports what it unblocked and the `check` problems it added in that tracker, not in the session's tracker.
 
 ### Removed

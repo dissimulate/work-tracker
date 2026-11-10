@@ -108,8 +108,8 @@ else
   events=$event
   wanted "$event" || exit 0
 fi
-# Only the hooks' modules load, not the CLI's; Python reuses their compiled bytecode.
+# Only the hooks' modules load, not the CLI's; Python reuses their compiled bytecode ($pycache).
 . "${0%/*}/python.sh"
-printf '%s' "$input" | "$python" -I -X utf8 -c \
+printf '%s' "$input" | "$python" -I -X utf8 ${pycache:+-X} ${pycache:+"pycache_prefix=$pycache"} -c \
   'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.hooks import run_hook; run_hook(*sys.argv[1:])' \
   "${0%/*}" $events

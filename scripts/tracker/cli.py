@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy
-from .schema import BLOCKER, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers
@@ -99,7 +99,9 @@ def build_parser():
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
                                     "options, context, goal, scope; a README section it names none of is new")
-    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context)")
+    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context). A link "
+                                 f"line's label is one of {', '.join(DEFAULT_LABELS)}, or one of the tracker's own "
+                                 "(`rules` lists them)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
     sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`) with new "
@@ -144,6 +146,8 @@ def build_parser():
     sp.add_argument("--repo", help="the ticket's repo, when the tracker spans several")
     sp.add_argument("--depends", **IDS, help="ticket, decision or action ids it waits on")
     sp.add_argument("--next")
+    sp.add_argument("--plan", metavar="TEXT", help="the ticket's Plan as agreed: goal, scope, acceptance criteria "
+                                                   "(`-`: from stdin)")
     for key, scale in SCALES.items():
         sp.add_argument(f"--{key}", help=f"{scale.span} ({scale.ends}); with an Issue link, the issue's own")
     sp.add_argument("--due", metavar="YYYY-MM-DD", help="the day it should be done by, only one the user or its "
@@ -328,8 +332,8 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
-TEXT_DESTS = ("message", "text", "next", "done", "pause", "carry", "question", "note", "resolve", "replace", "append",
-              "why", "pairs")
+TEXT_DESTS = ("message", "text", "next", "plan", "done", "pause", "carry", "question", "note", "resolve", "replace",
+              "append", "why", "pairs")
 
 
 def no_id(args) -> None:

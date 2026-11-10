@@ -6,11 +6,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .system import PACKAGE, WINDOWS, cli_for_ui, die
+from .system import PACKAGE, PYTHON, WINDOWS, cli_for_ui, die
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
@@ -104,10 +105,27 @@ def write_json(path: Path, data: dict, indent: int = 1) -> None:
 
 
 def record_cli() -> None:
-    """Say how to start this CLI, for a UI outside any session: the plugin's path changes with each version. Only when
-    that changes: a UI watches this folder, and each session has its own PATH."""
-    if read_json(CLI_FILE).get("package") != str(PACKAGE):
-        write_json(CLI_FILE, {"package": str(PACKAGE), "argv": cli_for_ui()})
+    """Say how to start this CLI, for a UI outside any session: the plugin's path changes with each version, and
+    scripts/python.sh says how Python starts. Only when one of them changes: a UI watches this folder, and each session
+    has its own PATH."""
+    start = {"package": str(PACKAGE), "python": PYTHON}
+    if {k: v for k, v in read_json(CLI_FILE).items() if k in start} != start:
+        write_json(CLI_FILE, {**start, "argv": cli_for_ui()})
+        prune_bytecode()
+
+
+PYCACHE = HOME / ".pycache"  # the compiled bytecode of this package and the stdlib: scripts/python.sh names it
+
+
+def prune_bytecode() -> None:
+    """Remove the bytecode of the plugin copies that are gone: each version has its own folder, and Python keeps a
+    folder's bytecode under PYCACHE by that folder's path. Only in PYCACHE: another prefix is not the tracker's."""
+    if not sys.pycache_prefix or Path(sys.pycache_prefix) != PYCACHE:
+        return
+    import shutil  # only here: once per plugin version
+    for kept in PYCACHE.glob(f"**/{PACKAGE.parent.name}/{PACKAGE.name}"):
+        if not (Path(PYCACHE.anchor) / kept.relative_to(PYCACHE)).exists():
+            shutil.rmtree(kept, ignore_errors=True)
 
 
 def create(path: Path, text: str) -> None:

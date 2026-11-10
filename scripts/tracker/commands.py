@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .system import ROOT, die, open_with_system
-from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
+from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section_block,
     split_frontmatter)
 from .store import HOME, atomic_file, atomic_write, create, locked, record_cli
 from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIVE_SYNC_S,
@@ -205,7 +205,7 @@ def cmd_set(args):
             if v not in allowed:
                 hint = "; in-review comes from the ticket's PR" if v in STAGES else ""
                 die(f"status must be one of {'|'.join(allowed)}{hint}")
-        if k in ("next", "summary") and rec.kind == "ticket":
+        if k == "next" and rec.kind == "ticket":
             fit(k, v)
         v = read_value(k, v)
         if k == "repo" and rec.kind == "ticket" and v and v not in tr.repos:
@@ -283,7 +283,6 @@ def base_notes(tr: Tracker, t: Record) -> list[str]:
 
 
 def cmd_log(args):
-    fit("log", args.message)
     tr = resolve(args)
     refs = [tr.find(r).id for r in id_list(args.ref)]
     append_log(tr, args.message, refs)
@@ -323,6 +322,8 @@ def cmd_new(args):
     if args.repo:
         meta["repo"] = args.repo
     t = new_record(tr, "ticket", args.id, args.title, **meta)
+    if (args.plan or "").strip():
+        put_section(t, "Plan", args.plan.strip("\n"))
     add_waits(tr, t, deps)
     append_log(tr, f"Added {args.id} {args.title}" + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
     print(f"created {args.id}: {t.path}")
@@ -488,7 +489,6 @@ def section_edit(args, new: bool = True) -> tuple[Tracker, Record, str]:
     if heading == "Plan" and rec.kind == "ticket" and not rec.todo and not args.why:
         die(f"{rec.id} has started, so its Plan is the agreed plan: pass why it changes, for the log: "
             f"--why \"<why the plan changes>\"")
-    fit("log", args.why)
     return tr, rec, heading
 
 
@@ -503,8 +503,6 @@ def section_done(tr: Tracker, rec: Record, heading: str, why: str | None, did: s
 def cmd_add(args):
     tr, rec, heading = section_edit(args)
     text = args.text.strip()
-    if heading == "Carry forward":
-        fit("carry", text)
     if args.replace:
         replace_in_section(rec, heading, args.replace, text)
         section_done(tr, rec, heading, args.why, "replaced")
@@ -525,9 +523,6 @@ def cmd_put(args):
         die("put takes the section's whole new text: pass it, or `-` and pipe it (a heredoc: <<'EOF')")
     if heading in LINK_SECTIONS:
         require_links(tr, text)
-    if heading == "Carry forward":
-        for b in bullets(text):
-            fit("carry", b)
     put_section(rec, heading, text)
     section_done(tr, rec, heading, args.why, "replaced")
 
@@ -734,15 +729,12 @@ def cmd_act(args):
     if blocks and (args.done or args.drop):
         die("--blocks with --done or --drop: a closed action blocks nothing")
     notes = args.note or []
-    for n in notes:
-        fit("note", n)
     due = None if args.due is None else read_value("due", args.due)
     a = existing(tr, "action", args.target)
     if a:
         if not (args.done or args.drop or args.note or refs or unrefs or blocks or due is not None or args.title):
             die("nothing to change: pass --done, --drop, --note, --refs, --unref, --blocks, --due or --title")
         if args.title:
-            fit("action", args.title)
             old = a.get("title")
             a.change({"title": " ".join(args.title.split())})
             append_log(tr, f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")])
@@ -764,7 +756,6 @@ def cmd_act(args):
         return
     if args.done or args.drop or args.title or unrefs:
         die("--done, --drop, --title and --unref change an action: pass its A-id")
-    fit("action", args.target)
     refuse_similar(tr, "action", args.target, args.force)
     a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
     append_notes(a, notes)
@@ -867,9 +858,7 @@ def cmd_step(args):
         m, cwd = on_branch(args)
         print("; ".join(mark_up_to_date(m, cwd)))
         return
-    for kind, text in [("log", args.message), ("next", args.next), ("summary", args.done),
-                       *(("carry", c) for c in args.carry or [])]:
-        fit(kind, text)
+    fit("next", args.next)
     tr, t = named_or_own(args)
     if t.kind != "ticket":
         die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")

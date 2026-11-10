@@ -441,15 +441,12 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
-# The longest text a command takes, in characters: a guard against a paragraph where a line belongs, generous so that
-# a line a little long is not refused and written again. Enforced when written; `check` leaves older text alone.
+# The longest text a command takes, in characters. Only `next` has one: every brief prints it whole for each ticket
+# under way, and the session that writes it can shorten it, while a view that cut it would lose the handoff's end. Any
+# other text has no limit: a view that goes into every session cuts what it shows (the BRIEF_* limits in views).
+# Enforced when written; `check` leaves older text alone.
 TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
     "next": (400, "next", "one concrete action; the detail goes in the Plan or the PR"),
-    "summary": (400, "summary", "one line; the detail goes in the PR"),
-    "log": (400, "log line", "what changed and why, in short; the detail goes in the PR, the commits or the ticket"),
-    "carry": (600, "Carry forward bullet", "one fact per bullet: split it into more"),
-    "action": (200, "action", "one line: what to do and with whom; the detail goes in `--note`"),
-    "note": (400, "action note", "one fact per note: pass `--note` again for the next (the context, then the reply)"),
 }
 
 
@@ -559,8 +556,9 @@ def id_kind(ident: str) -> str:
 
 # Link labels every tracker accepts; a tracker adds its own in README frontmatter `labels`.
 ISSUE, BLOCKER, EVIDENCE = "Issue", "Blocker", "Evidence"
-DEFAULT_LABELS = ["Spec", "Design", "Doc", ISSUE, "PR", "Commit", BLOCKER, EVIDENCE, "Related"]
+DEFAULT_LABELS = ["Spec", "Design", "Doc", ISSUE, "PR", "Commit", "Code", BLOCKER, EVIDENCE, "Related"]
 LABEL_RULES = {
+    "Code": "a place in the code the work builds on or changes: a file, a module or a symbol, by its path or URL",
     ISSUE: "the ticket's record in an issue tracker; its id (the first word of the link title, or a bare URL's last "
            "segment) also finds the ticket: `- Issue: [PROJ-12 Login page](url)`",
     BLOCKER: "something outside the tracker that the ticket waits on; names the id listed in `depends_on`",
