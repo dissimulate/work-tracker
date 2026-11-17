@@ -2247,6 +2247,86 @@ class IssueSync(unittest.TestCase):
         run(*t, "set", "T-1", "status=in-progress")
         self.assertEqual(self.moves(s), {})  # read its state first: it may be further on
 
+    # -- reading the state again while sessions run
+    def read(self, s: str, t, ident: str, stage: str, ago: float = 0) -> None:
+        run(*t, "issue", ident, "--priority", "2", "--stage", stage)  # its fields too: they are not due again
+        if ago:
+            tr = model.tracker_at(s)
+            state = tr.raw_state()
+            state["issues"]["state_read"][ident] -= ago
+            tr.save_state(state)
+
+    def states(self, s: str, focus=()) -> list[str]:
+        return [x.id for x in model.tracker_at(s).states_to_read(focus)]
+
+    def test_a_ticket_to_move_whose_issue_was_never_read_is_to_read(self):
+        s, t = self.tracker()
+        run(*t, "issue", "T-1", "--priority", "2")  # its fields, not its state
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertEqual(self.states(s), [])  # issue updates off: nothing waits for it
+        run(*t, "set", "tracker", "issue_updates=on")
+        self.assertEqual(self.states(s), ["T-1"])
+
+    def test_a_pr_event_makes_a_read_due(self):
+        s, t = self.tracker()
+        self.read(s, t, "T-1", "started")
+        self.assertEqual(self.states(s), [])
+        time.sleep(0.01)
+        model.apply_prs(model.tracker_at(s), {"T-1": ("o/r", [{"number": 7, "state": "open", "merged_at": ""}])}, None)
+        self.assertEqual(self.states(s), ["T-1"])
+        self.read(s, t, "T-1", "review")
+        self.assertEqual(self.states(s), [])
+
+    def test_the_sessions_tickets_under_way_are_read_again_by_age(self):
+        s, t = self.tracker()
+        for ident in ("T-1", "T-2"):
+            run(*t, "set", ident, "status=in-progress")
+            self.read(s, t, ident, "started", ago=schema.SYNC_MIN_INTERVAL_S + 1)
+        self.assertEqual(self.states(s, ["T-1"]), ["T-1"])  # not T-2: no session works on it
+        self.read(s, t, "T-1", "started")
+        self.assertEqual(self.states(s, ["T-1"]), [])
+
+    def test_merged_is_read_less_often_and_then_not_at_all(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        tr = model.tracker_at(s)
+        tr.lookup("T-1").save({"prs": ["7:merged"], "merged_at": schema.utc_now()})
+        self.read(s, t, "T-1", "merged", ago=1800)
+        self.assertEqual(self.states(s), [])
+        self.read(s, t, "T-1", "merged", ago=3601)
+        self.assertEqual(self.states(s), ["T-1"])
+        old = time.strftime(schema.TIME_FORMAT, time.gmtime(time.time() - 31 * 86400))
+        model.tracker_at(s).lookup("T-1").save({"merged_at": old})
+        self.read(s, t, "T-1", "merged", ago=2 * 86400)
+        self.assertEqual(self.states(s), [])  # a month on: someone else's to close
+
+    def test_the_listing_and_the_hook_ask_for_states_once(self):
+        s, t = self.tracker()
+        sid, work = f"sid{time.monotonic_ns()}", repo("feat/T-1")
+        run(*t, "set", "T-1", "status=in-progress", cwd=work)
+        self.read(s, t, "T-1", "started")
+        env = {**os.environ, "TRACKER_SESSION": sid}
+        subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, text=True,
+                       check=True)
+        self.assertNotIn("Issue states", said(hook("prompt", sid, work, prompt="go")))
+        tr = model.tracker_at(s)
+        state = tr.raw_state()
+        state["issues"]["state_read"]["T-1"] -= schema.SYNC_MIN_INTERVAL_S + 1
+        tr.save_state(state)
+        self.assertIn("Issue states to read for 1 ticket(s): T-1", said(hook("prompt", sid, work, prompt="next")))
+        self.assertNotIn("Issue states", said(hook("prompt", sid, work, prompt="again")))  # told once
+        listing = run(*t, "issue", cwd=work)
+        self.assertIn("T-1  https://issues.example/story/1", listing)
+        self.assertIn("--stage", listing)
+
+    def test_a_tracker_newer_than_this_plugin_gets_no_issue_requests(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        tr = model.tracker_at(s)
+        self.assertIn("Issue fields to read", views.issue_request(tr))
+        tr.readme.save({"schema": schema.SCHEMA + 1})
+        self.assertEqual(views.issue_request(model.tracker_at(s)), "")
+
 
 class Ui(unittest.TestCase):
     """`tracker open` shows a tracker in Herdr when Herdr is open, else in its own window; `tracker evidence` is the

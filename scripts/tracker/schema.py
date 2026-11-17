@@ -234,8 +234,13 @@ STATE_RULES = {
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
               "UI's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
-              "`started_at` (its wait time needs the issue's creation time); the brief and the prompt hook list the "
-              "ones to read for the model, which reads them with the issue tracker's tool. With README "
+              "`started_at` (its wait time needs the issue's creation time). `state_read`: per ticket, when its "
+              "issue's state was last recorded; `pr_changed`: per ticket, when `sync` last saw one of its PRs change. "
+              "Its state alone is to read again: with updates on, when its work would move an issue never read; "
+              "after a PR change; for a session's own ticket under way, every SYNC_MIN_INTERVAL_S; when read as "
+              "merged, hourly for a week after the merge, then daily, and not after 30 days. The brief and the "
+              "prompt hook list the ones to read for the model, each new set once, which reads them with the issue "
+              "tracker's tool; none on a tracker of a newer format than the plugin's. With README "
               "`issue_updates: on`, `history`: the answer of each decision settled when updates were first turned on "
               "(`set` records it once; with none, nothing is due and `check` warns); `listed`: per ticket, what its "
               "issue should show as `tracker issue` last listed it; `written`: per ticket, what `tracker issue <id> "
@@ -482,7 +487,9 @@ MERGED_CARRY_FORWARD_MAX = 5
 STALE_DECISION_DAYS = 14
 STALE_ACTION_DAYS = 7
 STALE_TICKET_DAYS = 7
-SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
+SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often; its tickets' issue states are read as often
+ISSUE_MERGED_READ_S = 3600  # an issue read as merged: read again this often for a week after the merge, then daily
+ISSUE_MERGED_STOP_S = 30 * 86400  # and not at all this long after the merge
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
 

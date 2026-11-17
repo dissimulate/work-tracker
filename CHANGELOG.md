@@ -12,6 +12,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Changed
 
 - With issue updates on, the agent moves each linked issue as the work moves: started, parked while it waits on something not under way, back to under way, in review, merged, and finished when done with no PR. It reads the issue first, never moves it backwards, and a move you make in the issue tracker holds until the work moves on. A dropped ticket's issue gets its summary as a comment and is not moved; a ticket reopened here does not move its issue back.
+- A running session is asked to read its tickets' issue states again, state only: after a PR change, every 10 minutes while a ticket of its own is under way, and once merged, hourly for a week, then daily, until a month after the merge. Each new set is asked for once.
 - Trackers move to format 6, which keeps the moves made to each issue apart from its summary and decisions. Start again any session still running the older plugin version.
 
 ### Fixed

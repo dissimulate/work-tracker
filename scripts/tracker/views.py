@@ -8,8 +8,8 @@ from pathlib import Path
 
 from .system import BIN
 from .markdown import section, strip_comments
-from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, STAGES, STALE_ACTION_DAYS,
-    STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
+from .schema import (FACTS, ISOLATION_RULE, ISSUE_STAGES, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SCHEMA,
+    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
 from .model import (LOG_LINE, SPANS, cut, due_date, link_lines, logged_decision, resolution, sequence, short, span, Dep,
     Record, Start, Tracker)
 from .moves import whose_move
@@ -383,11 +383,17 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
 
 
 ISSUE_SHOWN = 5  # tickets named in a request for their issue fields or issue updates; the rest as a count
-ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time with its issue tracker's tool and record "
-             "them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
-             + " --due <YYYY-MM-DD> --created <ISO 8601 time>`. Map each by what it means on its issue tracker's own "
-             "scale, not by a raw number its API gives (`tracker rules` gives the mapping). Leave out a flag whose "
-             "field the issue tracker lacks; pass it empty when the issue's value means none. Never guess a value.")
+STATE_FLAGS = ("--stage <" + "|".join(ISSUE_STAGES) + "> --state '<its name>'`. Map the state by what it means "
+               "(`tracker rules`: Issue stages), not by its name. The name goes in single quotes; when it holds a "
+               "quote, `$`, a backtick or a backslash, pass `--stage` alone. Never guess a value.")
+ISSUE_HOW = ("Read each issue's priority, estimate, due day, creation time and state with its issue tracker's tool and "
+             "record them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
+             + " --due <YYYY-MM-DD> --created <ISO 8601 time> " + STATE_FLAGS[:-len(" Never guess a value.")]
+             + " Map each other value by what it means on its issue tracker's own scale, not by a raw number its API "
+             "gives (`tracker rules` gives the mapping). Leave out a flag whose field the issue tracker lacks; pass it "
+             "empty when the issue's value means none. Never guess a value.")
+ISSUE_STATE_HOW = ("Read only each issue's state, with the narrowest call its issue tracker's tool has, and record it: "
+                   "`tracker issue <id> " + STATE_FLAGS)
 
 
 def shown_ids(due: list[Record]) -> str:
@@ -396,17 +402,35 @@ def shown_ids(due: list[Record]) -> str:
     return ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{more}" if more > 0 else "")
 
 
+def reads_due(tr: Tracker, first: list[Record] = ()) -> tuple[list[Record], list[Record]]:
+    """The tickets whose issue fields, and those whose issue state alone, the model should read; the `first` tickets
+    (the session's own) first, and they are the focus of the state reads by age. None on a tracker of a newer format
+    than this plugin's: an older plugin's requests would not match what it holds."""
+    if tr.schema > SCHEMA:
+        return [], []
+    focus = [t.id for t in first]
+    fields = sorted(tr.issues_to_read(), key=lambda t: t not in first)
+    return fields, sorted(tr.states_to_read(focus), key=lambda t: t not in first)
+
+
+def reads_told(tr: Tracker, first: list[Record] = ()) -> list[str]:
+    """The reads due, as a session remembers having been told them (its `told_reads`): the prompt hook asks again
+    only for one not among them."""
+    fields, states = reads_due(tr, first)
+    return sorted({t.id for t in fields + states})
+
+
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
-    """The request for the issue fields to read (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
-    session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The model reads
-    them with the issue tracker's tool; the tracker cannot."""
-    due = sorted(tr.issues_to_read(), key=lambda t: t not in first)
-    if not due:
+    """The request for the issue fields and states to read (STATE_RULES["issues"]), or "": one line, the `first`
+    tickets (the session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The
+    model reads them with the issue tracker's tool; the tracker cannot."""
+    fields, states = reads_due(tr, first)
+    parts = ([f"Issue fields to read for {len(fields)} ticket(s): {shown_ids(fields)}"] if fields else []) + (
+        [f"Issue states to read for {len(states)} ticket(s): {shown_ids(states)}"] if states else [])
+    if not parts:
         return ""
-    ids = shown_ids(due)
-    return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
-            "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
-            "them: never guess a value.")
+    return (f"[work-tracker] {'; '.join(parts)}. With a tool for their issue tracker (such as an MCP server), run "
+            "`tracker issue` for their links and how to record them; with none, leave them: never guess a value.")
 
 
 ISSUE_UPDATES_OFF = "tell the user that `tracker set tracker issue_updates=off` stops these requests"

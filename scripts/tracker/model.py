@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -15,9 +16,9 @@ from .system import die
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S,
-    PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of,
-    today, utc_now, utc_seconds, Stage)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_MERGED_READ_S, ISSUE_MERGED_STOP_S,
+    ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES,
+    SYNC_MIN_INTERVAL_S, csv, id_kind, kind_names, parse_day, show_value, stage_of, today, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -530,6 +531,32 @@ class Tracker:
             not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
+    def states_to_read(self, focus: Iterable[str] = ()) -> list[Record]:
+        """The linked tickets whose issue state alone the model should read again (STATE_RULES["issues"]), besides
+        those whose fields are due (issues_to_read): with issue updates on, one its work would move but never read
+        (a move waits for that read); one with a PR event since
+        its last read; one of `focus` (a session's tickets) under way, read over SYNC_MIN_INTERVAL_S ago; and one read
+        as merged, every ISSUE_MERGED_READ_S while recent, then daily, and not past ISSUE_MERGED_STOP_S."""
+        issues, now, focus = self.raw_state().get("issues", {}), time.time(), set(focus)
+        read, changed = issues.get("state_read", {}), issues.get("pr_changed", {})
+        fields = {t.id for t in self.issues_to_read()}
+        out = []
+        for t in self.tickets:
+            if not t.aliases or t.id in fields:
+                continue
+            last = read.get(t.id, 0)
+            if not t.get("issue_stage"):
+                due = self.readme.get("issue_updates") == "on" and self.wanted_issue_stage(t) is not None
+            elif t.get("issue_stage") == "merged":
+                since = now - (utc_seconds(t.get("merged_at")) or now)
+                every = ISSUE_MERGED_READ_S if since < 7 * 86400 else 86400
+                due = since < ISSUE_MERGED_STOP_S and now - last > every
+            else:
+                due = t.id in focus and t.stage in ("in-progress", "in-review") and now - last > SYNC_MIN_INTERVAL_S
+            if due or changed.get(t.id, 0) > last:
+                out.append(t)
+        return out
+
     def stopped_on(self, t: Record) -> bool:
         """It waits on something not itself under way: a decision, an action, an external blocker, or a ticket not
         started. Work stacked on tickets under way goes on."""
@@ -569,6 +596,7 @@ class Tracker:
             t.save(updates)  # not `updated_at`: reading the issue is no change to the work
         state_ = self.raw_state()
         issues = state_.setdefault("issues", {})
+        issues.setdefault("state_read", {})[t.id] = time.time()
         held = issues.setdefault("held", {})
         moved = issues.get("moves", {}).get(t.id, {}).get("stage")
         if stage == moved:
@@ -966,6 +994,10 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
     state["last_sync"] = time.time()
     if facts is not None:
         state["prs"] = facts
+    moved = {i for ids in events.values() for i in ids if tr.by_id(i) and tr.by_id(i).aliases}
+    if moved:  # a PR event is when a person most often moves the issue: its state is to read again
+        changed = state.setdefault("issues", {}).setdefault("pr_changed", {})
+        changed.update({i: state["last_sync"] for i in moved})
     tr.save_state(state)
     return changes
 
