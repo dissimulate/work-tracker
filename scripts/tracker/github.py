@@ -1,6 +1,6 @@
-"""The GitHub adapter: PR state from GitHub (`gh`), in the tracker's words. `sync` reads each ticket's PR and the open
-PRs' PR_FACTS, mapping GitHub's words onto the tracker's, and `model.apply_prs` writes them; `match_pr` finds a branch's
-ticket from its PR. Only this module knows GitHub's words; another forge's adapter would give the same."""
+"""The GitHub adapter: PR state from GitHub (`gh`), in the tracker's words. `sync` reads each ticket's PRs and the open
+PRs' PR_FACTS, and `model.apply_prs` writes them; `match_pr` finds a branch's ticket from its PR. Only this module knows
+GitHub's words; another forge's adapter would give the same."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ PR_COMMAND = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b")
 
 
 def budget(seconds: float | None) -> None:
-    """Give this process's gh calls `seconds` in all (None: no limit). A hook must end before Claude Code's timeout
-    stops it; a call the budget cuts short fails like any other, and the next sync tries again."""
+    """Give this process's gh calls `seconds` in all (None: no limit). A hook must end before the host's timeout stops
+    it; a call the budget cuts short fails like any other, and the next sync tries again."""
     global _deadline
     _deadline = None if seconds is None else time.monotonic() + seconds
 

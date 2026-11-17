@@ -6,9 +6,9 @@ import datetime as dt
 import json
 import os
 import re
-import sys
 
 from .markdown import headings, link_ident, parse_links, section
+from .system import warn
 from .store import HOME, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
     ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OWNER_HINT, OWN_VALUE_RULE,
@@ -209,9 +209,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"Files (a key marked {', '.join(owners[:-1])} or {owners[-1]} is written by that, never by `set`):",
         f"  README.md: sections {', '.join('## ' + h for h in README_SECTIONS)} first, in that order; ## Scope holds "
         f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. An optional "
-        f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it. Under "
-        f"~{README_TOKEN_BUDGET} "
-        f"tokens; rewritten, never appended to. Frontmatter:",
+        f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it, cut when "
+        f"long. Under ~{README_TOKEN_BUDGET} tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
         "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
@@ -295,15 +294,15 @@ def migrate(tr: Tracker) -> None:
         elif status == "merged":
             upd["status"] = "done"
         elif status == "todo" and old_state in PR_STAGE:
-            upd["status"] = "in-progress"  # its PR showed it started; a PR now overlays only started work
-        if t.meta.keys() & {"pr", "pr_state", "base"}:  # one PR of a ticket, now any number of them
+            upd["status"] = "in-progress"  # its PR showed it started; a PR overlays only started work
+        if t.meta.keys() & {"pr", "pr_state", "base"}:  # a ticket's one PR: `prs` holds any number
             upd |= {"pr": None, "pr_state": None, "base": None}
             number = str(t.meta.get("pr") or "")
             if number:
                 upd["prs"] = [f"{number}:{old_state}" if old_state else number]
                 facts = state.get("prs", {}).get(pr_key(tr.repo_of(t), number))
                 if facts is not None and old_state in OPEN_PR and t.meta.get("base"):
-                    facts["base"] = str(t.meta["base"])  # a PR's base is a fact of the PR now; `sync` reads the rest
+                    facts["base"] = str(t.meta["base"])  # a PR's base is a fact of the PR; `sync` reads the rest
         if t.get("next") == "—":
             upd["next"] = ""
         if str(t.get("priority", "")).strip() and level(t, "priority") is None:
@@ -411,9 +410,9 @@ def stop_old_viewer() -> None:
 
 
 def upgrade_trackers() -> None:
-    """Bring every tracker, archived ones too, to the current format: each command and hook starts here, so no other
-    code reads an older format. A tracker that fails stays as it is, says why, and tries again next time. Also stops
-    an older version's viewer, which would write the older format again."""
+    """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
+    tracker that fails stays as it is, says why, and tries again next time. Also stops the old viewer
+    (`stop_old_viewer`)."""
     if OLD_VIEWER.exists():
         stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):
@@ -421,4 +420,4 @@ def upgrade_trackers() -> None:
             try:
                 upgrade(tr)
             except (Exception, SystemExit) as exc:  # one bad tracker stops no command and no hook
-                print(f"work-tracker: could not migrate {tr.slug} to format {SCHEMA}: {exc}", file=sys.stderr)
+                warn(f"could not migrate {tr.slug} to format {SCHEMA}: {exc}")

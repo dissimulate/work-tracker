@@ -71,8 +71,8 @@ class Match:
 # `tracker start <name>` ties a tracker to one agent session; the branch still names the ticket. A session with no
 # tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`), or
 # at its start a link it is sure of (`hooks.sure_link`, `take_over`).
-# Claude's scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a command
-# prefix (hooks.command_context), else session_id() reads the host's own variable. Hooks get it in their input.
+# On Claude Code, scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a
+# command prefix (`hooks.command_context`), else `session_id` reads the host's variable. Hooks get it in their input.
 # Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
@@ -126,7 +126,7 @@ def drop_session(sid: str) -> None:
         path.unlink(missing_ok=True)
 
 
-# "Not now" to the offer to link a session to a tracker, per repo and branch: no offer there for DECLINE_S.
+# "Not now" to the offer to link a session to a tracker, per repo and branch: no link or offer there for DECLINE_S.
 DECLINED_FILE = HOME / ".declined.json"
 DECLINE_S = 86400
 
@@ -190,7 +190,7 @@ def take_over(sid: str, cwd: str | Path) -> str:
 
 
 def session_tracker(sid: str) -> Tracker | None:
-    """The tracker `tracker start` chose for this session."""
+    """The tracker linked to this session: by `tracker start`, or at the session's start (see "sessions" above)."""
     return tracker_at(load_session(sid).get("tracker", ""))
 
 
@@ -201,8 +201,8 @@ def session_focus(tr: Tracker, sid: str) -> list[str]:
 
 
 def context_tracker(sid: str | None = None) -> Tracker | None:
-    """The tracker context: the tracker `tracker start` chose for this session (`sid`, default `session_id()`), or
-    the one TRACKER names."""
+    """The tracker context: the session's tracker (`session_tracker`; `sid`, default `session_id()`), or the one
+    TRACKER names."""
     own = session_tracker(session_id() if sid is None else sid)
     return own or tracker_at(os.environ.get("TRACKER", ""))
 
@@ -265,7 +265,7 @@ def trackers_for_repo(cwd: str | Path) -> list[Tracker]:
 
 
 def find_tracker(args) -> Tracker | None:
-    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`tracker start`) or the repo (the
+    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`session_tracker`) or the repo (the
     only tracker that lists it) points to."""
     slug = args.tracker or os.environ.get("TRACKER")
     if slug:
@@ -563,8 +563,8 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
 @dataclass
 class Lag:
     """The work the tracker may not show yet, from git: the commits since the branch's mark (not logged yet), the
-    uncommitted files written since, and the commits logged since the tickets' `next` last changed. Edits by any
-    tool, subagent or session in the worktree count."""
+    uncommitted files written since (`changed_files`), and the commits logged since the tickets' `next` last
+    changed."""
     commits: list[tuple[str, str]]
     files: list[str]
     since: float  # when the mark was set; 0 without one
@@ -588,7 +588,7 @@ def lag(m: Match, cwd: str | Path) -> Lag:
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch else None
     if not mark:
         return Lag([], [], 0)
-    commits = [] if mark["head"] == head_of(cwd) else new_commits(cwd, mark)  # at the mark: one git call, not five
+    commits = [] if mark["head"] == head_of(cwd) else new_commits(cwd, mark)  # at the mark: one git call, not several
     return Lag(commits, changed_files(cwd, mark.get("at") or 0), mark.get("at") or 0, behind(m, mark))
 
 
@@ -631,14 +631,14 @@ def count_own(sid: str, m: Match, picked) -> None:
 
 # ---------------------------------------------------------------- live sessions
 # A session's status comes from its hooks, on any host: `busy` from a prompt or a tool after a wait, `waiting` while one
-# of its agents asks the user for a permission or an answer, `idle` from a stop. A prompt that the user ends with Esc
-# runs no hook, so `waiting` then holds until the next event: the process file says `idle` for a prompt too, so it
-# cannot tell. Claude Code also keeps one file per running `claude`
-# process: <config dir>/sessions/<pid>.json, with its pid, sessionId, cwd, name, status and when the status last changed
-# (statusUpdatedAt, epoch ms). That file says whether a session runs, once its hooks saw one (`native`) also after the
-# file is gone: a session that ended with no SessionEnd hook (its terminal closed; the hook cut short) leaves its last
-# activity behind. It settles a status only where hooks cannot: a session with no hook status yet, and a turn the user
-# interrupted, which runs no Stop hook. An ended session, or a host's with no hook activity for a day, does not count.
+# of its agents asks the user for a permission or an answer, `idle` from a stop. Claude Code also keeps one file per
+# running `claude` process: <config dir>/sessions/<pid>.json, with its pid, sessionId, cwd, name, status and when the
+# status last changed (statusUpdatedAt, epoch ms). That file says whether a session runs, once its hooks saw one
+# (`native`) also after the file is gone: a session that ended with no SessionEnd hook (its terminal closed; the hook
+# cut short) leaves its last activity behind. It settles a status only where hooks cannot (`hook_status`): a session
+# with no hook status yet, and a turn the user interrupted, which runs no Stop hook. A prompt that the user ends with
+# Esc runs no hook either, so `waiting` then holds until the next event: the process file says `idle` for a prompt
+# too, so it cannot tell. An ended session, or a host's with no hook activity for ACTIVITY_MAX_AGE_S, does not count.
 
 CLAUDE_SESSIONS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "sessions"
 ACTIVITY_MAX_AGE_S = 86400
@@ -689,7 +689,7 @@ def session_activity(sid: str, status: str, asker: str | None = None) -> None:
 
 @dataclass
 class Live:
-    """An agent session with a running process or recent hook activity, tied to a tracker by `tracker start`."""
+    """An agent session linked to a tracker (`session_tracker`), with a running process or recent hook activity."""
     sid: str
     name: str
     status: str

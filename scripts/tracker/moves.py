@@ -1,4 +1,5 @@
-"""Whose move a ticket under way waits on, computed from the review facts `sync` reads and the ticket's blockers."""
+"""Whose move a ticket under way waits on: this side (the user and the AI) or the people or thing named. Computed from
+the review facts `sync` reads and the ticket's blockers (MOVE_RULE); nothing writes it."""
 
 from __future__ import annotations
 
@@ -8,14 +9,8 @@ from dataclasses import dataclass
 from .markdown import Link
 from .model import link_title, short, Record, Tracker
 
-# ---------------------------------------------------------------- whose move
-# Whose turn a ticket under way waits on: this side (the user and the AI) or the people or thing named. Computed from
-# the review facts `sync` reads from the PR, and the ticket's open decisions, actions and external blockers; nothing
-# writes it.
-
 # What a move reads of an open PR, in the tracker's own words: a forge's adapter (github.py) maps its own words onto
-# these, so the model and the views know no forge. `sync` keeps them per open PR in .state.json `prs`, without the
-# empty ones.
+# these, so the model and the views know no forge. Where `sync` keeps them: STATE_RULES `prs`.
 PR_FACTS = {
     "review": "the review decision: approved, or changes (requested); none while no review decides",
     "requested": "who is asked to review",
@@ -56,8 +51,8 @@ class Move:
 
 
 def whose_move(tr: Tracker, t: Record) -> Move | None:
-    """The move of a ticket under way (MOVE_RULE); None for any other ticket, and for an open PR whose review facts
-    `sync` has not read."""
+    """The move of a ticket under way (MOVE_RULE); None for any other ticket, and while `sync` has read the review facts
+    of none of its open PRs."""
     if not t.in_flight:
         return None
     open_prs = tr.open_prs(t)

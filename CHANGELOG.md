@@ -40,6 +40,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Fixed
 
+- `tracker watch` sees an agent change branch: it read each worktree's branch only once.
+- On Windows, new tickets, decisions, actions and log lines end their lines with LF, as the tracker's other writes do.
 - With the macOS system Python, each hook and command starts about three times faster: Python compiled the plugin's code again at every start. It now keeps the compiled code in `$TRACKER_HOME/.pycache/`, on macOS and Linux.
 - A write to a ticket of another tracker (`tracker step <slug>:<id> ...`, or an id found only in another tracker) now reports what it unblocked and the `check` problems it added in that tracker, not in the session's tracker.
 

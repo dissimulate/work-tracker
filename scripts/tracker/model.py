@@ -46,7 +46,7 @@ def span(t: Record, name: str) -> int | None:
 
 def state_key(repo: str, branch: str) -> str:
     """A branch's key in .state.json: `owner/name:branch` (a git ref name holds no `:`). A bare branch, from a repo
-    with no GitHub remote, stands for that branch in any repo."""
+    with no `origin` remote (`git.cwd_repo`), stands for that branch in any repo."""
     return f"{repo.lower()}:{branch}" if repo else branch
 
 
@@ -75,7 +75,8 @@ def put_entry(entries: dict, repo: str, branch: str, value) -> None:
 
 
 def plain_link(s: str, root: Path | None = None) -> str:
-    """Markdown links as `title <url>`, for the AI's plain-text context; an evidence/ link becomes its file's path."""
+    """Markdown links as `title <url>`, for the model's plain-text context; an evidence/ link becomes its file's
+    path."""
     def one(m: re.Match) -> str:
         url = m[2]
         if root and url.startswith(EVIDENCE_DIR + "/"):
@@ -97,7 +98,7 @@ def link_title(link: Link) -> str:
 
 def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0,
                urls: bool = True) -> list[str]:
-    """Link lines for the AI's context. `titles` keeps only each line's label and title: the short form. `urls` False
+    """Link lines for the model's context. `titles` keeps only each line's label and title: the short form. `urls` False
     keeps the label, title and why, without the URL. `width` (a brief) cuts each line to that many characters and
     leaves out the nested detail lines."""
     if titles:
@@ -124,7 +125,7 @@ class Record:
     kind: str  # a KINDS key, or "tracker" for the README
     meta: dict
     body: str
-    problems: list[str] = field(default_factory=list)  # frontmatter lines that did not parse; `check` reports them
+    problems: list[str] = field(default_factory=list)  # what is wrong with its frontmatter; `check` reports them
 
     @property
     def id(self) -> str:
@@ -149,8 +150,7 @@ class Record:
 
     @property
     def pr_state(self) -> str:
-        """The state of its PRs together: open while one is, then draft, merged, closed; merged only once none is
-        open."""
+        """The state of its PRs together (PR_STATES): merged only once none is open."""
         return next((x for x in PR_STATES if x in self.prs.values()), "")
 
     @property
@@ -407,7 +407,7 @@ class Tracker:
     # -- dependencies: see the section below
     def deps(self, t: Record) -> list[Dep]:
         cache = self.index()["deps"]
-        if id(t) not in cache:  # keyed by the record itself; it is kept alive with its deps
+        if id(t) not in cache:  # keyed by id(t): the entry holds t, so no other object takes that id
             out = []
             for ident in t.list("depends_on"):
                 rec = self.lookup(ident)
@@ -695,7 +695,7 @@ class Dep:
         return bool(self.rec and self.rec.closed)
 
     def describe(self) -> str:
-        """`T-5 in-review`, `D-10 open: <title>`, `A-2 open: <title>`, `X external: <why>`, for the AI's plain-text
+        """`T-5 in-review`, `D-10 open: <title>`, `A-2 open: <title>`, `X external: <why>`, for the model's plain-text
         context."""
         if not self.rec:
             return f"{self.ident} external" + (f": {plain_link(self.link.text)}" if self.link else "")
@@ -820,7 +820,7 @@ LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 i
 
 def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     line = f"- {today()}" + (f" [{' '.join(refs)}]" if refs else "") + f" {' '.join(msg.split())}"
-    with open(tr.root / "log.md", "a") as f:
+    with open(tr.root / "log.md", "a", encoding="utf-8", newline="\n") as f:  # Windows: no CRLF
         f.write(line + "\n")
     return line
 
@@ -951,7 +951,7 @@ def short(text: str, n: int = 90) -> str:
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
-SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a ticket id, tracker slug or session id: also a file name
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a name that is also a file name: an id, slug or evidence file
 
 
 # ---------------------------------------------------------------- body edits

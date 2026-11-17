@@ -12,7 +12,8 @@
 //   start()             what `tracker open` asked for: { slug, id }, each or null
 //   nextOpen()          optional: resolves with each later request, as "<slug>/<id>"
 //   dir()               optional: the trackers' folder, for a host that watches it or reads the CLI's record there
-//   readText(path, machine)  optional: a file's text, or null. A null machine is this one; on another, a path is from its home
+//   readText(path, machine)  optional: a file's text, or null. A null machine is this one; on another, a path is
+//                       from its home
 //   cli()               optional: how to start the CLI, when the host was told
 //   framed()            optional: true when the view stands as a card of its own among others, so it draws its frame
 //   titleBar(row, t)    optional: the view's header row as the window's title bar, when the window has none of its own
@@ -252,7 +253,7 @@ export function trackerView(host) {
       cx.spawn(async cx => { await this.load(cx); });
     }
 
-    // A change the user asked for: a refusal shows in the error line, and the data reads again either way.
+    // A change the user asked for: a refusal shows in its own line (`refused`), and the data reads again either way.
     change(cx, args, { list = false, then = null } = {}) {
       if (this.busy) return;
       this.busy = true;
@@ -587,8 +588,8 @@ export function trackerView(host) {
       }));
     }
 
-    // What a record shows when it opens, in a modal: one grid of its lead lines, what it waits on and what waits on it, its facts
-    // and links, then its body.
+    // What a record shows when it opens, in a modal: one grid of its lead lines, what it waits on and what waits on
+    // it, its facts and links, then its body.
     details(view, id, t) {
       const r = view.records[id];
       const rows = [
@@ -674,7 +675,8 @@ export function trackerView(host) {
     }
 
     bar(view, t) {
-      // In a title bar, a press on a control must not move the window. The stop is on a parent, so the control has the press first.
+      // In a title bar, a press on a control must not move the window. The stop is on a parent, so the control has
+      // the press first.
       const control = el => host.titleBar ? h_flex().min_w(0).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(el) : el;
       const row = h_flex().px(SPACE.page).gap(SPACE.md).items_center()
         .when(Boolean(view?.facts.status), el => el.child(chip(view.facts.status, view.facts.status, t)))

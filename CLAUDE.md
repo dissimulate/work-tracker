@@ -7,8 +7,9 @@
 - Code layout and module order: README "Code". A module imports only the modules before it in that order.
 - Each fact of a tracker has one home (a key, a section, the log, the PR) and every view computes it from there. Contract constants in `scripts/tracker/schema.py` are the single source; `check`, `rules`, `set`, the templates and the hook texts read them. A format change bumps `SCHEMA` and teaches `migrate` the step. Only `migrate` reads an older format: every tracker migrates itself before a command or hook runs, so no other code keeps a fallback for old data.
 - Where each text lives:
-  - user: README, from "Usage" to "Settings"; developer: README "Develop" and this file
+  - user: README, from "Usage" to "Settings", and `CHANGELOG.md`; developer: README "Develop" and this file
   - agent, in every tracked session: the brief (`views.py`) and the hook texts (`hooks.py`); on demand: `skills/tracker/SKILL.md`, `tracker rules` (`schema.py` constants), `--help` (`cli.py`)
   - The brief's protocol is a short copy of the skill's core rules: change both together.
 - The tests fail when a backticked `tracker <command> --flag` in the docs, the skill, the templates or the code names a command or flag the CLI lacks: change the parser and the text together.
+- A code comment gives the why (a reason, a constraint, a gotcha) once, at the code it belongs to; other places name that code. Leave out what the code says, history and release numbers.
 - Hook output and the brief enter every tracked session's context. Add a line only when it changes what the model does next, keep the brief within the `BRIEF_*` limits in `views.py`, and phrase requests as the action to take.

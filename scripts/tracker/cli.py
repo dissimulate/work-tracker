@@ -261,9 +261,10 @@ def build_parser():
     sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI", listed=False)
     sp.add_argument("--pid", type=int, required=True, help="the agent's process id")
     sp.add_argument("--cwd", default="", help="its folder: finds a host that keeps no process file")
-    sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open, else its own window")
-    sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
-                                             "archived one too)")
+    sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open with the mod, else its "
+                                  "own window")
+    sp.add_argument("id", nargs="?", help="ticket, decision or action to open, or another tracker by its slug "
+                                             "(an archived one too)")
     sp.add_argument("--window", action="store_true", help="its own window, also when Herdr is open")
     add("install-window", cmd_install_window, f"download gpui-shell {GPUI_SHELL_VERSION} for this system, which the "
                                               "UI's own window needs")
@@ -284,9 +285,9 @@ WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "step", 
 def with_check(run, args) -> None:
     """Run a write command, then print the tickets it left unblocked, the request for an issue update it made due,
     and the `check` problems it added to the tracker, and end with whether `check` found new problems: no
-    `tracker check` needs to follow a write. Each write logs what the history needs, so no `tracker log` follows one
-    either. Each tracker the command writes is compared with itself as it was before its first write, so a write to
-    another tracker (`slug:ID`, an id found in any tracker) reports on that one. `init` is not checked."""
+    `tracker check` needs to follow a write. Each tracker the command writes is compared with itself as it was before
+    its first write (`first_writes`), so a write to another tracker (`slug:ID`, an id found in any tracker) reports on
+    that one."""
     if args.cmd == "init":
         run()
         return

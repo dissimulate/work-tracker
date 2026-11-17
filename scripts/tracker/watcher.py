@@ -1,7 +1,7 @@
 """`tracker watch`: one watcher per tracker reports each change that may need the user, one line per ticket, agent or
-check: the new log lines, the facts no log line holds (moves, `next`, stages, tickets that can start, `check` errors),
-the agent sessions on the tracker, and GitHub (`sync`). Only the user starts it: in a terminal, or in an agent session
-they gave the watch with its skill command (a grant the prompt hook writes)."""
+check: the new log lines, the facts no log line holds (`snapshot`), the agent sessions on the tracker, and GitHub
+(`sync`). Only the user starts it: in a terminal, or in an agent session they gave the watch with its skill command (a
+grant the prompt hook writes)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .system import alive, die, env_int
 from .store import HOME, locked, read_json, write_json
+from .git import forget
 from .schema import LIVE_SYNC_S, STATE_KEEP_DAYS
 from .model import LOG, LOG_LINE, SAFE_NAME, commits_logged, files_hash, short, Tracker
 from .session import SESSIONS_DIR, claude_sessions, live_sessions, match_cwd, session_id, ticket_facts, Live
@@ -37,7 +38,7 @@ REARM_S = 600  # a session's watch runs `--once` again and again: between two ru
 MOVE_URGENT = 8
 LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
-REFUSED = 4  # exit code of a refusal: not the user's watch, another watcher, a tracker in use, or a write in a watch
+REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run the command, or not now (a tracker in use)
 
 # ---------------------------------------------------------------- the user's grant
 # Only a prompt the user types fires the UserPromptSubmit hook, so the grant it writes is the user's: no command the
@@ -112,7 +113,8 @@ def waits(x: Live, now: float) -> bool:
 
 
 def ticket_events(old: dict, new: dict) -> list[Event]:
-    """What changed between two snapshots. A ticket new since `old` is left to its log line (`new` writes one)."""
+    """What changed between two snapshots. A ticket new since `old` is left to its log line (`tracker new` writes
+    one)."""
     out = []
     for ident, now in new.get("tickets", {}).items():
         was = old.get("tickets", {}).get(ident)
@@ -303,6 +305,7 @@ class Watcher:
         self.save(now)
 
     def poll(self, now: float) -> list[str]:
+        forget()  # git as it is now: this process runs on
         lines = self.batch(now)
         if lines:
             self.save(now)

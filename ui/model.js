@@ -1,7 +1,8 @@
-// What the view works out from `tracker data`, with no UI in it: which rows show, in what order, and the graph's
-// geometry. Runs on any JavaScript engine: node runs its tests (model.test.js), QuickJS runs it in a host.
+// What the view works out with no UI in it: from `tracker data`, which rows show, in what order, and the graph's
+// geometry; from its host, how to start the CLI and what a change in the folder means. Runs on any JavaScript engine:
+// node runs its tests (model.test.js), QuickJS runs it in a host.
 
-// The rows any of the filters keeps, each a status or `blocked`, which a ticket's dependencies decide; with none on,
+// The rows any of the filters keeps, each a stage or `blocked`, which a ticket's dependencies decide; with none on,
 // every row. A ticket that can stack on work under way still waits, so it counts as blocked.
 export function filterRows(tickets, filters) {
   const blocked = t => !t.closed && ["blocked", "stack"].includes(t.gate.state);
@@ -211,7 +212,8 @@ export function followNotice(agent, slug) {
 export const isLoading = ({ view, error, starting, slug }) => !view && !error && (starting || Boolean(slug));
 
 // The width of a column of ids in a monospace font, in px: room for the longest, within limits so that a short list
-// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size: only a whisker over, so the gap after the longest id is the row's gap.
+// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size: only a
+// whisker over, so the gap after the longest id is the row's gap.
 export function idWidth(ids, size) {
   const longest = Math.max(0, ...[...ids].map(id => String(id).length));
   return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.605);
@@ -245,9 +247,9 @@ export function liveLine(view, now) {
 
 const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
 
-// How to start a machine's CLI: what the host was told, else what its hooks recorded, as the plugin's path changes with
-// each version. Read each time, so a record that comes later or moves counts at once. Here, with no record, `tracker` on
-// PATH. On another machine PATH holds no plugin, so there it is an error, which the view shows.
+// How to start a machine's CLI: what the host was told, else the CLI's own record (`store.record_cli`), as the plugin's
+// path changes with each version. Read each time, so a record that comes later or moves counts at once. Here, with no
+// record, `tracker` on PATH. On another machine PATH holds no plugin, so there it is an error, which the view shows.
 export async function findCli(host, dir, machine) {
   const told = machine ? null : host.cli?.();
   if (told?.length) return told;

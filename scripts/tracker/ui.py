@@ -1,6 +1,6 @@
-"""Where the UI in `ui/` runs: a Herdr mod when Herdr is open, else its own window through gpui-shell; installing
-each, and keeping an installed mod at this plugin version. The UI reads and changes a tracker only through this CLI
-(`viewmodel`), so nothing here serves it."""
+"""Where the UI in `ui/` runs: a Herdr mod when Herdr is open with the mod installed, else its own window through
+gpui-shell; installing each, and keeping an installed mod at this plugin version. The UI reads and changes a tracker
+only through this CLI (`viewmodel`), so nothing here serves it."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-from .system import DETACH, ROOT, WINDOWS, cli_for_ui, die
+from .system import DETACH, ROOT, WINDOWS, cli_for_ui, die, warn
 from .store import HOME, atomic_file
 
 UI_DIR = ROOT / "ui"
@@ -94,7 +93,7 @@ def update_mod() -> None:
     try:
         put_mod(target)
     except OSError as exc:  # stops no hook and no `open`
-        print(f"work-tracker: could not update the Herdr mod in {target}: {exc}", file=sys.stderr)
+        warn(f"could not update the Herdr mod in {target}: {exc}")
 
 
 def herdr(*args: str) -> dict | None:
@@ -132,7 +131,8 @@ def own_shell() -> Path:
     return HOME / ".gpui-shell" / GPUI_SHELL_VERSION / ("gpui-shell.exe" if WINDOWS else "gpui-shell")
 
 
-# The download's modules load only for it: every command imports this module, and they slow its start.
+# The modules only the download and the window need load in the functions that use them: every command imports this
+# module, and they slow its start.
 def fetch(url: str) -> bytes:
     import urllib.request
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as answer:

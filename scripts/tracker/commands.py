@@ -979,7 +979,7 @@ def cmd_start(args):
     drop_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
-    record_commits(m, cwd)  # as the hooks do: the commits since the branch's mark, or its baseline
+    record_commits(m, cwd)
     remember(sid, m, cwd)
     print(brief(m, cwd, note=found))
     tell_updates(m.tracker)

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hook entry point: hooks/hooks.json runs `hook.sh <event>` with the hook JSON on stdin. Each event is filtered here
-# with shell built-ins, so Python (about 40 ms) starts only when it can add something. The filters only rule events
-# out; Python decides what matches:
+# in shell, so Python (about 40 ms) starts only when it can add something. The filters only rule events out; Python
+# decides what matches:
 # - a session with no tracker (no `tracker start`, no TRACKER): one file test, then exit. At its start, Python only
 #   on a git branch (git's files are read, git does not run), to look for an open ticket and link it or offer the
 #   link, or while a session that /clear ended hands its tracker over (.cleared.json);
@@ -28,8 +28,8 @@ field() {
 field session_id
 case $value in *[!A-Za-z0-9._-]*) sid= ;; *) sid=$value ;; esac
 # Claude's shell commands get their id and PATH through its env file. Other hosts get both as a command prefix in
-# context (`command_context` in Python), else read their own session id (`session_id`) and take bin/tracker's path
-# from the skill.
+# context (`hooks.command_context`), else read their own session id (`session.session_id`) and take bin/tracker's
+# path from the skill.
 if [ "$event" = session-start ] && [ -n "$CLAUDE_ENV_FILE" ] && [ -n "$sid" ]; then
   echo "export TRACKER_SESSION=$sid" >> "$CLAUDE_ENV_FILE"
   bin=$(cd "${0%/*}/../bin" && pwd)
@@ -108,7 +108,7 @@ else
   events=$event
   wanted "$event" || exit 0
 fi
-# Only the hooks' modules load, not the CLI's; Python reuses their compiled bytecode ($pycache).
+# Only the hooks' modules load, not the CLI's.
 . "${0%/*}/python.sh"
 printf '%s' "$input" | "$python" -I -X utf8 ${pycache:+-X} ${pycache:+"pycache_prefix=$pycache"} -c \
   'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.hooks import run_hook; run_hook(*sys.argv[1:])' \

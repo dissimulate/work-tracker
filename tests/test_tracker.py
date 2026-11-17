@@ -1077,7 +1077,7 @@ class Upgrade(unittest.TestCase):
         self.assertFalse(file.exists())
 
     def test_a_hook_migrates_too_and_an_archived_tracker(self):
-        s, _ = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
+        s, _ = self.old_tracker(schema=schema.SCHEMA)
         archived, _ = self.old_tracker(schema=schema.SCHEMA)
         run("archive", archived)
         sid, work = f"sid{time.monotonic_ns()}", repo("feat/U-1")
@@ -1089,7 +1089,7 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(model.archived_at(archived).schema, schema.SCHEMA)
 
     def test_a_tracker_that_fails_stays_says_why_and_stops_nothing(self):
-        s, t = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
+        s, t = self.old_tracker(schema=schema.SCHEMA)
         healthy, _ = self.old_tracker(schema=schema.SCHEMA)
         model.tracker_at(s).readme.save({"schema": 3})
         model.tracker_at(healthy).readme.save({"schema": 3})
@@ -1378,7 +1378,7 @@ class Hooks(unittest.TestCase):
                 path.write_text(re.sub(r"^status: .*", f"status: {status}", path.read_text(), flags=re.M))
                 tool("apply_patch" if "command" in used else "Edit", sid, cwd, tool_input=used)
                 self.assertNotEqual(session.load_session(sid)["seen"], before)
-                self.assertNotIn("Changed since your brief", said(hook("prompt", sid, work, prompt="next")))
+                self.assertNotIn("by another session or a PR sync", said(hook("prompt", sid, work, prompt="next")))
 
     def test_session_identity(self):
         cases = [({}, ""), ({"CODEX_THREAD_ID": "codex"}, "codex"),
@@ -1443,8 +1443,8 @@ class Hooks(unittest.TestCase):
 
     @unittest.skipIf(system.WINDOWS, "Python there keeps its bytecode beside the source")
     def test_python_keeps_its_bytecode(self):
-        """With `-I`, Apple's Python compiles every module again at each start unless it is told where to keep the
-        bytecode: scripts/python.sh names the folder, and spawn() and a UI start the CLI with the same one."""
+        """Python keeps its bytecode in the folder scripts/python.sh names (it says why), and spawn() and a UI start the
+        CLI with the same one."""
         home = Path(tempfile.mkdtemp(dir=BASE))
         env = {**os.environ, "TRACKER_HOME": str(home)}
         kept = f"{str(ROOT).lstrip('/')}/scripts/tracker"
@@ -1607,8 +1607,8 @@ class SequenceSort(unittest.TestCase):
         run(*t, "new", "T-5", "--title", "Uses that", "--depends", "T-3")
         rows = {x["id"]: x for x in data(s)["tickets"]}
 
-        # step: the depth-first dependency order the sequence starts in, a chain together and dropped last; status: its
-        # place in todo → dropped.
+        # `order`, the Step column's sort: the depth-first dependency order the sequence starts in, a chain together and
+        # dropped last. `sort.status`: its place in todo → dropped.
         self.assertEqual([[rows[i][k] for k in ("order", "group")] + [rows[i]["sort"]["status"]]
                           for i in ("T-2", "T-3", "T-5", "T-10", "T-4")],
                          [[0, "api", 0], [1, "", 0], [2, "", 0], [3, "ui", 0], [4, "api", 4]])
@@ -2340,7 +2340,8 @@ class Spans(unittest.TestCase):
         run(*t, "set", "S-1", "status=in-progress")  # started again: the first start stays
         self.assertEqual(model.tracker_at(s).lookup("S-1").get("started_at"), "2026-09-01T00:00:00Z")
         self.assertIn("the tracker writes it", run(*t, "set", "S-1", "started_at=2026-09-02T00:00:00Z", code=2))
-        # Started before 0.29, so in progress with no start: set in progress again, it gets none rather than now
+        # In progress with no start, as a ticket started before the tracker recorded starts: set in progress again, it
+        # gets none rather than now
         run(*t, "new", "S-2", "--title", "Started earlier", "--branch", "f2")
         path = store.HOME / s / "tickets" / "S-2.md"
         path.write_text(re.sub(r"^status: .*", "status: in-progress", path.read_text(), flags=re.M))
@@ -2448,6 +2449,16 @@ class Watch(unittest.TestCase):
         self.assertEqual(w.poll(now), [])  # said once
         ticket(self.root, "W-9", depends_on=["W-99"])
         self.assertIn("! check: ", "".join(w.poll(now)))
+
+    def test_reads_git_again_at_each_look(self):
+        """`tracker watch` is one long command: an agent's new branch shows at the next look."""
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        self.assertEqual(git.branch_of(self.work), "feat/W-1")
+        subprocess.run(["git", "-C", str(self.work), "checkout", "-qb", "feat/W-2"], check=True)
+        self.assertEqual(git.branch_of(self.work), "feat/W-1")  # one look keeps what it read
+        w.poll(now)
+        self.assertEqual(git.branch_of(self.work), "feat/W-2")
 
     def test_restart(self):
         """A restart misses nothing and repeats nothing; one watcher per tracker."""

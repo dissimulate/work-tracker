@@ -91,8 +91,8 @@ def atomic_write(path: Path, text: str) -> None:
 
 
 def read_json(path: Path) -> dict:
-    """A JSON file's object: the machine state, a session's, a watch's. {} when the file is missing, is not JSON or
-    holds no object: one bad file never stops a command or a hook."""
+    """A JSON file's object; {} when the file is missing, is not JSON or holds no object: one bad file never stops a
+    command or a hook."""
     try:
         data = json.loads(Path(path).read_text())
     except (OSError, ValueError):
@@ -105,9 +105,10 @@ def write_json(path: Path, data: dict, indent: int = 1) -> None:
 
 
 def record_cli() -> bool:
-    """Say how to start this CLI, for a UI outside any session: the plugin's path changes with each version, and
-    scripts/python.sh says how Python starts. Only when one of them changes: a UI watches this folder, and each session
-    has its own PATH. Whether it wrote: once per plugin version, so what follows a new version can follow this."""
+    """Say how to start this CLI, for a UI outside any session, where PATH holds no plugin: the plugin's path changes
+    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, as a UI
+    watches this folder. Returns whether it wrote, once per plugin version, so what a new version needs
+    (`hooks.record_version`) can follow this."""
     start = {"package": str(PACKAGE), "python": PYTHON}
     if {k: v for k, v in read_json(CLI_FILE).items() if k in start} == start:
         return False
@@ -135,7 +136,7 @@ def create(path: Path, text: str) -> None:
     global _writes
     will_write(path)
     try:
-        with open(path, "x") as f:
+        with open(path, "x", encoding="utf-8", newline="\n") as f:  # Windows: no CRLF, as in `atomic_file`
             f.write(text)
     except FileExistsError:
         die(f"{path} already exists")

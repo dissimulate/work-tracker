@@ -29,7 +29,7 @@ class Stage:
 
 NO_STAGE = Stage()  # of an unknown status (`check` reports it)
 # Each kind's statuses, the first a new record's, and what each says of its work. A ticket's are its stages, in the
-# order the views count and sort them; its PR overlays started work (PR_STAGE, `Record.stage`). A new status, or a new
+# order the views count and sort them; its PRs overlay work under way (PR_STAGE, `Record.stage`). A new status, or a new
 # kind's, is one entry here: `set`, `check`, `tracker rules` and every closed, dropped or started test follow from it.
 LIFECYCLES = {
     "ticket": {"todo": Stage(todo=True), "in-progress": Stage(in_flight=True),
@@ -42,7 +42,7 @@ LIFECYCLES = {
 STAGES = LIFECYCLES["ticket"]
 # The statuses a command sets, per kind; a ticket's PR adds the others
 STATUSES = {kind: tuple(s for s, x in stages.items() if not x.derived) for kind, stages in LIFECYCLES.items()}
-PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "done"}  # PRs' state -> stage of started work
+PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "done"}  # PRs' state -> stage of work under way
 PR_STATES = ("open", "draft", "merged", "closed")  # the state of a ticket's PRs together: the first any of them has
 OPEN_PR = {"draft", "open"}  # the states of a PR not yet merged or closed
 OPEN_STAGES = {s for s, x in STAGES.items() if not x.closed}
@@ -57,8 +57,8 @@ def stage_of(kind: str, status) -> Stage:
 # A scale is a ticket key that holds a level, the same whatever the issue tracker: an issue's own value is mapped onto
 # it when it is read (SCALE_RULE), so levels compare, filter and sort across issue trackers. A level is a rank, not an
 # amount (two XS are not an S): nothing adds levels.
-# A new scale is one SCALES entry: its ticket key, the CLI flags (`new`, `set`, `issue`), `check`, `tracker rules` and
-# the UI's column follow from it.
+# A new scale is one SCALES entry: its ticket key, the `new` and `issue` flags, `set`, `check`, `tracker rules` and the
+# UI's column follow from it.
 
 @dataclass(frozen=True)
 class Scale:
@@ -81,7 +81,8 @@ class Scale:
         return self.names[self.levels.index(n)]
 
 
-# An issue tracker's priority words, each with its level: the rule names them; `migrate` turns schema 1's into levels.
+# An issue tracker's priority words, each with its level: the priority rule names them; `migrate` reads them
+# (`contract.priority_from_word`).
 PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
                   "low": 3, "lowest": 4, "trivial": 4}
 
@@ -134,7 +135,7 @@ KEYS = {
         "due": ("set", DUE),
         "created_at": ("auto", "when `tracker new` added it"),
         "updated_at": ("auto", UPDATED),
-        "started_at": ("auto", "when `set status=in-progress` first started it; none for one started before 0.29"),
+        "started_at": ("auto", "when `set status=in-progress` first started it"),
         "closed_at": ("auto", "when its status closed it (done or dropped); a merged PR's time is merged_at"),
         "prs": ("sync", "its PRs, those from its branch and its `PR:` links, each as `<number>:<state>` (draft, open, "
                         "merged or closed); a closed one no link names is left out while another is not closed"),
@@ -176,7 +177,7 @@ KEYS = {
     },
 }
 SCHEMA = 4  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
-# Keys an older format named otherwise, old: new; `migrate` renames them, and removes those it retired
+# Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
                 "action": {"opened": "created_at", "updated": "updated_at"},
@@ -224,7 +225,8 @@ STATE_RULES = {
 
 # ---------------------------------------------------------------- values
 # A key's name gives its value's form (value_form). Each form (FORMS) reads a value a command is given (`read_value`),
-# holds a stored value to it (`valid_value`, for `check`) and shows it (`show_value`); a new form is one Form subclass.
+# holds a stored value to it (`valid_value`, for `check`) and shows it (`show_value`); a new form is a Form subclass in
+# FORMS, and its keys in `value_form`.
 # A time the tracker writes is UTC to the second; a `_at` key may hold a date alone, written before the tracker kept
 # the time: it gives no span.
 
@@ -441,10 +443,10 @@ def today() -> str:
     return dt.date.today().isoformat()
 
 
-# The longest text a command takes, in characters. Only `next` has one: every brief prints it whole for each ticket
-# under way, and the session that writes it can shorten it, while a view that cut it would lose the handoff's end. Any
-# other text has no limit: a view that goes into every session cuts what it shows (the BRIEF_* limits in views).
-# Enforced when written; `check` leaves older text alone.
+# The longest text a command takes, in characters. Only `next` has one: the brief prints it whole for each ticket it
+# shows in full, and the session that writes it can shorten it, while a view that cut it would lose the handoff's
+# end. Any other text has no limit: a view that goes into every session cuts what it shows (the BRIEF_* limits in
+# views). Enforced when written; `check` leaves older text alone.
 TEXT_MAX = {  # kind: (characters, what it is, where the rest goes)
     "next": (400, "next", "one concrete action; the detail goes in the Plan or the PR"),
 }
@@ -463,7 +465,8 @@ def fit(kind: str, text: str | None) -> None:
 # same place. The templates/ folder shows each file's shape.
 
 README_SECTIONS = ["Context", "Goal", "Scope"]  # required, first, in this order; any sections may follow
-# An optional README section: this work's standing instructions for the agent, which every brief prints in full.
+# An optional README section: this work's standing instructions for the agent, which every brief prints
+# (`views.instructions`).
 README_INSTRUCTIONS = "Instructions"
 README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required frontmatter; repo may be empty
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
@@ -499,7 +502,7 @@ START_RULE = (
     "merges. `tracker ready` and `tracker context <id>` name that branch, and `set <id> status=in-progress` says when "
     "the current branch does not contain it. Do not write the base as prose. The tracker never changes git.")
 # The one statement of the tracker's isolation. Every session with a tracker gets it in its brief's protocol, every
-# subagent in its SubagentStart line, and `tracker rules` prints it; the skill points to it.
+# subagent in its SubagentStart line; `tracker rules` and the issue-update request print it; the skill points to it.
 ISOLATION_RULE = (
     "The tracker is private to this work, isolated from the repos, PRs, issue trackers and other trackers it links "
     "to. Outside it (code, comments, commits, branch names, PR titles and bodies, issues, other trackers) write each "
@@ -515,7 +518,7 @@ STEP_MESSAGE = ("a message only for what the commits do not say (a result, a mea
 class Kind:
     """A kind of record: one file per record in its folder, made from templates/<kind>.md. Its keys are KEYS[kind]
     and its statuses LIFECYCLES[kind]; code that serves every kind reads this table, so a new kind is one entry
-    here, in KEYS and in LIFECYCLES, and its command."""
+    here, in KEYS and in LIFECYCLES, its template and its command."""
     folder: str
     prefix: str  # the letter of its numbered ids (`D`: D-01, D-02); "" for a ticket, whose id is given
     command: str  # the command that adds one; for a numbered kind, also the one that closes it and takes its notes

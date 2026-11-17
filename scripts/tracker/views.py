@@ -98,7 +98,7 @@ def stage_counts(tr: Tracker) -> dict[str, int]:
 
 
 def gate(tr: Tracker, t: Record) -> str:
-    """`[waits on T-5, D-10] `, `[stacks on T-4] ` (it waits only on work under way) or `[ready] ` (Tracker.gate)."""
+    """`[waits on T-5, D-10] `, `[stacks on T-4] ` or `[ready] ` (`Gate`); "" for none."""
     g = tr.gate(t)
     return f"[{g.text()}] " if g.state else ""
 
@@ -209,8 +209,7 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
 
 
 def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, its TEXT_FACTS (branch, repo, priority, size, due day), next action or summary,
-    move, handoff, dependencies and links."""
+    """A ticket's own facts: its line, its TEXT_FACTS, next action or summary, move, handoff, dependencies and links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
@@ -305,8 +304,8 @@ def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log:
 
 
 def protocol(slug: str) -> str:
-    """The protocol each session-start brief carries: each event and the command that records it. The skill holds
-    the rest."""
+    """The protocol the brief carries when a session starts on a tracker or links one (`tracker start`): each event
+    and the command that records it. The skill holds the rest."""
     return "\n".join([
         f"Tracker protocol (CLI `tracker`; fallback `{BIN.as_posix()} --tracker {slug} <command>`):",
         f"- {ISOLATION_RULE}",
@@ -341,9 +340,8 @@ PICK_ONE = ("More than one ticket is under way here. When this session's work is
             "without an id then use it.")
 BRANCH_RULE = ("Change git branches only when the user asks. When the user asks for a branch for a ticket, run "
                "`tracker context <id>` first, start the branch from the one its `start:` line names (else the "
-               "default branch), and name it for the work, led by the ticket's Issue id when it has one "
-               "(`feat/<ISSUE>-<slug>`); `tracker set <id> status=in-progress` then records it on the ticket, which "
-               "ties this session to it.")
+               "default branch), and name it for the work, led by the ticket's Issue id when it has one; "
+               "`tracker set <id> status=in-progress` then records it on the ticket, which ties this session to it.")
 
 
 # A brief goes into every session's context: each fact once, and small. `tracker context <id>` has the rest.
@@ -366,7 +364,7 @@ def duration(seconds: float) -> str:
 
 def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
     """A line per span (SPANS) that some ticket has: the median, the fastest ticket, and the median of the spans that
-    ended in the last 7 days."""
+    ended within SPAN_RECENT_S."""
     from statistics import median  # here: the hooks never show a span
     now = time.time() if now is None else now
     lines = []
@@ -379,7 +377,7 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
                  f"{len(spans)}", f"fastest {duration(fastest[1])} ({fastest[0].id})"]
         recent = [x for t, x in spans if now - (utc_seconds(t.get(end)) or 0) <= SPAN_RECENT_S]
         if recent:
-            parts.append(f"last 7 days: median {duration(median(recent))} over {len(recent)}")
+            parts.append(f"last {SPAN_RECENT_S // 86400} days: median {duration(median(recent))} over {len(recent)}")
         lines.append(" · ".join(parts))
     return lines
 

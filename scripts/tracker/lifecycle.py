@@ -12,7 +12,7 @@ from .watcher import REFUSED, state_path, watcher_of
 
 # ---------------------------------------------------------------- archive and delete
 # A tracker leaves HOME only while no agent session or watch is on it: it would go from under them mid-work. Anyone
-# may archive one, as `tracker unarchive` brings it back; only the user deletes one, to the system's trash.
+# may archive one, as `tracker unarchive` brings it back; only the user deletes one (`commands.cmd_delete`).
 
 
 def in_use(tr: Tracker, own_sid: str = "", live: dict[str, list[Live]] | None = None) -> str:
@@ -57,7 +57,7 @@ def move_tracker(tr: Tracker, dest: Path) -> None:
 
 
 def archive_tracker(tr: Tracker, own_sid: str = "") -> str:
-    """Move the tracker to ARCHIVE: out of every list, lookup and hook. Exits REFUSED while it is in use."""
+    """Move the tracker to ARCHIVE (`model.ARCHIVE` says what that does). Exits REFUSED while it is in use."""
     with locked():
         if tr.archived:
             die(f"{tr.slug} is archived already", REFUSED)

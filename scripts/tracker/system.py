@@ -13,8 +13,8 @@ WINDOWS = os.name == "nt"
 PACKAGE = Path(__file__).resolve().parent
 ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
 BIN = ROOT / "bin" / "tracker"  # the CLI
-# This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode; its
-# compiled bytecode kept where this process keeps it
+# This Python, started as scripts/python.sh says (the reasons are there), its compiled bytecode kept where this
+# process keeps it
 PYTHON = [sys.executable, "-I", "-X", "utf8",
           *(["-X", f"pycache_prefix={sys.pycache_prefix}"] if sys.pycache_prefix else [])]
 # The CLI on this Python, as bin/tracker starts it: Windows starts no shell script as a process
@@ -28,8 +28,13 @@ DETACH = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_
           else {"start_new_session": True})
 
 
-def die(msg: str, code: int = 2) -> None:
+def warn(msg: str) -> None:
+    """A problem that stops nothing, on stderr."""
     print(f"tracker: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = 2) -> None:
+    warn(msg)
     sys.exit(code)
 
 
@@ -42,7 +47,7 @@ def env_int(name: str, default: int, least: int = 0) -> int:
     try:
         return max(least, int(text))
     except ValueError:
-        print(f"work-tracker: {name}={text!r} is not a whole number; using {default}", file=sys.stderr)
+        warn(f"{name}={text!r} is not a whole number; using {default}")
         return default
 
 

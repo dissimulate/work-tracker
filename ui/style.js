@@ -1,5 +1,6 @@
 // How the tracker looks, in one place: every status's colour, and the parts the view builds its rows from. Colours come
-// by the theme's names (theme() in herdr.d.ts), so a part follows the host's theme. The window's is dark only (app.js).
+// by the host theme's names (`colors()` in view.js), so a part follows the host's theme. The window's is dark only
+// (app.js).
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { meaningOf } from "./model.js";
@@ -8,8 +9,8 @@ import { meaningOf } from "./model.js";
 const faint = (color, alpha) => `${String(color).slice(0, 7)}${alpha}`;
 const ROW = "73", FILL = "1f", HOVER = "12", RULE = "80"; // alphas: a row's background, a toggle's while on and under the pointer, a table's rule
 
-// Each meaning's colour, by the theme's names: red, yellow, the terminal's green, blue, grey. The theme's `working` and
-// `done` say nothing of a status here: an agent at work is green, and `done`'s colour differs from host to host.
+// Each meaning's colour, by the theme's names: red, yellow, the terminal's green, blue, grey. `working` is only the
+// yellow here, as an agent at work is green; `done` is not used, as its colour differs from host to host.
 const COLORS = { "needs-you": "blocked", held: "working", moving: "ansi2", "can-start": "accent", quiet: "muted" };
 // A status's colour: the only way the view colours one. model.js's MEANINGS says which statuses mean what.
 export const tone = (status, t) => t[COLORS[meaningOf(status)]];
@@ -22,7 +23,7 @@ export const SIZE = {
   header: 42, card: 40, row: 28, line: 26, control: 24, // heights
   arrow: 12, dot: 8, // marks
   label: 76, modal: 620, // an opened record's labels and most width
-  dropdown: 420, submenu: 260, menu: 320, // a dropdown's most width and height, and a dropdown's own dropdown's width
+  dropdown: 420, submenu: 260, menu: 320, // a dropdown's most width, its own dropdown's width, and its most height
 };
 
 // The line under a table's headings.
@@ -82,8 +83,8 @@ export function modal(id, t, viewWidth, keys, close, content) {
 }
 
 // A row as a rounded card: `head` is its row's parts, `click` makes the row take a click, and `after` holds controls at
-// the row's end with clicks of their own. A row's plain text brightens under the pointer: a part in a colour of its own
-// keeps it.
+// the row's end with clicks of their own. A row that takes a click brightens its plain text under the pointer: a part
+// in a colour of its own keeps it.
 export function card(id, head, t, { click = null, after = [] } = {}) {
   return h_flex().w_full().flex_none().min_h(SIZE.card).items_center().rounded(RADIUS.card).bg(faint(t.raised, ROW))
     .child(h_flex().id(id).flex_1().min_w(0).min_h(SIZE.card).px(SPACE.xl).gap(SPACE.sm).items_center().rounded(RADIUS.card)

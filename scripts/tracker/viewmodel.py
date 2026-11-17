@@ -1,5 +1,5 @@
-"""What a UI shows, as data: the facts each view works out once, and `tracker data` and `tracker list --json`, the only
-API a UI reads. Text goes out as it is in the files (Markdown stays Markdown), so each UI draws it its own way."""
+"""What a UI shows, as data: the facts each view works out once, and `tracker data` and `tracker list --json`, all a UI
+reads of a tracker. Text goes out as it is in the files (Markdown stays Markdown), so each UI draws it its own way."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .github import pr_url
 from .watcher import watcher_of
 from .lifecycle import in_use
 
-VIEW_SCHEMA = 6  # a UI that reads another number asks to be updated
+VIEW_SCHEMA = 6  # a UI that reads another number says which side is older
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -34,7 +34,7 @@ def dep_tone(d: Dep) -> str:
 
 def drawn_links(edges: dict[str, list[str]]) -> dict[str, list[str]]:
     """Per ticket, the tickets it waits on (Sequence.waits) that no longer chain implies (a transitive reduction):
-    the graph draws only these, and the Deps column still lists every one."""
+    the graph draws only these, and the Waits on column still lists every one."""
     below: dict[str, set[str]] = {}
 
     def under(i: str) -> set[str]:
@@ -98,7 +98,7 @@ def move_view(move: Move | None) -> dict | None:
 
 
 def dep_view(d: Dep) -> dict:
-    """A dependency: `ref` when it names a record here; `title`, an external blocker's reason."""
+    """A dependency: `ref` when it names a record here; `title`, an external blocker's line in ## Links."""
     return {"id": d.ident, "done": d.done, "tone": dep_tone(d), "ref": bool(d.rec),
             "title": d.link.text if d.link and not d.rec else ""}
 
@@ -126,7 +126,7 @@ def time_view(t: Record) -> list[dict]:
 
 
 def record_view(tr: Tracker, r: Record) -> dict:
-    """What a record shows when it opens: its lead lines (its next or summary), what it waits on and what waits on it
+    """What a record shows when it opens: its lead line (its next or summary), what it waits on and what waits on it
     (dep_facts, as the text views give them), its facts and links, then its body in Markdown."""
     g = tr.gate(r)
     deps = [{"label": label, "text": v} if isinstance(v, str) else {"label": label, "items": [dep_view(d) for d in v]}
@@ -192,8 +192,8 @@ def now_view(tr: Tracker) -> dict:
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.in_flight}
 
-    # The sessions `tracker start` tied to this tracker that run on this machine: a mark by each ticket they have
-    # under way; a session with none gets its own entry.
+    # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket they have under way; a
+    # session with none gets its own entry.
     live = [(x, match_cwd(x.cwd, x.sid, tr)) for x in live_sessions(tr.slug)]
     agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
 
