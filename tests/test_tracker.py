@@ -503,17 +503,26 @@ class Moves(unittest.TestCase):
 
 
     def test_stale_sync_refreshes_in_the_background(self):
-        (s, _), work = new_tracker("Fresh", "a/x"), repo("feat/R-1")
-        run("--tracker", s, "new", "R-1", "--title", "Fresh work", "--branch", "feat/R-1")
-        m = session.match_cwd(work, tracker=model.tracker_at(s))
+        (s, _), (local, _) = new_tracker("Fresh", "a/x"), new_tracker("Local")
         with mock.patch.object(hooks, "spawn") as spawn:
-            hooks.refresh(m, {}, {})  # no ticket under way: nothing to learn
-            run("--tracker", s, "set", "R-1", "status=in-progress", cwd=work)
-            m = session.match_cwd(work, tracker=model.tracker_at(s))
             fields = {}
-            hooks.refresh(m, {}, fields)
-            hooks.refresh(m, fields, {})  # asked already: not again within the interval
+            hooks.sync_later(model.tracker_at(s), {}, fields)
+            hooks.sync_later(model.tracker_at(s), fields, {})  # asked already: not again within the interval
+            hooks.sync_later(model.tracker_at(local), {}, {})  # no repo: nothing to ask
         spawn.assert_called_once_with("--tracker", s, "sync")
+
+    def test_session_start_does_not_wait_for_github(self):
+        (s, _), sid, work = new_tracker("Starts fast", "a/x"), f"sid{time.monotonic_ns()}", repo("feat/F-1")
+        run("--tracker", s, "new", "F-1", "--title", "Fast work", "--branch", "feat/F-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        data = {"session_id": sid, "cwd": str(work), "source": "startup"}
+        with mock.patch.object(github, "gh") as gh, mock.patch.object(hooks, "spawn") as spawn, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            hooks.hook_session_start(data)
+            hooks.hook_session_start(data)  # asked already: not again within the interval
+        gh.assert_not_called()
+        spawn.assert_called_once_with("--tracker", s, "sync")  # the next message reports what it changes
+        self.assertIn("Starts fast", out.getvalue())
 
 
 class Starts(unittest.TestCase):
@@ -1013,18 +1022,31 @@ class Upgrade(unittest.TestCase):
         model.tracker_at(s).readme.save({"schema": 3})
         model.tracker_at(other).readme.save({"schema": 2})
         (store.HOME / s / ".DS_Store").write_text("finder")
+        (store.HOME / s / "evidence").mkdir()
+        (store.HOME / s / "evidence" / "run.log").write_text("no migration changes it")
         run("list")
         for name in (s, other):
             self.assertEqual(model.tracker_at(name).schema, schema.SCHEMA)
         backup = store.HOME / ".backups" / f"{s}-schema3"
         self.assertEqual(re.search(r"schema: (\d+)", (backup / "README.md").read_text())[1], "3")
         self.assertFalse((backup / ".DS_Store").exists())  # the backup holds the tracker, not Finder's files
+        self.assertFalse((backup / "evidence").exists())  # or its evidence, which stays where it is
+        self.assertTrue((store.HOME / s / "evidence" / "run.log").exists())
         log = (store.HOME / s / "log.md").read_text()
         self.assertEqual(log.count(f"Migrated to tracker format {schema.SCHEMA}"), 1)
         self.assertIn(str(backup), log)
         run("list")
         self.assertEqual((store.HOME / s / "log.md").read_text(), log)  # once
         self.assertNotIn("older", run(*t, "check"))
+
+    def test_a_new_plugin_version_removes_only_the_old_migrate_commands_backups(self):
+        backups = store.HOME / ".backups"
+        old, kept, own = (backups / x for x in ("gone-20261106-143702", "kept-schema3", "kept-before-reduce"))
+        for d in (old, kept, own):
+            (d / "evidence").mkdir(parents=True)
+        store.write_json(store.CLI_FILE, {"package": "/an/older/version"})
+        hooks.record_version()
+        self.assertEqual([d.exists() for d in (old, kept, own)], [False, True, True])
 
     def test_a_command_stops_the_old_browser_viewer_and_no_other_program(self):
         server = ("import http.server\n"
@@ -1499,7 +1521,7 @@ class Hooks(unittest.TestCase):
         (work / "before.txt").write_text("uncommitted before the mark")
         env = {**os.environ, "TRACKER_SESSION": sid}
         subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True, check=True)
-        self.assertIn("No ticket in progress", said(hook("prompt", sid, work, prompt="go")))  # the first message
+        self.assertIsNone(hook("prompt", sid, work, prompt="go"))  # no ticket and no work since the mark: the brief
         self.assertIsNone(hook("prompt", sid, work, prompt="more"))
         (work / "edited.txt").write_text("written by a Bash command: no hook saw it")
         told = said(hook("prompt", sid, work, prompt="again"))
@@ -2026,14 +2048,14 @@ class Ui(unittest.TestCase):
             store.write_json(store.CLI_FILE, {"package": "/an/older/version"})
         with mock.patch.dict(os.environ, {"HERDR_APP_HOME": str(home)}):
             older()
-            hooks.record_ui()
+            hooks.record_version()
             self.assertFalse(target.exists())  # the user installs it
             run("install-mod")
             view.write_text("an older version's")
-            hooks.record_ui()  # the same version: the mod is not read
+            hooks.record_version()  # the same version: the mod is not read
             self.assertEqual(view.read_text(), "an older version's")
             older()
-            hooks.record_ui()
+            hooks.record_version()
             self.assertEqual(view.read_bytes(), (ROOT / "ui/view.js").read_bytes())
             view.unlink()
             try:
@@ -2041,7 +2063,7 @@ class Ui(unittest.TestCase):
             except OSError:  # Windows, without the right to make one
                 return
             older()
-            hooks.record_ui()
+            hooks.record_version()
             self.assertTrue(view.is_symlink())
 
     def test_open_updates_an_installed_mod_and_offers_one(self):

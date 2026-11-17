@@ -18,7 +18,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
-from .contract import upgrade_trackers
+from .contract import prune_backups, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -29,12 +29,13 @@ PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's 
 # A hook adds context only when it changes what the model does next, and says each thing once.
 
 
-def record_ui() -> None:
-    """How a UI outside any session starts the CLI; on a new plugin version, also the Herdr mod the user installed.
-    The mod's code loads only then."""
+def record_version() -> None:
+    """How a UI outside any session starts the CLI. On a new plugin version, also bring the Herdr mod the user
+    installed to it, and remove the old migrate command's backups (`prune_backups`). The mod's code loads only then."""
     if record_cli():
         from .ui import update_mod
         update_mod()
+        prune_backups()
 
 
 def hook_input() -> dict:
@@ -123,15 +124,18 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    record_ui()
-    changes = sync(m.tracker)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
+    record_version()
+    m, found = match_pr(m, cwd)
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
     remember(sid, m, cwd)
-    if sid:
-        save_session(sid, told_updates=updates_told(m.tracker))  # the brief lists them: no prompt repeats it
     note = "\n\n".join(x for x in (note, found) if x)
-    emit_context("SessionStart", brief(m, cwd, changes, note, compact=source == "compact"), notice)
+    text = brief(m, cwd, note, compact=source == "compact")
+    fields = {"told_updates": updates_told(m.tracker)}  # the brief lists them: no prompt repeats it
+    # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
+    sync_later(m.tracker, load_session(sid), fields)
+    if sid:
+        save_session(sid, **fields)
+    emit_context("SessionStart", text, notice)
 
 
 def hook_session_end(data: dict) -> None:
@@ -243,18 +247,18 @@ def state_line(m: Match, work: Lag) -> str:
             + ".")
 
 
-def refresh(m: Match, entry: dict, fields: dict) -> None:
-    """With tickets under way, pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at
-    most that often per session): a later message then reports what it changed, such as a review that makes a move
-    yours. This message does not wait for it."""
+def sync_later(tr: Tracker, entry: dict, fields: dict) -> None:
+    """Pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at most that often per
+    session, by `fields`' sync_asked): a later message reports what it changed (`changes_since`), such as a review
+    that makes a move yours. The hook does not wait for it."""
     now = time.time()
-    last = max(m.tracker.state().get("last_sync", 0), entry.get("sync_asked", 0))
-    if not m.active or not m.tracker.repos or now - last < SYNC_MIN_INTERVAL_S:
+    last = max(tr.state().get("last_sync", 0), entry.get("sync_asked", 0))
+    if not tr.repos or now - last < SYNC_MIN_INTERVAL_S:
         return
     fields["sync_asked"] = int(now)
     try:
-        spawn("--tracker", m.tracker.slug, "sync")
-    except OSError:  # the message's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
+        spawn("--tracker", tr.slug, "sync")
+    except OSError:  # the hook's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
         pass
 
 
@@ -288,17 +292,17 @@ def watch_request(data: dict) -> bool:
 def hook_prompt(data: dict) -> None:
     """On tracked work, each user message gets what other sessions or GitHub changed since its last message (or its
     brief), `next_request` when commits (a subagent's too) passed `next`, the issue fields a Refresh asked for and an
-    issue update newly due (updates_told), each once; the first message and every
-    NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. Work since the branch's mark with
-    no ticket in progress brings the state line at once, once per mark. A stale GitHub sync starts in the background
-    (`refresh`)."""
+    issue update newly due (updates_told), each once. With a ticket under way, the first message and
+    every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
+    branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
+    way, a stale GitHub sync starts in the background (`sync_later`)."""
     if watch_request(data):
         return
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
-    record_ui()
+    record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]
@@ -326,11 +330,14 @@ def hook_prompt(data: dict) -> None:
     told = bool(mark) and entry.get("idle_told") == (mark.get("at") or 0)  # said for this mark: no git until the next
     work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle and not told) else None
     new = work is not None and bool(work.commits or work.files)
-    if work is not None and (n % NUDGE_EVERY == 0 or (new and entry.get("idle_told") != work.since)):
+    # With no ticket under way, the brief named what can start: the line comes back only for work since the mark.
+    due = n % NUDGE_EVERY == 0 and (m.active or new)
+    if work is not None and (due or new and entry.get("idle_told") != work.since):
         lines.append(state_line(m, work))
         if idle and new:
             fields["idle_told"] = work.since  # said once per mark
-    refresh(m, entry, fields)
+    if m.active:  # a session with no ticket under way learns of GitHub at its next start
+        sync_later(m.tracker, entry, fields)
     if sid:
         save_session(sid, **fields)
     if lines:

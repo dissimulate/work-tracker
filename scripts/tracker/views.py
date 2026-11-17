@@ -463,8 +463,8 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
                       else "Tracker check, on this work:", *(f"  ⚠ {short(w, BRIEF_LINE_CHARS)}" for w in mine)])
 
 
-def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,
-          full: bool = False, with_protocol: bool = True) -> str:
+def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full: bool = False,
+          with_protocol: bool = True) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
@@ -521,8 +521,6 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
             parts.append(f"No open ticket on {m.branch}. To start one here: `tracker set <id> status=in-progress`"
                          + (f" (can start: {', '.join(ready)})" if ready else "") + ".")
         parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS, urls=False)))
-    if synced:
-        parts.append("Synced PR state: " + "; ".join(synced))
     for ask in (issue_request(tr, focus), issue_update_request(tr, focus)):
         if ask:
             parts.append(ask)

@@ -34,6 +34,9 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The `blocked` filter's count is the number of tickets it shows.
 - Only `/work-tracker:watch` (`$work-tracker:watch` in Codex) starts or ends a watch: a bare `/watch` may be another plugin's.
 - Only a ticket's `next` has a length limit (400 characters): every brief prints it whole. A log line (`tracker log`, a `step` message, `--why`), a summary, a Carry forward bullet, an action and an action's note take a text of any length.
+- A session on a tracker starts without waiting for GitHub: the PR state sync runs in the background, and your next message reports what it changed on the session's tickets. The brief no longer has a `Synced PR state` line.
+- A session with no ticket under way gets the state line ("No ticket in progress…") only when there is work since the branch's mark, not on every 5th message.
+- A migration's backup leaves out the tracker's `evidence/` folder, which no migration changes.
 
 ### Fixed
 
@@ -44,7 +47,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 - The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer of 0.31.1 or earlier that still runs stops at the first command or hook of this version, as it would write the old format.
 - The sort in the address (`?sort=`): the view starts in dependency order.
-- `tracker migrate`: migration is automatic.
+- `tracker migrate`: migration is automatic. The first session on a tracker of this version removes the backups it made (`$TRACKER_HOME/.backups/<slug>-<date>-<time>/`), each a whole copy of a tracker with its evidence; the backups of this version (`<slug>-schema<n>`) stay.
 - The settings `TRACKER_VIEWER_SYNC` and `TRACKER_WATCH_SYNC`: use `TRACKER_SYNC`.
 - `tracker pause "<text>"`: use `tracker step <id> "..." --pause "<text>"`.
 - `tracker synced`: run `tracker step` with no arguments, which now does the same.

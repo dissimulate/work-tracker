@@ -359,6 +359,11 @@ def migrate(tr: Tracker) -> None:
     tr.readme.save({"schema": SCHEMA})
 
 
+BACKUPS = HOME / ".backups"
+# How the migrate command of 0.31.1 and earlier named a backup: <slug>-<date>-<time>.
+OLD_BACKUP = re.compile(r".+-\d{8}-\d{6}")
+
+
 def upgrade(tr: Tracker) -> None:
     """Back a tracker up, once per format it leaves, and migrate it. A README that cannot be read is left to `check`."""
     import shutil  # only here: a hook loads this module, and rarely gets this far
@@ -366,12 +371,24 @@ def upgrade(tr: Tracker) -> None:
         tr = Tracker(tr.root)  # another process may have done it while this one waited
         if tr.schema >= SCHEMA or tr.readme_problems:
             return
-        backup = HOME / ".backups" / f"{tr.slug}-schema{tr.schema}"
+        backup = BACKUPS / f"{tr.slug}-schema{tr.schema}"
         if not backup.exists():
-            # Not Finder's files, or half-writes.
-            shutil.copytree(tr.root, backup, ignore=shutil.ignore_patterns(".DS_Store", "*.tmp"))
+            # Not Finder's files, half-writes, or the evidence/ folder: no migration changes it, and it can be large.
+            top = str(tr.root)
+            shutil.copytree(tr.root, backup, ignore=lambda folder, names: {
+                x for x in names if x == ".DS_Store" or x.endswith(".tmp") or folder == top and x == EVIDENCE_DIR})
         migrate(tr)
         append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
+
+
+def prune_backups() -> None:
+    """Remove the backups that the migrate command of 0.31.1 and earlier made: each holds a tracker as it was before
+    that run, which this version's own backup (`<slug>-schema<n>`) replaces, and the evidence/ folder whole. Once per
+    plugin version (`hooks.record_version`)."""
+    import shutil
+    for old in BACKUPS.glob("*"):
+        if OLD_BACKUP.fullmatch(old.name) and old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old, ignore_errors=True)
 
 
 OLD_VIEWER = HOME / ".viewer.json"  # the browser viewer's of 0.31.1 and earlier: its port and pid
