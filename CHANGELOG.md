@@ -4,6 +4,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+## 0.32.0 - 2026-11-17
+
 ### Added
 
 - `tracker install-window` downloads what the view's own window needs, on macOS, x86-64 Linux and x86-64 Windows, with no change to your PATH. `tracker open --window` opens that window also when Herdr is open.
