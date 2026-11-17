@@ -20,6 +20,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Fixed
 
 - A title, summary or other text holding a line or paragraph separator (U+2028, U+2029, U+0085) no longer breaks its record's frontmatter.
+- The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
 
 ## 0.32.0 - 2026-11-17
 

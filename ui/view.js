@@ -22,7 +22,7 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, Textarea, TextareaState, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
+import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, menuNotice, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, field, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
@@ -699,7 +699,9 @@ export function trackerView(host) {
 
     trackerMenu(t) {
       const { active = [], archived = [] } = this.trackers ?? {};
+      const notice = menuNotice(this.trackers);
       return dropdown("tracker-menu", t, this.width)
+        .when(Boolean(notice), el => el.child(div().px(SPACE.sm).py(SPACE.xs).text_size(TEXT.small).text_color(t.muted).child(notice)))
         .children(active.map(x => this.menuRow(x, false, t)))
         .when(archived.length > 0, el => el
           .child(button("archived", `Archived ${archived.length}`, t, cx => { this.archivedOpen = !this.archivedOpen; cx.notify(); }, { on: this.archivedOpen }))
