@@ -264,6 +264,22 @@ test("a row's word and colour agree wherever it shows", () => {
   assert.deepEqual([rowWord(going), rowStatus(going)], ["in-review", "in-review"]);
 });
 
+test("a row shows its issue's state by name, with an open PR on a merged issue", () => {
+  const parked = { state: "going", stage: "in-progress", issue_state: "On hold", issue_stage: "parked" };
+  const merged = { state: "going", stage: "in-review", issue_state: "Merged", issue_stage: "merged" };
+  const review = { state: "going", stage: "in-review", issue_state: "Code Review", issue_stage: "review" };
+  const ready = { state: "ready", stage: "todo", issue_state: "Backlog", issue_stage: "unstarted" };
+  assert.equal(rowWord(parked), "On hold");
+  assert.equal(rowWord(merged), "Merged · PR open");
+  assert.equal(rowWord(review), "Code Review");
+  assert.equal(rowWord(ready), "ready");
+  assert.equal(rowWord({ state: "going", stage: "in-progress" }), "in-progress");
+  assert.equal(rowStatus(parked), "in-progress"); // its colour stays the tracker's own
+  const long = rowWord({ ...review, issue_state: "Waiting for the platform team's sign-off" });
+  assert.equal([...long].length, 24);
+  assert.ok(long.endsWith("…"));
+});
+
 test("the view colours a status only through the table", () => {
   const view = readFileSync(new URL("./view.js", import.meta.url), "utf8");
   assert.deepEqual(view.match(/\bt\.(blocked|working|done|ansi2)\b/g), null);

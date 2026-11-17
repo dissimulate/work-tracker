@@ -2350,6 +2350,17 @@ class Ui(unittest.TestCase):
         run("--tracker", s, "new", "T-1", "--title", "One")
         return s
 
+    def test_a_ticket_row_carries_its_issue_state(self):
+        s = self.tracker()
+        t = ("--tracker", s)
+        run(*t, "add", "T-1", "link", "Issue: [SC-1 One](https://issues.example/story/1)")
+        run(*t, "issue", "T-1", "--stage", "parked", "--state", "On hold")
+        row = next(x for x in data(s)["tickets"] if x["id"] == "T-1")
+        self.assertEqual((row["issue_state"], row["issue_stage"]), ("On hold", "parked"))
+        run(*t, "new", "T-2", "--title", "Two")
+        row = next(x for x in data(s)["tickets"] if x["id"] == "T-2")
+        self.assertEqual((row["issue_state"], row["issue_stage"]), (None, None))
+
     def test_a_command_loads_no_download_code(self):
         code = (f"import sys; sys.path.insert(0, {str(ROOT / 'scripts')!r}); import tracker.cli; "
                 "print(sorted({'http.client', 'urllib.request', 'tarfile', 'zipfile', 'tempfile'} & set(sys.modules)))")

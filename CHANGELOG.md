@@ -9,6 +9,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker rules` lists the issue stages: what an issue's state means (not started, work under way, parked, in review, merged, finished, closed without the work), whatever its issue tracker calls it.
 - `tracker issue <id> --stage <stage> [--state '<name>']` records an issue's state as the agent read it. An issue closed in its issue tracker (finished, or closed without the work) closes its ticket, and a started ticket whose issue shows not started is reported.
 - `tracker context` and `tracker index` show a ticket's issue state, quoted, by its issue tracker's own name. Briefs and hook lines never show it.
+- The view shows each ticket's issue state by its issue tracker's own name in its status, with "· PR open" while a PR of a story its issue shows merged or done is still open. The view's format changes: if it says it is older, run `tracker install-mod` again.
 
 ### Changed
 

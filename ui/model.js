@@ -68,8 +68,19 @@ export const moveStatus = move => (!move.mine ? "them" : move.quiet ? "your-work
 const HOLLOW = new Set(["closed", "dropped"]);
 // What gives a row its colour: its state, and for work under way its stage, which tells in progress from in review.
 export const rowStatus = t => (t.state === "going" ? t.stage : t.state);
-// What a row's status says in words: its stage, as a ticket that can start says so.
-export const rowWord = t => (t.state === "ready" ? "ready" : t.stage);
+// What a row's status says in words: as a ticket that can start says so; else its issue's state by the issue tracker's
+// own name once read, with "· PR open" while a PR of a story its issue shows merged or done is still open; else its
+// stage. Its colour stays the tracker's own (rowStatus). A long name is cut: a chip does not shrink, and the opened
+// record shows it whole.
+const SHOWS_CLOSED = new Set(["merged", "done"]);
+const ROW_WORD_MAX = 24;
+const cutWord = s => (s.length > ROW_WORD_MAX ? `${s.slice(0, ROW_WORD_MAX - 1).trimEnd()}…` : s);
+export const rowWord = t => {
+  if (t.state === "ready") return "ready";
+  if (!t.issue_state) return t.stage;
+  const name = cutWord(t.issue_state);
+  return t.stage === "in-review" && SHOWS_CLOSED.has(t.issue_stage) ? `${name} · PR open` : name;
+};
 const lineTone = t => (HOLLOW.has(t.state) ? "closed" : t.state === "going" ? t.stage : "blocked");
 
 export const GRAPH = {
