@@ -1754,7 +1754,7 @@ class IssueFields(unittest.TestCase):
 
     def test_an_issue_state_is_cleaned_not_refused(self):
         self.assertEqual(schema.read_value("issue_state", "In\u200dProgress "), "InProgress")
-        self.assertEqual(schema.read_value("issue_state", " Ready\tfor\u2029Review "), "ReadyforReview")
+        self.assertEqual(schema.read_value("issue_state", " Ready\tfor\u2029Review "), "Ready for Review")
         long = schema.read_value("issue_state", "y" * 50)
         self.assertEqual((len(long), long[-1]), (40, "…"))
 
@@ -1906,10 +1906,11 @@ class IssueFields(unittest.TestCase):
         run(*t, "decide", "Which queue", "--refs", "T-1", "--resolve", "SQS", "--by", "me")
         run(*t, "set", "tracker", "issue_updates=on")
         run(*t, "issue", "T-1", "--stage", "unstarted")
-        run(*t, "issue", "T-3", "--stage", "review")  # first read, at a stage the tracker never moved it to: held
+        run(*t, "issue", "T-3", "--stage", "review")  # first read, behind its finished work: moved on
         run(*t, "set", "T-1", "status=in-progress")
-        self.assertEqual(self.updates(s), [f"T-1: {self.move('started')}", "T-3: summary: shipped"])
-        self.write(t, "T-1:started", "T-3")
+        self.assertEqual(self.updates(s), [f"T-1: {self.move('started')}",
+                                           f"T-3: {self.move('done')}; summary: shipped"])
+        self.write(t, "T-1:started", "T-3:done")
         run(*t, "decide", "D-1", "--resolve", "Kafka", "--by", "me")  # settled again: history holds the old answer
         run(*t, "set", "T-3", "summary=shipped, with the retry")  # set after the close
         self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: Kafka",
@@ -2216,12 +2217,33 @@ class IssueSync(unittest.TestCase):
         model.tracker_at(s).lookup("T-1").save({"prs": ["7:open"]})  # the work moved on
         self.assertEqual(self.moves(s), {"T-1": "review"})
 
-    def test_a_stale_read_leaves_a_move_held_not_lost(self):
+    def test_a_read_that_repeats_the_last_one_leaves_a_move_due(self):
         s, t = self.synced()
         run(*t, "set", "T-1", "status=in-progress")
         self.assertEqual(self.moves(s), {"T-1": "started"})
         run(*t, "issue", "T-1", "--stage", "unstarted")  # read again before the move was written
         self.assertEqual(self.moves(s), {"T-1": "started"})  # the same stage as the last read: no person moved it
+
+    def test_a_first_read_behind_the_work_lets_it_move(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "set", "T-1", "status=in-progress")  # started before its issue was ever read
+        run(*t, "issue", "T-1", "--stage", "unstarted", "--state", "Scheduled")
+        self.assertEqual(self.moves(s), {"T-1": "started"})
+        run(*t, "set", "T-2", "status=in-progress")
+        run(*t, "issue", "T-2", "--stage", "parked")  # a first read level with or past the work: a person's, held
+        self.assertNotIn("T-2", self.moves(s))
+
+    def test_a_state_read_alone_leaves_the_fields_due(self):
+        s, t = self.tracker()
+        run(*t, "issue", "T-1", "--stage", "unstarted")
+        self.assertIn("T-1  https://issues.example/story/1", run(*t, "issue"))  # priority and the rest: not read
+        run(*t, "issue", "T-1", "--priority", "2")
+        self.assertNotIn("T-1  https://issues.example/story/1", run(*t, "issue"))
+
+    def test_a_stage_needs_a_ticket(self):
+        s, t = self.tracker()
+        self.assertIn("--stage needs a ticket id", run(*t, "issue", "--stage", "started", code=2))
 
     def test_a_wait_parks_and_its_end_unparks(self):
         s, t = self.synced()
@@ -2292,13 +2314,17 @@ class IssueSync(unittest.TestCase):
         tr = model.tracker_at(s)
         tr.lookup("T-1").save({"prs": ["7:merged"], "merged_at": schema.utc_now()})
         self.read(s, t, "T-1", "merged", ago=1800)
-        self.assertEqual(self.states(s), [])
+        self.assertEqual(self.states(s, ["T-1"]), [])
         self.read(s, t, "T-1", "merged", ago=3601)
-        self.assertEqual(self.states(s), ["T-1"])
+        self.assertEqual(self.states(s, ["T-1"]), ["T-1"])
+        self.assertEqual(self.states(s), [])  # no session works on it: not by age
         old = time.strftime(schema.TIME_FORMAT, time.gmtime(time.time() - 31 * 86400))
         model.tracker_at(s).lookup("T-1").save({"merged_at": old})
         self.read(s, t, "T-1", "merged", ago=2 * 86400)
-        self.assertEqual(self.states(s), [])  # a month on: someone else's to close
+        self.assertEqual(self.states(s, ["T-1"]), [])  # a month on: someone else's to close
+        model.tracker_at(s).lookup("T-1").save({"merged_at": None, "prs": ["7:open", "8:merged"]})
+        self.read(s, t, "T-1", "merged", ago=90 * 86400)
+        self.assertEqual(self.states(s, ["T-1"]), [])  # no merge time to count from: by PR changes only
 
     def test_the_listing_and_the_hook_ask_for_states_once(self):
         s, t = self.tracker()

@@ -398,15 +398,15 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
 ISSUE_SHOWN = 5  # tickets named in a request for their issue fields or issue updates; the rest as a count
 STATE_FLAGS = ("--stage <" + "|".join(ISSUE_STAGES) + "> --state '<its name>'`. Map the state by what it means "
                "(`tracker rules`: Issue stages), not by its name. The name goes in single quotes; when it holds a "
-               "quote, `$`, a backtick or a backslash, pass `--stage` alone. Never guess a value.")
+               "quote, `$`, a backtick or a backslash, pass `--stage` alone.")
 ISSUE_HOW = ("Read each issue's priority, estimate, due day, creation time and state with its issue tracker's tool and "
              "record them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
-             + " --due <YYYY-MM-DD> --created <ISO 8601 time> " + STATE_FLAGS[:-len(" Never guess a value.")]
+             + " --due <YYYY-MM-DD> --created <ISO 8601 time> " + STATE_FLAGS
              + " Map each other value by what it means on its issue tracker's own scale, not by a raw number its API "
              "gives (`tracker rules` gives the mapping). Leave out a flag whose field the issue tracker lacks; pass it "
              "empty when the issue's value means none. Never guess a value.")
 ISSUE_STATE_HOW = ("Read only each issue's state, with the narrowest call its issue tracker's tool has, and record it: "
-                   "`tracker issue <id> " + STATE_FLAGS)
+                   "`tracker issue <id> " + STATE_FLAGS + " Never guess a value.")
 
 
 def shown_ids(due: list[Record]) -> str:
@@ -450,9 +450,10 @@ ISSUE_UPDATES_OFF = "tell the user that `tracker set tracker issue_updates=off` 
 ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool. For a status item, open the issue "
                    "first: when its state already means that stage or one further on, or a person has moved it "
                    "elsewhere, do not move it: record what it shows with `tracker issue <id> --stage <stage> --state "
-                   "'<its name>'`. Otherwise move it to the state in its own workflow that means that stage, then "
-                   "comment a closed ticket's summary and each settled decision, by its title and answer; when the "
-                   "move fails, post nothing. Name a blocker by its Issue id or URL, or not at all. Once a ticket's "
+                   "'<its name>'`, and go on with its comments. Otherwise move it to the state in its own workflow "
+                   "that means that stage, then comment a closed ticket's summary and each settled decision, by its "
+                   "title and answer; when the move fails, post nothing. Write no customer's words or names into a "
+                   "comment. Name a blocker by its Issue id or URL, or not at all. Once a ticket's "
                    "updates are written, run `tracker issue <id> --written`, with `--stage <stage> --state '<name>'` "
                    "for a move: it records what this list showed. When one fails, leave that ticket: it stays due. "
                    + ISOLATION_RULE + " With no tool for that issue tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
@@ -461,7 +462,9 @@ ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's to
 def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
     """The request for the issue updates due (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
     session's own) named first. `tracker issue` lists what to write (ISSUE_WRITE_HOW); the model writes it with the
-    issue tracker's tool, which the tracker cannot."""
+    issue tracker's tool, which the tracker cannot. None on a tracker of a newer format than this plugin's."""
+    if tr.schema > SCHEMA:
+        return ""
     due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
     if not due:
         return ""

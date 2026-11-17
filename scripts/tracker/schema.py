@@ -237,8 +237,8 @@ STATE_RULES = {
               "`started_at` (its wait time needs the issue's creation time). `state_read`: per ticket, when its "
               "issue's state was last recorded; `pr_changed`: per ticket, when `sync` last saw one of its PRs change. "
               "Its state alone is to read again: with updates on, when its work would move an issue never read; "
-              "after a PR change; for a session's own ticket under way, every SYNC_MIN_INTERVAL_S; when read as "
-              "merged, hourly for a week after the merge, then daily, and not after 30 days. The brief and the "
+              "after a PR change; for a session's own ticket under way, every SYNC_MIN_INTERVAL_S, and read as "
+              "merged, by the ISSUE_MERGED_* steps after its merge time (none with no merge time). The brief and the "
               "prompt hook list the ones to read for the model, each new set once, which reads them with the issue "
               "tracker's tool; none on a tracker of a newer format than the plugin's. With README "
               "`issue_updates: on`, `history`: the answer of each decision settled when updates were first turned on "
@@ -246,9 +246,10 @@ STATE_RULES = {
               "issue should show as `tracker issue` last listed it; `written`: per ticket, what `tracker issue <id> "
               "--written` recorded from that listing: its summary once closed, and each settled decision's "
               "answer; `moves`: per ticket, the issue stage (Issue stages) the model last moved its issue to; "
-              "`held`: per ticket whose issue was last read at a stage other than its last move (a person's move, "
-              "or none on this machine), the stage its work wanted then: no move is asked for while it wants the "
-              "same. A read of a closed issue (done, or closed without the work) closes the ticket. A "
+              "`held`: per ticket whose issue was last read at a stage other than both its last read and its last "
+              "move (a person's move, or none on this machine), the stage its work wanted then: no move is asked for "
+              "while it wants the same. A first read with no move made, behind the stage its work wants, holds "
+              "nothing. A read of a closed issue (done, or closed without the work) closes the ticket. A "
               "linked ticket's update is due when its issue is to move (the stage its work wants: started, parked "
               "when it waits on something not under way, review, merged, or done with no PR; once its issue was "
               "read, never to a stage of lower order than the one read, not to the model's last move, and not "
@@ -385,9 +386,9 @@ class ChoiceForm(Form):
 
 
 class OutsideTextForm(Form):
-    """A short name from outside the tracker (an issue's state): one line of shown text. Read, it loses the characters
-    of OUTSIDE_TEXT_CUT and is cut to ISSUE_STATE_MAX, never refused: the agent records what its issue tracker says.
-    Stored, anything else is refused."""
+    """A short name from outside the tracker (an issue's state): one line of shown text. Read, a control, line or
+    paragraph break becomes a space, a format character goes, runs of spaces become one, and it is cut to
+    ISSUE_STATE_MAX, never refused: the agent records what its issue tracker says. Stored, anything else is refused."""
 
     def describe(self, key: str) -> str:
         return f"one line of at most {ISSUE_STATE_MAX} characters, without control or format characters"
@@ -396,7 +397,8 @@ class OutsideTextForm(Form):
         return isinstance(value, str) and self.read(key, value) == value
 
     def read(self, key: str, text: str) -> str:
-        kept = "".join(c for c in text if unicodedata.category(c) not in OUTSIDE_TEXT_CUT).strip()
+        kept = " ".join("".join(" " if unicodedata.category(c) in OUTSIDE_TEXT_CUT - {"Cf"} else c for c in text
+                                if unicodedata.category(c) != "Cf").split())
         return kept if len(kept) <= ISSUE_STATE_MAX else kept[:ISSUE_STATE_MAX - 1].rstrip() + "…"
 
 
@@ -488,8 +490,9 @@ STALE_DECISION_DAYS = 14
 STALE_ACTION_DAYS = 7
 STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often; its tickets' issue states are read as often
-ISSUE_MERGED_READ_S = 3600  # an issue read as merged: read again this often for a week after the merge, then daily
-ISSUE_MERGED_STOP_S = 30 * 86400  # and not at all this long after the merge
+ISSUE_MERGED_READ_S = 3600  # a session's ticket whose issue was read as merged: read again this often after the merge
+ISSUE_MERGED_SLOW_S = 7 * 86400  # until this long after it, then daily
+ISSUE_MERGED_STOP_S = 30 * 86400  # and not at all this long after it, nor with no merge time
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
 

@@ -862,6 +862,8 @@ def cmd_issue(args):
     the current branch) and the issue updates to write, and remember that listing for `--written`
     (STATE_RULES["issues"])."""
     if not args.id:
+        if args.stage or args.state is not None:
+            die("--stage needs a ticket id: `tracker issue <id> --stage <stage> --state '<name>'`")
         tr = resolve(args)
         cwd = work_dir()
         m = match_cwd(cwd, tracker=tr) if branch_of(cwd) else None
@@ -888,6 +890,7 @@ def cmd_issue(args):
         given = getattr(args, flag)
         if given is not None:
             updates[key] = read_value(key, given) or None  # empty: the issue has none now
+    fields_read = bool(updates) or not args.stage  # a state alone is no read of the fields
     if args.written:
         if not tr.mark_issue_written(t, args.stage):
             die(f"{t.id}: `tracker issue` listed no update for it to write; run `tracker issue` first")
@@ -908,9 +911,10 @@ def cmd_issue(args):
             updates["issue_state"] = shown
         if t.closed and not was_closed:
             append_log(tr, status_line(t) + " (closed in its issue tracker)", [t.id])
-    state = tr.raw_state()
-    state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
-    tr.save_state(state)
+    if fields_read:
+        state = tr.raw_state()
+        state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
+        tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
     if lines:
         print("\n".join(lines))

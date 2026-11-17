@@ -16,9 +16,10 @@ from .system import die
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_MERGED_READ_S, ISSUE_MERGED_STOP_S,
-    ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES,
-    SYNC_MIN_INTERVAL_S, csv, id_kind, kind_names, parse_day, show_value, stage_of, today, utc_now, utc_seconds, Stage)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_MERGED_READ_S, ISSUE_MERGED_SLOW_S,
+    ISSUE_MERGED_STOP_S, ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES,
+    STATE_KEEP_DAYS, STATUSES, SYNC_MIN_INTERVAL_S, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
+    utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -534,9 +535,8 @@ class Tracker:
     def states_to_read(self, focus: Iterable[str] = ()) -> list[Record]:
         """The linked tickets whose issue state alone the model should read again (STATE_RULES["issues"]), besides
         those whose fields are due (issues_to_read): with issue updates on, one its work would move but never read
-        (a move waits for that read); one with a PR event since
-        its last read; one of `focus` (a session's tickets) under way, read over SYNC_MIN_INTERVAL_S ago; and one read
-        as merged, every ISSUE_MERGED_READ_S while recent, then daily, and not past ISSUE_MERGED_STOP_S."""
+        (a move waits for that read); one with a PR event since its last read; and of `focus` (a session's tickets),
+        one under way read over SYNC_MIN_INTERVAL_S ago, or one read as merged, by the ISSUE_MERGED_* steps."""
         issues, now, focus = self.raw_state().get("issues", {}), time.time(), set(focus)
         read, changed = issues.get("state_read", {}), issues.get("pr_changed", {})
         fields = {t.id for t in self.issues_to_read()}
@@ -548,9 +548,10 @@ class Tracker:
             if not t.get("issue_stage"):
                 due = self.readme.get("issue_updates") == "on" and self.wanted_issue_stage(t) is not None
             elif t.get("issue_stage") == "merged":
-                since = now - (utc_seconds(t.get("merged_at")) or now)
-                every = ISSUE_MERGED_READ_S if since < 7 * 86400 else 86400
-                due = since < ISSUE_MERGED_STOP_S and now - last > every
+                merged = utc_seconds(t.get("merged_at"))  # none while a PR of it is open: PR changes say when
+                since = now - merged if merged else ISSUE_MERGED_STOP_S
+                every = ISSUE_MERGED_READ_S if since < ISSUE_MERGED_SLOW_S else 86400
+                due = t.id in focus and since < ISSUE_MERGED_STOP_S and now - last > every
             else:
                 due = t.id in focus and t.stage in ("in-progress", "in-review") and now - last > SYNC_MIN_INTERVAL_S
             if due or changed.get(t.id, 0) > last:
@@ -599,10 +600,14 @@ class Tracker:
         issues.setdefault("state_read", {})[t.id] = time.time()
         held = issues.setdefault("held", {})
         moved = issues.get("moves", {}).get(t.id, {}).get("stage")
+        wanted = self.wanted_issue_stage(t)
+        # A first read with no move made, behind where the work is, is the issue left as it was: no one to hold for.
+        behind = (not before and not moved and wanted in ISSUE_STAGES
+                  and ISSUE_STAGES[stage].order < ISSUE_STAGES[wanted].order)
         if stage == moved:
             held.pop(t.id, None)
-        elif stage != before:
-            held[t.id] = self.wanted_issue_stage(t)
+        elif stage != before and not behind:
+            held[t.id] = wanted
         self.save_state(state_)
         return lines
 
