@@ -1,5 +1,6 @@
-"""Where the UI in `ui/` runs: a Herdr mod when Herdr is open, else its own window through gpui-shell. It reads and
-changes a tracker only through this CLI (`viewmodel`), so nothing here serves it."""
+"""Where the UI in `ui/` runs: a Herdr mod when Herdr is open, else its own window through gpui-shell; installing
+each, and keeping an installed mod at this plugin version. The UI reads and changes a tracker only through this CLI
+(`viewmodel`), so nothing here serves it."""
 
 from __future__ import annotations
 
@@ -9,10 +10,11 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .system import DETACH, ROOT, WINDOWS, cli_for_ui, die
-from .store import HOME
+from .store import HOME, atomic_file
 
 UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
@@ -31,13 +33,68 @@ SHELL_ARCHIVES = {  # (platform.system(), platform.machine().lower()): GPUI_SHEL
 }
 DOWNLOAD_TIMEOUT_S = 60
 WINDOW_START_S = 2  # gpui-shell refuses an app before it runs it: this long with no exit, the window is up
-NO_HOST = (f"the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed "
-           f"({ROOT / 'scripts' / 'install-herdr-mod.sh'}), or its own window: run `tracker install-window` once. "
-           "Without them, `tracker index` and `tracker context <id>` show the same facts as text.")
+NO_HOST = ("the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed (`tracker install-mod`), "
+           "or its own window: run `tracker install-window` once. Without them, `tracker index` and "
+           "`tracker context <id>` show the same facts as text.")
+# After `tracker open` showed the window: Herdr's own guide says to tell the user what a mod runs before it is added.
+MOD_OFFER = ("Herdr is installed, with no work-tracker mod: `tracker install-mod` shows the view in a Herdr tab. The "
+             "mod runs the `tracker` CLI and reads the trackers' folder; each later plugin version updates it.")
 
 
 def herdr_home() -> Path:
     return Path(os.environ.get("HERDR_APP_HOME") or Path.home() / ".config" / "herdr-app")
+
+
+def mod_dir() -> Path:
+    return herdr_home() / "mods" / MOD_NAME
+
+
+def mod_file(name: str) -> bool:
+    """Whether a file of `ui/` is one of the Herdr mod's: not the window's entry (app.js) or manifest (gpui-shell.json,
+    which Herdr refuses), a test, or what a host wrote there when it loaded the UI (types, jsconfig.json)."""
+    return name == "mod.json" or (name.endswith((".js", ".svg")) and name != "app.js" and not name.endswith(".test.js"))
+
+
+def put_mod(target: Path) -> None:
+    """Make `target` this version's mod: write each file that differs, and remove each file of the mod that this
+    version no longer has. Herdr reloads a mod as its files change. A link, or a folder, is the user's own: it stays."""
+    shipped = {p.name: p for p in UI_DIR.iterdir() if mod_file(p.name)}
+    target.mkdir(parents=True, exist_ok=True)
+    for name, source in shipped.items():
+        dest, content = target / name, source.read_bytes()
+        if dest.is_symlink() or dest.is_dir() or (dest.is_file() and dest.read_bytes() == content):
+            continue
+        with atomic_file(dest) as f:
+            f.write(content)
+    for old in target.iterdir():
+        if mod_file(old.name) and old.name not in shipped and old.is_file() and not old.is_symlink():
+            old.unlink()
+
+
+def install_mod() -> Path:
+    """Install the UI as a Herdr mod, or bring the mod to this version: its folder."""
+    home, target = herdr_home(), mod_dir()
+    if not home.is_dir():
+        die(f"no Herdr in {home}: install Herdr (https://herdr.dev) and open it once, or set HERDR_APP_HOME")
+    if target.is_symlink():
+        die(f"{target} is a link, not an installed mod: remove it, then run `tracker install-mod` again")
+    try:
+        put_mod(target)
+    except OSError as e:
+        die(f"could not install the mod in {target}: {e}")
+    return target
+
+
+def update_mod() -> None:
+    """Bring the mod the user installed to this version: at `tracker open`, and in the hooks once per plugin version.
+    Never a first install: that adds a program to Herdr, which is the user's to decide."""
+    target = mod_dir()
+    if target.is_symlink() or not target.is_dir():
+        return
+    try:
+        put_mod(target)
+    except OSError as exc:  # stops no hook and no `open`
+        print(f"work-tracker: could not update the Herdr mod in {target}: {exc}", file=sys.stderr)
 
 
 def herdr(*args: str) -> dict | None:
@@ -55,7 +112,7 @@ def herdr(*args: str) -> dict | None:
 
 def open_in_herdr(slug: str, ident: str = "") -> bool:
     """Show the tracker in its tab: the one it has, or a new one. False when Herdr cannot, or has no mod to show it."""
-    window = herdr("ls") if (herdr_home() / "mods" / MOD_NAME).is_dir() else None
+    window = herdr("ls") if mod_dir().is_dir() else None
     if window is None:
         return False
     name = f"tracker: {slug}"

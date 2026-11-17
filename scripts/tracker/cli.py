@@ -22,8 +22,8 @@ from .watcher import REFUSED, watching
 from .ui import GPUI_SHELL_VERSION
 from .commands import (cmd_act, cmd_actions, cmd_add, cmd_archive, cmd_attach, cmd_attached, cmd_await_change,
     cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence, cmd_find, cmd_here,
-    cmd_history, cmd_index, cmd_init, cmd_install_window, cmd_issue, cmd_list, cmd_log, cmd_new, cmd_open, cmd_put,
-    cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start, cmd_step, cmd_sync,
+    cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list, cmd_log, cmd_new,
+    cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start, cmd_step, cmd_sync,
     cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
 
 # ---------------------------------------------------------------- main
@@ -267,6 +267,8 @@ def build_parser():
     sp.add_argument("--window", action="store_true", help="its own window, also when Herdr is open")
     add("install-window", cmd_install_window, f"download gpui-shell {GPUI_SHELL_VERSION} for this system, which the "
                                               "UI's own window needs")
+    add("install-mod", cmd_install_mod, "install the UI as a Herdr mod, which runs this CLI; later plugin versions "
+                                        "update it")
     add("refresh", cmd_refresh, "pull PR state now, and have the next session prompt read the issue fields again: a "
                                 "UI's Refresh", listed=False)
     sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link",

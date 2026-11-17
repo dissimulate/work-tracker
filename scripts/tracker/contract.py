@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import sys
 
 from .markdown import headings, link_ident, parse_links, section
-from .store import HOME, locked
+from .store import HOME, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
     ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OWNER_HINT, OWN_VALUE_RULE,
     PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
@@ -373,9 +374,31 @@ def upgrade(tr: Tracker) -> None:
         append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
 
 
+OLD_VIEWER = HOME / ".viewer.json"  # the browser viewer's of 0.31.1 and earlier: its port and pid
+
+
+def stop_old_viewer() -> None:
+    """Stop the browser viewer of 0.31.1 or earlier: it runs on while any session is on a tracker, and writes the older
+    format. A session of that version may start it again, so each run looks. Only a process that answers as that
+    viewer is stopped: the pid of an old file may be another program's now."""
+    import signal
+    import urllib.request
+    info = read_json(OLD_VIEWER)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(info['port'])}/ping", timeout=1) as answer:
+            if answer.read().decode(errors="replace").startswith("work-tracker"):
+                os.kill(int(info["pid"]), signal.SIGTERM)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # nothing answers as the viewer, or it has gone
+    OLD_VIEWER.unlink(missing_ok=True)
+
+
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format: each command and hook starts here, so no other
-    code reads an older format. A tracker that fails stays as it is, says why, and tries again next time."""
+    code reads an older format. A tracker that fails stays as it is, says why, and tries again next time. Also stops
+    an older version's viewer, which would write the older format again."""
+    if OLD_VIEWER.exists():
+        stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):
         if tr.schema < SCHEMA:
             try:

@@ -104,14 +104,16 @@ def write_json(path: Path, data: dict, indent: int = 1) -> None:
     atomic_write(path, json.dumps(data, indent=indent) + "\n")
 
 
-def record_cli() -> None:
+def record_cli() -> bool:
     """Say how to start this CLI, for a UI outside any session: the plugin's path changes with each version, and
     scripts/python.sh says how Python starts. Only when one of them changes: a UI watches this folder, and each session
-    has its own PATH."""
+    has its own PATH. Whether it wrote: once per plugin version, so what follows a new version can follow this."""
     start = {"package": str(PACKAGE), "python": PYTHON}
-    if {k: v for k, v in read_json(CLI_FILE).items() if k in start} != start:
-        write_json(CLI_FILE, {**start, "argv": cli_for_ui()})
-        prune_bytecode()
+    if {k: v for k, v in read_json(CLI_FILE).items() if k in start} == start:
+        return False
+    write_json(CLI_FILE, {**start, "argv": cli_for_ui()})
+    prune_bytecode()
+    return True
 
 
 PYCACHE = HOME / ".pycache"  # the compiled bytecode of this package and the stdlib: scripts/python.sh names it

@@ -28,6 +28,7 @@ BASE = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, BASE, True)
 os.environ["TRACKER_HOME"] = f"{BASE}/home"  # before the import: HOME is read once
 os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude sessions the view reads: not the user's
+os.environ["HERDR_APP_HOME"] = f"{BASE}/herdr"  # `open` and the hooks update an installed mod: not the user's
 # An agent session running the tests must not leak in: its tracker, its id, or that it is one.
 for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
             "CODEX_THREAD_ID", "PLUGIN_ROOT"):
@@ -1025,6 +1026,34 @@ class Upgrade(unittest.TestCase):
         self.assertEqual((store.HOME / s / "log.md").read_text(), log)  # once
         self.assertNotIn("older", run(*t, "check"))
 
+    def test_a_command_stops_the_old_browser_viewer_and_no_other_program(self):
+        server = ("import http.server\n"
+                  "class Ping(http.server.BaseHTTPRequestHandler):\n"
+                  "    def do_GET(self):\n"
+                  "        self.send_response(200); self.end_headers(); self.wfile.write(b'work-tracker 0.31.1')\n"
+                  "    def log_message(self, *args): pass\n"
+                  "s = http.server.HTTPServer(('127.0.0.1', 0), Ping)\n"
+                  "print(s.server_address[1], flush=True)\n"
+                  "s.serve_forever()\n")
+        def started(code: str, **kw) -> subprocess.Popen:
+            process = subprocess.Popen([sys.executable, "-c", code], **kw)
+            self.addCleanup(lambda: (process.kill(), process.wait()))
+            return process
+        viewer = started(server, stdout=subprocess.PIPE, text=True)
+        port = int(viewer.stdout.readline())
+        viewer.stdout.close()
+        other = started("import time; time.sleep(60)")
+        file = store.HOME / ".viewer.json"
+        store.HOME.mkdir(parents=True, exist_ok=True)
+        store.write_json(file, {"port": port, "pid": viewer.pid})
+        run("list")
+        viewer.wait(10)
+        self.assertFalse(file.exists())
+        store.write_json(file, {"port": port, "pid": other.pid})  # nothing answers: the pid may be another program's
+        run("list")
+        self.assertIsNone(other.poll())
+        self.assertFalse(file.exists())
+
     def test_a_hook_migrates_too_and_an_archived_tracker(self):
         s, _ = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
         archived, _ = self.old_tracker(schema=schema.SCHEMA)
@@ -1965,16 +1994,67 @@ class Ui(unittest.TestCase):
             self.assertGreaterEqual(time.monotonic() - began, 0.3)
         self.assertIn(f"no tracker '{s}x'", run("await-change", f"{s}x", code=2))
 
-    def test_the_install_script_gives_the_mod_only_its_own_files(self):
+    def test_install_mod_gives_the_mod_all_it_loads_and_only_its_own_files(self):
         home = Path(tempfile.mkdtemp(dir=BASE))
-        subprocess.run([str(ROOT / "scripts/install-herdr-mod.sh")], check=True, capture_output=True,
-                       env={**os.environ, "HERDR_APP_HOME": str(home)})
+        with mock.patch.dict(os.environ, {"HERDR_APP_HOME": str(home / "none")}):
+            self.assertIn("no Herdr", run("install-mod", code=2))
         target = home / "mods/work-tracker"
-        # Not gpui-shell.json: Herdr would refuse it.
-        names = ["icon.svg", "main.js", "mod.json", "model.js", "style.js", "view.js"]
-        self.assertEqual(sorted(x.name for x in target.iterdir()), names)
-        for name in names:
-            self.assertEqual((target / name).read_text(), (ROOT / "ui" / name).read_text())
+        target.mkdir(parents=True)
+        (target / "gone.js").write_text("an older version's")
+        (target / "jsconfig.json").write_text("{}")  # Herdr's
+        with mock.patch.dict(os.environ, {"HERDR_APP_HOME": str(home)}):
+            self.assertIn(str(target), run("install-mod"))
+        names = {x.name for x in target.iterdir()}
+        loads, todo = {"mod.json", "icon.svg"}, ["main.js"]  # each module main.js imports, and those they import
+        while todo:
+            name = todo.pop()
+            loads.add(name)
+            self.assertTrue((target / name).is_file(), name)
+            todo += [x for x in re.findall(r'from "\./([^"]+)"', (target / name).read_text()) if x not in loads]
+        self.assertLessEqual(loads, names)
+        for name in loads:
+            self.assertEqual((target / name).read_bytes(), (ROOT / "ui" / name).read_bytes())
+        # Not the window's (app.js; gpui-shell.json, which Herdr refuses), the tests, or what this version no longer has
+        self.assertEqual(names - loads, {"jsconfig.json"})
+
+    def test_a_new_plugin_version_updates_an_installed_mod_and_installs_none(self):
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        target = home / "mods/work-tracker"
+        view = target / "view.js"
+
+        def older():
+            store.write_json(store.CLI_FILE, {"package": "/an/older/version"})
+        with mock.patch.dict(os.environ, {"HERDR_APP_HOME": str(home)}):
+            older()
+            hooks.record_ui()
+            self.assertFalse(target.exists())  # the user installs it
+            run("install-mod")
+            view.write_text("an older version's")
+            hooks.record_ui()  # the same version: the mod is not read
+            self.assertEqual(view.read_text(), "an older version's")
+            older()
+            hooks.record_ui()
+            self.assertEqual(view.read_bytes(), (ROOT / "ui/view.js").read_bytes())
+            view.unlink()
+            try:
+                view.symlink_to(home / "mine.js")  # a link is the user's own
+            except OSError:  # Windows, without the right to make one
+                return
+            older()
+            hooks.record_ui()
+            self.assertTrue(view.is_symlink())
+
+    def test_open_updates_an_installed_mod_and_offers_one(self):
+        s = self.tracker()
+        home = Path(tempfile.mkdtemp(dir=BASE))
+        with mock.patch.dict(os.environ, {"HERDR_APP_HOME": str(home)}), \
+                mock.patch.object(commands, "open_ui", lambda *a, **k: "gpui-shell"):
+            self.assertIn("tracker install-mod", run("--tracker", s, "open"))
+            self.assertNotIn("install-mod", run("--tracker", s, "open", "--window"))
+            run("install-mod")
+            (home / "mods/work-tracker/view.js").write_text("an older version's")
+            self.assertEqual(run("--tracker", s, "open"), f"opened {s} in gpui-shell\n")
+            self.assertEqual((home / "mods/work-tracker/view.js").read_bytes(), (ROOT / "ui/view.js").read_bytes())
 
     def test_a_pr_link_that_sync_has_not_read_is_not_no_pr(self):
         s, t = new_tracker("Shown", "acme/app")
@@ -2171,7 +2251,7 @@ class Ui(unittest.TestCase):
             none, home = mock.Mock(), Path(tempfile.mkdtemp(dir=BASE))  # no mod to show it: Herdr is not asked
             with mock.patch.object(ui, "herdr", none), mock.patch.object(ui, "herdr_home", lambda: home), \
                     mock.patch.object(ui.shutil, "which", lambda name: None):
-                self.assertIn("install-herdr-mod.sh", run("--tracker", s, "open", code=2))
+                self.assertIn("tracker install-mod", run("--tracker", s, "open", code=2))
             none.assert_not_called()
             with mock.patch.object(ui.shutil, "which", lambda name: "/bin/gpui-shell"), \
                     mock.patch.object(ui.subprocess, "Popen") as popen:

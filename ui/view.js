@@ -215,8 +215,10 @@ export function trackerView(host) {
         if (text === this.shown && live === this.live && !this.error) return; // nothing to draw
         if (text !== this.shown) {
           const view = JSON.parse(text);
-          if (view.schema !== SCHEMA) {
-            throw new Error(`The tracker plugin gives data ${view.schema}; this UI reads ${SCHEMA}: run the plugin's scripts/install-herdr-mod.sh`);
+          if (view.schema !== SCHEMA) { // which side is older says what brings the two together
+            throw new Error(view.schema > SCHEMA
+              ? `This view is older than the tracker plugin (data ${view.schema}, view ${SCHEMA}): run \`tracker install-mod\``
+              : `The tracker CLI this view found is older than the view (data ${view.schema}, view ${SCHEMA}): start a session on a tracker, which records the current CLI`);
           }
           this.shown = text;
           this.view = view;

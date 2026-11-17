@@ -32,7 +32,8 @@ from .github import match_pr, sync
 from .watcher import REFUSED, agent_session, await_change, granted, session_name, Watcher
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
-from .ui import GPUI_SHELL_VERSION, NO_HOST, install_window, open_ui
+from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
+    update_mod)
 
 # ---------------------------------------------------------------- templates
 
@@ -1072,14 +1073,22 @@ def cmd_open(args):
     whole = args.id and not (here and here.lookup(args.id)) and any_tracker(args.id)
     tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
     record_cli()  # a mod finds the CLI by this, also before any hook has run
+    update_mod()  # and shows this version
     host = open_ui(tr.slug, rec.id if rec else "", window=args.window)
     if not host:
         die(NO_HOST)
     print(f"opened {tr.slug}{f' {rec.id}' if rec else ''} in {host}")
+    if host != "Herdr" and not args.window and herdr_home().is_dir() and not mod_dir().exists():
+        print(MOD_OFFER)
 
 
 def cmd_install_window(args):
     print(f"gpui-shell {GPUI_SHELL_VERSION} is in {install_window()}. `tracker open --window` opens the view.")
+
+
+def cmd_install_mod(args):
+    print(f"the work-tracker mod is in {install_mod()}. `tracker open` shows it in a Herdr tab; each later plugin "
+          "version updates it.")
 
 
 def shown_tracker(args) -> Tracker:

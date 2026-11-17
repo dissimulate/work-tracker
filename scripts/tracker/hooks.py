@@ -29,6 +29,14 @@ PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's 
 # A hook adds context only when it changes what the model does next, and says each thing once.
 
 
+def record_ui() -> None:
+    """How a UI outside any session starts the CLI; on a new plugin version, also the Herdr mod the user installed.
+    The mod's code loads only then."""
+    if record_cli():
+        from .ui import update_mod
+        update_mod()
+
+
 def hook_input() -> dict:
     try:
         return json.load(sys.stdin)
@@ -115,7 +123,7 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    record_cli()
+    record_ui()
     changes = sync(m.tracker)
     m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
     record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
@@ -290,7 +298,7 @@ def hook_prompt(data: dict) -> None:
     m = match_cwd(cwd, sid)
     if not m:
         return
-    record_cli()
+    record_ui()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]
