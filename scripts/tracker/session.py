@@ -665,11 +665,11 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
     return slugs.pop() if len(slugs) == 1 else ""
 
 
-def session_activity(sid: str, status: str, asker: str | None = None) -> None:
-    """Keep a tracked session's status from its hooks, and when the status last changed; and whether Claude Code
-    keeps a process file for it (`native`), until it is seen to. `asker`: for a wait that starts or ends, the agent it
-    concerns ("" for the session's own). The session stays `waiting` until each agent that asked goes on; any other
-    event ends the turn, and with it every wait."""
+def session_activity(sid: str, status: str, asker: str | None = None, transcript: str = "") -> None:
+    """Keep a tracked session's status from its hooks, and when the status last changed; whether Claude Code keeps a
+    process file for it (`native`), until it is seen to; and the file of its transcript, for `tracker agents`.
+    `asker`: for a wait that starts or ends, the agent it concerns ("" for the session's own). The session stays
+    `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait."""
     entry = load_session(sid)
     if not entry.get("tracker"):
         return
@@ -684,7 +684,7 @@ def session_activity(sid: str, status: str, asker: str | None = None) -> None:
     if not native and status != "ended":
         native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
     save_session(sid, activity={"status": status, "since": since, "at": now}, native=native,
-                 asking=sorted(asking) or None)
+                 asking=sorted(asking) or None, transcript=transcript or entry.get("transcript"))
 
 
 @dataclass
@@ -697,6 +697,7 @@ class Live:
     branch: str
     focus: list[str]  # the tickets `tracker start --on` chose
     since: float  # when the status last changed (epoch s); 0 when not known
+    transcript: str  # its transcript's file, as its hooks last gave it; "" when not known
 
 
 def hook_status(activity: dict, file_status: str, file_changed: float) -> tuple[str, float]:
@@ -725,7 +726,8 @@ def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
     def add(sid: str, entry: dict, name: str, status: str, since: float, cwd: str = "") -> None:
         cwd = entry.get("cwd") or cwd
         out.setdefault(entry["tracker"], {})[sid] = Live(
-            sid, name, status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "", entry.get("focus", []), since)
+            sid, name, status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "", entry.get("focus", []), since,
+            entry.get("transcript", ""))
 
     for c in claude_sessions():
         try:

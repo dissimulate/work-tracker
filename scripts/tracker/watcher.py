@@ -8,8 +8,10 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from .system import alive, die, env_int
 from .store import HOME, locked, read_json, write_json
@@ -90,9 +92,20 @@ def session_name(sid: str) -> str:
 
 
 # ---------------------------------------------------------------- what changed
-# An event is (key, needs the user, text).
 
-Event = tuple[str, bool, str]
+class Event(NamedTuple):
+    kind: str  # one of EVENT_KINDS: what `--only` picks
+    key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`
+    urgent: bool  # it needs the user: `!`
+    text: str
+
+
+EVENT_KINDS = {"ticket": "a ticket's stage, move or next, or that it can start",
+               "log": "a new log line, the commits logged",
+               "agent": "an agent session that starts, ends its turn, waits on the user, seems stuck or ends",
+               "github": "a sync that fails or works again",
+               "check": "a new `check` error"}
+URGENT = "urgent"  # to `--only`: any event that needs the user, of any kind
 
 
 def snapshot(tr: Tracker) -> dict:
@@ -121,16 +134,16 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
         if not was:
             continue
         if was["stage"] != now["stage"]:
-            out.append((ident, False, f"{was['stage']} → {now['stage']}"))
+            out.append(Event("ticket", ident, False, f"{was['stage']} → {now['stage']}"))
         if now.get("move") and now["move"] != was.get("move"):
             # A move that comes back from someone else (a reviewer, CI, a decision's owner) needs the user too.
             back = bool(was.get("move")) and not was.get("mine")
-            out.append((ident, needs_you(now) or now["mine"] and back, f"move: {now['move']}"))
+            out.append(Event("ticket", ident, needs_you(now) or now["mine"] and back, f"move: {now['move']}"))
         if now["next"] and now["next"] != was["next"]:
-            out.append((ident, False, f"next: {short(now['next'], 80)}"))
+            out.append(Event("ticket", ident, False, f"next: {short(now['next'], 80)}"))
         if now["start"] and not was["start"]:
-            out.append((ident, False, f"can start now: {now['start']}"))
-    out += [("check", True, e) for e in new.get("errors", []) if e not in old.get("errors", [])]
+            out.append(Event("ticket", ident, False, f"can start now: {now['start']}"))
+    out += [Event("check", "check", True, e) for e in new.get("errors", []) if e not in old.get("errors", [])]
     return out
 
 
@@ -147,8 +160,8 @@ def log_events(lines: list[str]) -> list[Event]:
         if n := commits_logged(msg):
             commits[key] = commits.get(key, 0) + n
         else:
-            out.append((key, bool(LOG["action"].read(msg)), short(msg, 120)))
-    return out + [(key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
+            out.append(Event("log", key, bool(LOG["action"].read(msg)), short(msg, 120)))
+    return out + [Event("log", key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
 
 
 def read_log(tr: Tracker, offset: int) -> tuple[list[str], int]:
@@ -173,12 +186,29 @@ def agent_tickets(tr: Tracker, x: Live) -> list[str]:
     return [t.id for t in m.active] if m else []
 
 
+def agent_state(x: Live, now: float) -> str:
+    """`<name> <status> <n> min`: the name is the one the host lists the session by."""
+    return f"{x.name} {x.status if x.status in ('busy', 'waiting') else 'idle'}" + \
+        (f" {int((now - x.since) // 60)} min" if x.since else "")
+
+
+def agents_lines(tr: Tracker, now: float) -> list[str]:
+    """`tracker agents`: per live agent session on the tracker, its state, tickets, branch, folder and transcript."""
+    out = []
+    for x in live_sessions(tr.slug):
+        on = agent_tickets(tr, x)
+        out.append(" · ".join([agent_state(x, now), *([f"on {', '.join(on)}"] if on else []),
+                               *([f"branch {x.branch}"] if x.branch else []), *([x.cwd] if x.cwd else []),
+                               *([f"transcript {x.transcript}"] if x.transcript else [])]))
+    return out or [f"no agent session on {tr.slug}"]
+
+
 def lines_of(events: list[Event], now: float) -> list[str]:
     """One line per key, `!` on those that need the user, which come first."""
     keys: dict[str, tuple[bool, list[str]]] = {}
-    for key, urgent, text in events:
-        was, texts = keys.get(key, (False, []))
-        keys[key] = (was or urgent, texts if text in texts else texts + [text])
+    for e in events:
+        was, texts = keys.get(e.key, (False, []))
+        keys[e.key] = (was or e.urgent, texts if e.text in texts else texts + [e.text])
     clock = time.strftime("%H:%M", time.localtime(now))
     return [short(f"{clock} {'! ' * urgent}{key}: {' · '.join(texts)}", LINE_MAX)
             for key, (urgent, texts) in sorted(keys.items(), key=lambda kv: not kv[1][0])]
@@ -195,8 +225,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     acts = [a.id for a in tr.open_actions()]
 
     def agent(x: Live) -> str:
-        return f"agent {x.name} {x.status if x.status in ('busy', 'waiting') else 'idle'}" + \
-            (f" {int((now - x.since) // 60)} min" if x.since else "")
+        return f"agent {agent_state(x, now)}"
 
     def line(urgent: bool, text: str) -> str:
         return short(f"{clock} {'! ' * urgent}{text}", LINE_MAX)
@@ -253,18 +282,40 @@ def watcher_of(tr: Tracker) -> dict:
     return {"who": st["who"], "running": running, "since": st.get("started", 0), "ended": 0 if running else ended}
 
 
+class SyncJob(threading.Thread):
+    """One `sync` in a thread, so that a slow `gh` holds up no look; `changes` once it ends. A daemon: an exit does not
+    wait for it, and each write it makes is whole or none."""
+
+    def __init__(self, tr: Tracker):
+        super().__init__(daemon=True)
+        self.tr, self.changes = tr, []
+
+    def run(self) -> None:
+        budget(GH_BUDGET_S)
+        try:
+            self.changes = sync(self.tr, every=LIVE_SYNC_S)
+        except (Exception, SystemExit) as exc:  # a busy lock, a bad file: try again next time
+            self.changes = [f"{SKIPPED}: {exc}"]
+        finally:
+            budget(None)
+
+
 class Watcher:
     """One tracker's watch. `claim` takes it (one watcher per tracker) and gives the lines to start with; `poll` looks
     once and gives the lines of what changed; `run` prints them until stopped, or until the first batch (`once`).
-    What it reported lives in WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the
-    terminal, misses nothing and repeats nothing."""
+    `only` keeps the events of those EVENT_KINDS (and with URGENT, any urgent one); `hold` keeps those that need no one
+    until the oldest is that many seconds old, so that they come as one batch. What it reported and holds lives in
+    WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the terminal, misses nothing and
+    repeats nothing."""
 
-    def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal"):
-        self.root, self.slug, self.sid, self.who = tr.root, tr.slug, sid, who
+    def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal", only: frozenset[str] = frozenset(),
+                 hold: float = 0):
+        self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
-        self.synced = 0.0  # when this watcher last asked GitHub
+        self.synced = 0.0  # when this watcher last started a sync
+        self.job: SyncJob | None = None
 
     def tracker(self) -> Tracker:
         return Tracker(self.root)
@@ -287,7 +338,7 @@ class Watcher:
         again = st.get("sid", "") == self.sid and now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
         if again:
             self.st = st
-            lines = self.batch(now, force=True)
+            lines = self.report(self.batch(now, force=True), now, flush=True)
         else:
             tr = self.tracker()
             self.sig = files_hash(tr.data_files())
@@ -306,12 +357,28 @@ class Watcher:
 
     def poll(self, now: float) -> list[str]:
         forget()  # git as it is now: this process runs on
-        lines = self.batch(now)
-        if lines:
+        events = self.batch(now)
+        lines = self.report(events, now)
+        if events or lines:
             self.save(now)
         return lines
 
-    def batch(self, now: float, force: bool = False) -> list[str]:
+    def report(self, events: list[Event], now: float, flush: bool = False) -> list[str]:
+        """The lines of the events `only` keeps, with those held before: at once when one is urgent or with `flush`,
+        else once the oldest is `hold` seconds old. Until then they wait in the state, so that a restart prints them."""
+        held = [Event(*e) for e in self.st.pop("held", [])] + [e for e in events if self.wanted(e)]
+        since = self.st.pop("held_since", now)
+        if not held:
+            return []
+        if flush or any(e.urgent for e in held) or now - since >= self.hold:
+            return lines_of(held, now)
+        self.st.update(held=held, held_since=since)
+        return []
+
+    def wanted(self, e: Event) -> bool:
+        return not self.only or e.kind in self.only or e.urgent and URGENT in self.only
+
+    def batch(self, now: float, force: bool = False) -> list[Event]:
         """What changed: GitHub (asked every LIVE_SYNC_S), the files (once they settle; at once with `force`), and the
         agents. An agent is active while events name its tickets."""
         events = self.github(now)
@@ -326,50 +393,54 @@ class Watcher:
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
-        named = {key for key, _, _ in events}
+        named = {e.key for e in events}
         for sid, a in self.st.get("agents", {}).items():
             if named & set(a["on"]):
                 self.st.setdefault("activity", {})[sid] = now
-        return lines_of(events, now)
+        return events
 
     def github(self, now: float) -> list[Event]:
-        """Sync PR state at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and say once when it fails, and
-        once when it works again. What it changes shows as the files change."""
-        tr = self.tracker()
-        if not tr.repos or now - self.synced < LIVE_SYNC_S:
+        """Start a SyncJob at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and once it ends, say once when
+        it failed, and once when it works again. What it changes shows as the files change."""
+        if self.job and self.job.is_alive():
             return []
-        self.synced = now
-        budget(GH_BUDGET_S)
-        try:
-            changes = sync(tr, every=LIVE_SYNC_S)
-        except (Exception, SystemExit) as exc:  # a busy lock, a bad file: try again next time
-            changes = [f"{SKIPPED}: {exc}"]
-        finally:
-            budget(None)
+        out = self.sync_told(self.job.changes, now) if self.job else []
+        self.job = None
+        if self.tracker().repos and now - self.synced >= LIVE_SYNC_S:
+            self.synced = now
+            self.job = SyncJob(self.tracker())
+            self.job.start()
+        return out
+
+    def sync_told(self, changes: list[str], now: float) -> list[Event]:
         failed = self.st.get("sync_failed", 0)
         if skipped(changes):
             if failed:
                 return []
             self.st["sync_failed"] = now
-            return [("github", True, changes[0])]
+            return [Event("github", "github", True, changes[0])]
         if failed and self.tracker().raw_state().get("last_sync", 0) > failed:
             del self.st["sync_failed"]
-            return [("github", False, "sync works again")]
+            return [Event("github", "github", False, "sync works again")]
         return []
 
     def agents(self, tr: Tracker, now: float) -> list[Event]:
-        """The agent sessions on the tracker: each that starts or ends; each that waits on the user (`waits`), or is
-        busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
+        """The agent sessions on the tracker: each that starts, ends its turn or ends; each that waits on the user
+        (`waits`), or is busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})
         agents, out = {}, []
         for x in live_sessions(self.slug):
             on = agent_tickets(tr, x)
-            agents[x.sid] = {"name": x.name, "on": on}
+            agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
-            if x.sid not in old:
+            was = old.get(x.sid)
+            if not was:
                 activity[x.sid] = now
-                out.append((key, False, "started" + where))
+                out.append(Event("agent", key, False, "started" + where))
+            # A new idle spell, also when a whole turn fell between two looks.
+            elif x.status == "idle" and x.since and (was.get("status"), was.get("since")) != ("idle", x.since):
+                out.append(Event("agent", key, False, "turn ended" + where))
             if not x.since:
                 continue
             spell, mins = f"{x.status}:{x.sid}", int((now - x.since) // 60)
@@ -378,15 +449,16 @@ class Watcher:
                 continue
             if waits(x, now):
                 told[spell] = x.since
-                out.append((key, True, f"asks for a permission or an answer{where}" if x.status == "waiting"
-                            else f"idle {mins} min{where}: waits on you"))
+                out.append(Event("agent", key, True, f"asks for a permission or an answer{where}"
+                                 if x.status == "waiting" else f"idle {mins} min{where}: waits on you"))
             elif x.status == "busy" and on and quiet >= BUSY_S:
                 told[spell] = x.since
-                out.append((key, False, f"busy {mins} min; nothing recorded for {', '.join(on)} in "
-                                        f"{int(quiet // 60)} min"))
+                out.append(Event("agent", key, False, f"busy {mins} min; nothing recorded for {', '.join(on)} in "
+                                                      f"{int(quiet // 60)} min"))
         for sid, a in old.items():
             if sid not in agents:
-                out.append((f"agent {a['name']}", False, "ended" + (f" on {', '.join(a['on'])}" if a["on"] else "")))
+                out.append(Event("agent", f"agent {a['name']}", False,
+                                 "ended" + (f" on {', '.join(a['on'])}" if a["on"] else "")))
                 for k in [k for k in told if k.endswith(f":{sid}")]:
                     del told[k]
                 activity.pop(sid, None)
@@ -395,8 +467,8 @@ class Watcher:
             for ident in a["on"]:
                 shared.setdefault(ident, []).append(a["name"])
         shared = {i: sorted(names) for i, names in shared.items() if len(names) > 1}
-        out += [(i, False, f"{len(names)} agents on it: {', '.join(names)}") for i, names in shared.items()
-                if self.st.get("shared", {}).get(i) != names]
+        out += [Event("agent", i, False, f"{len(names)} agents on it: {', '.join(names)}")
+                for i, names in shared.items() if self.st.get("shared", {}).get(i) != names]
         self.st.update(agents=agents, shared=shared)
         return out
 
@@ -405,7 +477,7 @@ class Watcher:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         lines = self.claim(time.time())
         try:
-            if not once:
+            if not once and not self.sid:  # for a person; a session's first lines say what it watches
                 print(f"watching {self.slug} (Ctrl-C stops); `!` marks what needs you", flush=True)
             while not (once and lines):
                 if lines:
@@ -417,8 +489,10 @@ class Watcher:
                 lines = self.poll(time.time())
             print("\n".join(lines))
             if self.sid:
-                print(f"Next: `tracker watch {self.slug} --once` again, in the background.", flush=True)
+                print("Next: the same `tracker watch` command again, in the background.", flush=True)
         except KeyboardInterrupt:
             pass
         finally:
+            if once and self.job:
+                self.job.join(GH_BUDGET_S)  # else a sync cut short at each run would start again at the next
             self.release(time.time())

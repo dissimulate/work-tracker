@@ -413,7 +413,8 @@ def run_hook(*events: str) -> None:
             # A subagent's turn is not the session's, but its wait on the user is.
             asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
             if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
-                session_activity(sid, status, asker)
+                transcript = "" if data.get("agent_id") else str(data.get("transcript_path") or "")  # not a subagent's
+                session_activity(sid, status, asker, transcript)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         warn(f"hook {event} failed: {exc}")
         sys.exit(0)

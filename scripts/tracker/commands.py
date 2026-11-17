@@ -29,7 +29,8 @@ from .contract import check, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
-from .watcher import REFUSED, agent_session, await_change, granted, session_name, Watcher
+from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, granted,
+                      session_name, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
@@ -992,13 +993,29 @@ def cmd_watch(args):
     if inside and not granted(sid):
         die("`tracker watch` starts only when the user asks: they run it in a terminal, or invoke the watch skill "
             "in an agent session. Do not start it yourself.", REFUSED)
+    only = frozenset(k.strip() for k in (args.only or "").split(",") if k.strip())
+    if only - {*EVENT_KINDS, URGENT}:
+        die(f"--only takes {', '.join([*EVENT_KINDS, URGENT])}")
+    if args.hold < 0:
+        die("--hold takes seconds: 0 or more")
+    tr = named_tracker(args, "watch")
+    Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
+            args.hold).run(args.once)
+
+
+def cmd_agents(args):
+    print("\n".join(agents_lines(named_tracker(args, "agents"), time.time())))
+
+
+def named_tracker(args, cmd: str) -> Tracker:
+    """The tracker the words in `args.name` name; with none, the one here (`find_tracker`). For a command a session on
+    no tracker runs (the watch's)."""
     if args.name:
         hits, sure, head = named_trackers(args.name)
     else:
         found = find_tracker(args)
         hits, sure, head = ([found], True, "") if found else ([], False, "which tracker? trackers:")
-    tr = one_tracker(hits, sure, head, "watch")
-    Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal").run(args.once)
+    return one_tracker(hits, sure, head, cmd)
 
 
 def move_folder(move, failed: str) -> None:

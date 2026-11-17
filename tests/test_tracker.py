@@ -2521,6 +2521,52 @@ class Watch(unittest.TestCase):
         self.assertIn("W-1: 3 agents on it: api, ui, web", told)
         extra.unlink()
         self.assertIn("agent web: ended on W-1", "".join(w.poll(late)))
+        running("api", "idle", late + 5)
+        self.assertEqual(w.poll(late + 5), [f"{time.strftime('%H:%M', time.localtime(late + 5))} agent api: turn ended "
+                                            "on W-1"])
+        running("api", "idle", late + 9)  # a whole turn between two looks
+        self.assertIn("agent api: turn ended on W-1", "".join(w.poll(late + 9)))
+        self.assertEqual(w.poll(late + 10), [])
+
+    def test_agents_command(self):
+        """`tracker agents`: each live agent's state, tickets, branch, folder, and the transcript its hooks gave."""
+        run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
+        self.assertIn(f"no agent session on {self.s}", run("agents", self.s))
+        sid = f"tr{time.monotonic_ns()}"
+        session.save_session(sid, tracker=self.s, cwd=str(self.work))
+        hook("prompt", sid, self.work, prompt="go on", transcript_path="/t/one.jsonl")
+        hook("waiting", sid, self.work, tool_name="Bash", agent_id="sub", transcript_path="/t/sub.jsonl")  # not its own
+        hook("stop", sid, self.work)  # an event with no transcript keeps the one known
+        self.assertEqual(run("agents", self.s).strip(), f"{sid[:8]} idle 0 min · on W-1 · branch feat/W-1 · "
+                                                         f"{self.work} · transcript /t/one.jsonl")
+
+    def test_only_and_hold(self):
+        """`--only` keeps the kinds asked for; `--hold` makes one batch of what needs no one, an urgent event comes at
+        once with it, and a restart prints what was held."""
+        now = time.time()
+        w = watcher.Watcher(model.Tracker(self.root), only=frozenset({"ticket", watcher.URGENT}), hold=60)
+        w.claim(now)
+        run(*self.t, "set", "W-2", "next=Plan it")
+        run(*self.t, "log", "A note", "--ref", "W-2")  # a log line: not asked for
+        self.assertEqual(w.poll(now), [])
+        self.assertEqual(w.poll(now + 59), [])
+        lines = w.poll(now + 60)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("W-2: next: Plan it", lines[0])
+        self.assertNotIn("A note", lines[0])
+
+        run(*self.t, "set", "W-1", "next=Build it")
+        self.assertEqual(w.poll(now + 61), [])
+        ticket(self.root, "W-9", depends_on=["W-99"])  # a `check` error needs the user
+        lines = "\n".join(w.poll(now + 62))
+        self.assertIn("! check: ", lines)
+        self.assertIn("W-1: next: Build it", lines)
+
+        run(*self.t, "set", "W-2", "next=Plan it again")
+        self.assertEqual(w.poll(now + 63), [])
+        w.release(now + 63)
+        self.assertIn("W-2: next: Plan it again", "".join(self.watcher().claim(now + 64)))
+        self.assertIn("--only takes ticket, log", run("watch", self.s, "--only", "tickets", code=2))
 
     def test_an_agent_that_asks(self):
         run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
@@ -2537,18 +2583,33 @@ class Watch(unittest.TestCase):
         self.assertEqual(w.poll(now + watcher.ASKING_S + 1), [])  # once per wait
 
     def test_github(self):
-        (s, _), now = new_tracker("Synced", "a/x"), time.time()
+        """The sync runs in a thread: a slow `gh` holds up no look, and the look after it ends tells how it went."""
+        (s, t), now = new_tracker("Synced", "a/x"), time.time()
         w = watcher.Watcher(model.tracker_at(s))
-        failed = ["sync skipped: gh failed or timed out for a/x"]
-        with mock.patch.object(watcher, "sync", return_value=failed):
+        gate = threading.Event()
+
+        def failed(*_, **__):
+            gate.wait(5)
+            return ["sync skipped: gh failed or timed out for a/x"]
+
+        def synced(at: float) -> list[str]:
+            w.poll(at)
+            w.job.join()
+            return w.poll(at)
+
+        with mock.patch.object(watcher, "sync", side_effect=failed):
             w.claim(now)
+            self.assertEqual(w.poll(now), [])  # the sync starts
+            run(*t, "log", "A note")
+            self.assertIn("log: A note", "".join(w.poll(now)))
+            gate.set()
+            w.job.join()
             self.assertIn("! github: sync skipped: gh failed", "".join(w.poll(now)))
-            self.assertEqual(w.poll(now + schema.LIVE_SYNC_S), [])  # said once
+            self.assertEqual(synced(now + schema.LIVE_SYNC_S), [])  # said once
         with mock.patch.object(watcher, "sync", return_value=[]):
-            self.assertEqual(w.poll(now + 2 * schema.LIVE_SYNC_S), [])  # skipped for its interval: not proof it works
-            tr = model.tracker_at(s)
-            tr.save_state({"last_sync": now + 1})
-            self.assertIn("github: sync works again", "".join(w.poll(now + 3 * schema.LIVE_SYNC_S)))
+            self.assertEqual(synced(now + 2 * schema.LIVE_SYNC_S), [])  # skipped for its interval: not proof it works
+            model.tracker_at(s).save_state({"last_sync": now + 1})
+            self.assertIn("github: sync works again", "".join(synced(now + 3 * schema.LIVE_SYNC_S)))
 
     def test_only_the_user_starts_it(self):
         sid, cwd = f"sid{time.monotonic_ns()}", self.work
@@ -2565,7 +2626,7 @@ class Watch(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             out = run("watch", self.s, "--once")
             self.assertIn(f"watching {self.s}: 0 under way", out)
-            self.assertIn(f"Next: `tracker watch {self.s} --once` again", out)
+            self.assertIn("Next: the same `tracker watch` command again", out)
             run(*self.t, "log", "a note", code=4)  # it watches only
             run("start", self.s, code=4)
         self.assertIn("Watched by session sid", data(self.s)["now"]["watch"]["text"])  # between two `--once` it watches
@@ -2869,7 +2930,7 @@ class Actions(unittest.TestCase):
     def test_the_watch_marks_a_new_action(self):
         events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.LOG['action'].text(title='Ask Sam')}",
                                      "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])
-        self.assertEqual([urgent for _, urgent, _ in events], [True, False])
+        self.assertEqual([e.urgent for e in events], [True, False])
 
 
 class Values(unittest.TestCase):

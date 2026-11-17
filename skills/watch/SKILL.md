@@ -15,17 +15,20 @@ Use the command prefix from the session's `[work-tracker]` hook when supplied. I
 
 ## Loop
 
-1. Run `tracker watch $ARGUMENTS --once` with the host's background command tool. If it returns a process handle, wait for its output with the host's process tool. The command waits until something changes, prints one line per ticket, agent or check, then exits. The first run prints the state now. Exit 3 lists trackers: ask the user which one.
+1. Start the watch: `tracker watch $ARGUMENTS --hold 60`. Its first lines are the state now; each later batch is what changed, one line per ticket, agent or check. With `--hold 60` the lines that need no one come at most once a minute, and a `!` line at once. When the user asks you to watch for something narrower, add `--only <kinds>` to fit it (`tracker watch --help` lists the kinds).
+   - When the host has a tool that turns each line a background command prints into an event (in Claude Code: Monitor), run the command with it, at its longest timeout. When the timeout stops the command, start it again at once: it goes on from where it stopped, and misses nothing.
+   - Else add `--once` and run the command with the host's background command tool; if that returns a process handle, wait for its output with the host's process tool. It exits after one batch: start it again after each one.
+   - Exit 3 lists trackers: ask the user which one. Exit 4: the user ended the watch, or another watcher has the tracker. Say why in one line, and stop.
 2. Read the batch. Each line starts with the time; `!` marks what needs the user: a move that became theirs (a review came back, checks fail, ready to merge), an agent that asks them for a permission or an answer, an agent idle and waiting on them, a new `check` error, a failing GitHub sync.
 3. Judge the batch as a whole, then act:
    - the user must act now: one notification under 200 characters that leads with the action, such as "S-3: changes requested by rev; agent api idle 12 min, waits on you". Use the host's notification tool when available; otherwise reply in chat.
    - worth knowing, not urgent: one short line in your reply
    - routine progress: no note
-4. Go back to step 1 at once. The loop ends only when the user says stop, or when `tracker watch` exits with code 4 (the user ended the watch, or another watcher has the tracker): then say why in one line.
+4. Wait for the next batch. The watch ends only when the user says stop (then stop the command), or when the command exits with code 4.
 
 ## Look closer
 
-When a line hints at trouble, read before you judge: `tracker context <id> --brief`, `tracker show <id> --section <name>`, `tracker index --active`, `tracker decisions --all`, `gh pr view <n>`, `git log`. Bring the user:
+When a line hints at trouble, read before you judge: `tracker context <id> --brief`, `tracker show <id> --section <name>`, `tracker index --active`, `tracker decisions --all`, `gh pr view <n>`, `git log`. `tracker agents $ARGUMENTS` gives each agent's status, tickets, branch, folder and transcript file: to see what an agent did, read the end of its transcript (it is large: never all of it). Bring the user:
 
 - a step or plan that contradicts a settled decision
 - a stuck agent: busy for long with nothing recorded, or the same step again and again

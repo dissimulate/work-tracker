@@ -18,13 +18,13 @@ from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
-from .watcher import REFUSED, watching
+from .watcher import EVENT_KINDS, REFUSED, URGENT, watching
 from .ui import GPUI_SHELL_VERSION
-from .commands import (cmd_act, cmd_actions, cmd_add, cmd_archive, cmd_attach, cmd_attached, cmd_await_change,
-    cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence, cmd_find, cmd_here,
-    cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list, cmd_log, cmd_new,
-    cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start, cmd_step, cmd_sync,
-    cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
+from .commands import (cmd_act, cmd_actions, cmd_add, cmd_agents, cmd_archive, cmd_attach, cmd_attached,
+    cmd_await_change, cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence,
+    cmd_find, cmd_here, cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list,
+    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start,
+    cmd_step, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
 
 # ---------------------------------------------------------------- main
 
@@ -240,11 +240,21 @@ def build_parser():
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
     sp = add("watch", cmd_watch, "for the user: print each change that may need them, one line per ticket or agent "
                                  "(`!` marks what does), until Ctrl-C: a move that becomes theirs, a step, a decision, "
-                                 "a PR event, an agent idle and waiting on them, a `check` error. One watcher per "
-                                 "tracker. In an agent session it runs only after the user invokes the watch skill")
+                                 "a PR event, an agent that ends its turn or waits on them, a `check` error. One "
+                                 "watcher per tracker. In an agent session it runs only after the user invokes the "
+                                 "watch skill")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
+    sp.add_argument("--only", metavar="KINDS", help="print only these kinds of event, comma-separated: "
+                    + "; ".join(f"{k} ({what})" for k, what in EVENT_KINDS.items())
+                    + f"; {URGENT} (any marked `!`)")
+    sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
+                    help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
+                         "marked `!` prints at once, with those held")
+    sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: its name as the host lists "
+                                   "it, status and for how long, tickets, branch, folder and transcript file")
+    sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the UI. "
                                      "Refuses while another agent session or a watch is on it")
     sp.add_argument("slug", help="the tracker's exact slug")

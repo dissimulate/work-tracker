@@ -20,6 +20,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The view shows a spinner in its centre while it loads, when it opens and when it changes to another tracker or agent, in place of an empty page or a short "No tracker open".
 - `tracker new <ID> --plan -` takes the ticket's Plan when it creates the ticket, so no `tracker put <id> plan -` has to follow.
 - `Code` is a link label in every tracker, for a place in the code: `- Code: [title](url) — why`. `tracker add --help` lists the labels.
+- `tracker watch --only <kinds>` prints only those kinds of change, and `--hold <seconds>` prints the changes that do not need you as one batch (a `!` line still comes at once). The watch also says when an agent ends its turn.
+- `tracker agents` lists the agent sessions on a tracker: status, tickets, branch, folder and transcript file.
 
 ### Changed
 
@@ -37,6 +39,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - A session on a tracker starts without waiting for GitHub: the PR state sync runs in the background, and your next message reports what it changed on the session's tickets. The brief no longer has a `Synced PR state` line.
 - A session with no ticket under way gets the state line ("No ticket in progress…") only when there is work since the branch's mark, not on every 5th message.
 - A migration's backup leaves out the tracker's `evidence/` folder, which no migration changes.
+- The watch skill keeps one `tracker watch` running under Claude Code's Monitor, in place of a new run after each batch, and sends the changes that do not need you at most once a minute.
+- `tracker watch` goes on reading the tracker and its agents while a GitHub sync runs.
 
 ### Fixed
 
