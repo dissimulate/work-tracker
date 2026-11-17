@@ -12,10 +12,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .system import DETACH, ROOT, WINDOWS, cli_for_ui, die, warn
+from .system import DETACH, UI_DIR, WINDOWS, cli_for_ui, die, mod_file, mod_files, warn
 from .store import HOME, atomic_file
 
-UI_DIR = ROOT / "ui"
 MOD_NAME = "work-tracker"
 # The version the window is checked on
 GPUI_SHELL_VERSION = json.loads((UI_DIR / "gpui-shell.json").read_text())["shell-version"]
@@ -48,16 +47,10 @@ def mod_dir() -> Path:
     return herdr_home() / "mods" / MOD_NAME
 
 
-def mod_file(name: str) -> bool:
-    """Whether a file of `ui/` is one of the Herdr mod's: not the window's entry (app.js) or manifest (gpui-shell.json,
-    which Herdr refuses), a test, or what a host wrote there when it loaded the UI (types, jsconfig.json)."""
-    return name == "mod.json" or (name.endswith((".js", ".svg")) and name != "app.js" and not name.endswith(".test.js"))
-
-
 def put_mod(target: Path) -> None:
     """Make `target` this version's mod: write each file that differs, and remove each file of the mod that this
     version no longer has. Herdr reloads a mod as its files change. A link, or a folder, is the user's own: it stays."""
-    shipped = {p.name: p for p in UI_DIR.iterdir() if mod_file(p.name)}
+    shipped = {p.name: p for p in mod_files()}
     target.mkdir(parents=True, exist_ok=True)
     for name, source in shipped.items():
         dest, content = target / name, source.read_bytes()

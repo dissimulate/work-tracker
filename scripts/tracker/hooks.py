@@ -31,8 +31,9 @@ PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's 
 
 
 def record_version() -> None:
-    """Record how a UI outside any session starts the CLI (`record_cli`). On a new plugin version, also bring the Herdr
-    mod the user installed to it (`update_mod`) and remove old backups (`prune_backups`). `ui` loads only then."""
+    """Record how a UI outside any session starts the CLI (`record_cli`). On a new plugin version, or a change to the
+    mod's files, also bring the Herdr mod the user installed to it (`update_mod`) and remove old backups
+    (`prune_backups`). `ui` loads only then."""
     if record_cli():
         from .ui import update_mod
         update_mod()

@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .system import alive, die, env_int
-from .store import HOME, locked, read_json, write_json
+from .store import HOME, files_hash, locked, read_json, write_json
 from .git import forget
 from .schema import LIVE_SYNC_S, STATE_KEEP_DAYS
-from .model import LOG, LOG_LINE, SAFE_NAME, commits_logged, files_hash, short, Tracker
+from .model import LOG, LOG_LINE, SAFE_NAME, commits_logged, short, Tracker
 from .session import SESSIONS_DIR, claude_sessions, live_sessions, match_cwd, session_id, ticket_facts, Live
 from .contract import check
 from .views import start_text

@@ -13,6 +13,7 @@ WINDOWS = os.name == "nt"
 PACKAGE = Path(__file__).resolve().parent
 ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
 BIN = ROOT / "bin" / "tracker"  # the CLI
+UI_DIR = ROOT / "ui"  # the view: the Herdr mod's files and the window's
 # This Python, started as scripts/python.sh says (the reasons are there), its compiled bytecode kept where this
 # process keeps it
 PYTHON = [sys.executable, "-I", "-X", "utf8",
@@ -36,6 +37,17 @@ def warn(msg: str) -> None:
 def die(msg: str, code: int = 2) -> None:
     warn(msg)
     sys.exit(code)
+
+
+def mod_file(name: str) -> bool:
+    """Whether a file of `ui/` is one of the Herdr mod's: not the window's entry (app.js) or manifest (gpui-shell.json,
+    which Herdr refuses), a test, or what a host wrote there when it loaded the UI (types, jsconfig.json)."""
+    return name == "mod.json" or (name.endswith((".js", ".svg")) and name != "app.js" and not name.endswith(".test.js"))
+
+
+def mod_files() -> list[Path]:
+    """This copy's files of the Herdr mod."""
+    return sorted(p for p in UI_DIR.iterdir() if mod_file(p.name))
 
 
 def env_int(name: str, default: int, least: int = 0) -> int:

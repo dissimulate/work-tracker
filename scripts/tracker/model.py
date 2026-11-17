@@ -4,7 +4,6 @@ schema's, the text format itself markdown's, the writing of files store's."""
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -595,18 +594,6 @@ class Tracker:
         """Every file that holds the tracker's facts: a change to one is a change a UI and the watcher show."""
         return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
                 *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
-
-
-def files_hash(files: list[Path]) -> str:
-    """Changes when any of the files does: their names, times and sizes. A missing file counts as none."""
-    stats = []
-    for p in files:
-        try:
-            s = p.stat()
-        except OSError:
-            continue
-        stats.append(f"{p.name}:{s.st_mtime_ns}:{s.st_size}")
-    return hashlib.sha1("|".join(stats).encode()).hexdigest()[:12]
 
 
 def sort_key(ident: str):

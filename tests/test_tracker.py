@@ -2057,6 +2057,17 @@ class Ui(unittest.TestCase):
             older()
             hooks.record_version()
             self.assertEqual(view.read_bytes(), (ROOT / "ui/view.js").read_bytes())
+
+            edited = home / "edited.js"  # a file of the mod in a checkout, whose path stays from edit to edit
+            edited.write_text("1")
+            with mock.patch.object(store, "mod_files", lambda: [*system.mod_files(), edited]):
+                hooks.record_version()
+                view.write_text("an older edit's")
+                hooks.record_version()  # no edit since: the mod is not read
+                self.assertEqual(view.read_text(), "an older edit's")
+                edited.write_text("22")
+                hooks.record_version()
+                self.assertEqual(view.read_bytes(), (ROOT / "ui/view.js").read_bytes())
             view.unlink()
             try:
                 view.symlink_to(home / "mine.js")  # a link is the user's own

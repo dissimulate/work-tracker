@@ -3,6 +3,7 @@ What the files hold is schema's and model's."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -11,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .system import PACKAGE, PYTHON, WINDOWS, cli_for_ui, die
+from .system import PACKAGE, PYTHON, WINDOWS, cli_for_ui, die, mod_files
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
@@ -104,12 +105,24 @@ def write_json(path: Path, data: dict, indent: int = 1) -> None:
     atomic_write(path, json.dumps(data, indent=indent) + "\n")
 
 
+def files_hash(files: list[Path]) -> str:
+    """Changes when any of the files does: their names, times and sizes. A missing file counts as none."""
+    stats = []
+    for p in files:
+        try:
+            s = p.stat()
+        except OSError:
+            continue
+        stats.append(f"{p.name}:{s.st_mtime_ns}:{s.st_size}")
+    return hashlib.sha1("|".join(stats).encode()).hexdigest()[:12]
+
+
 def record_cli() -> bool:
     """Say how to start this CLI, for a UI outside any session, where PATH holds no plugin: the plugin's path changes
-    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, as a UI
-    watches this folder. Returns whether it wrote, once per plugin version, so what a new version needs
-    (`hooks.record_version`) can follow this."""
-    start = {"package": str(PACKAGE), "python": PYTHON}
+    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, or the
+    Herdr mod's files do (an edit in a checkout, whose path stays), as a UI watches this folder. Returns whether it
+    wrote, so that what a new version needs (`hooks.record_version`) can follow this."""
+    start = {"package": str(PACKAGE), "python": PYTHON, "mod": files_hash(mod_files())}
     if {k: v for k, v in read_json(CLI_FILE).items() if k in start} == start:
         return False
     write_json(CLI_FILE, {**start, "argv": cli_for_ui()})
