@@ -2055,6 +2055,91 @@ class IssueFields(unittest.TestCase):
                                       "shutil", "concurrent.futures") if x in loaded], [])
 
 
+class IssueSync(unittest.TestCase):
+    """A linked ticket's issue follows the work: the model reads its state (`tracker issue --stage`), the tracker asks
+    for each move the work causes, forward only, and a move a person made in the issue tracker holds."""
+
+    def tracker(self) -> tuple[str, tuple[str, str]]:
+        s, t = new_tracker("Work")
+        for n in (1, 2):
+            run(*t, "new", f"T-{n}", "--title", f"Story {n}")
+            run(*t, "add", f"T-{n}", "link", f"Issue: [SC-{n} Story {n}](https://issues.example/story/{n})")
+        return s, t
+
+    def issues(self, s: str) -> dict:
+        return model.tracker_at(s).raw_state().get("issues", {})
+
+    def test_a_read_is_recorded(self):
+        s, t = self.tracker()
+        out = run(*t, "issue", "T-1", "--stage", "unstarted", "--state", "To do")
+        self.assertIn("issue_stage=unstarted", out)
+        t1 = model.tracker_at(s).lookup("T-1")
+        self.assertEqual((t1.get("issue_stage"), t1.get("issue_state"), t1.get("status")),
+                         ("unstarted", "To do", "todo"))
+        run(*t, "issue", "T-1", "--stage", "started")  # a stage alone: a name the shell must not see
+        self.assertEqual(model.tracker_at(s).lookup("T-1").get("issue_state"), "To do")
+
+    def test_state_needs_a_stage(self):
+        s, t = self.tracker()
+        self.assertIn("--state needs --stage", run(*t, "issue", "T-1", "--state", "To do", code=2))
+        self.assertIn("invalid choice: 'qa'", run(*t, "issue", "T-1", "--stage", "qa", code=2))
+
+    def test_closing_the_issue_closes_the_ticket(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        out = run(*t, "issue", "T-1", "--stage", "done", "--state", "Shipped")
+        self.assertIn("T-1: closed in its issue tracker", out)
+        t1 = model.tracker_at(s).lookup("T-1")
+        self.assertEqual(t1.get("status"), "done")
+        self.assertTrue(t1.get("closed_at"))
+        run(*t, "set", "T-2", "status=in-progress")
+        run(*t, "issue", "T-2", "--stage", "wontdo")
+        self.assertEqual(model.tracker_at(s).lookup("T-2").get("status"), "dropped")
+        self.assertIn("closed in its issue tracker", (store.HOME / s / "log.md").read_text())
+
+    def test_a_started_ticket_whose_issue_shows_not_started_is_reported(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertIn("T-1: its issue shows not started", run(*t, "issue", "T-1", "--stage", "unstarted"))
+        self.assertEqual(model.tracker_at(s).lookup("T-1").get("status"), "in-progress")
+
+    def test_a_read_that_differs_from_the_last_move_holds(self):
+        s, t = self.tracker()
+        run(*t, "set", "T-1", "status=in-progress")
+        run(*t, "issue", "T-1", "--stage", "parked")  # no move recorded: a person's
+        self.assertEqual(self.issues(s)["held"], {"T-1": "started"})
+        tr = model.tracker_at(s)
+        state = tr.raw_state()
+        state["issues"]["moves"] = {"T-1": {"stage": "started", "at": 1}}
+        tr.save_state(state)
+        run(*t, "issue", "T-1", "--stage", "started")  # back where the tracker moved it: no hold
+        self.assertNotIn("T-1", self.issues(s).get("held", {}))
+
+    def test_the_wanted_stage_follows_the_work(self):
+        s, t = self.tracker()
+        tr = model.tracker_at(s)
+        self.assertIsNone(tr.wanted_issue_stage(tr.lookup("T-1")))  # todo: never moved
+        run(*t, "set", "T-1", "status=in-progress")
+        run(*t, "set", "T-2", "status=in-progress")
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-1")), "started")
+        run(*t, "wait", "T-2", "on", "T-1")  # stacked on work under way: still started
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-2")), "started")
+        run(*t, "act", "Get the keys", "--blocks", "T-2")
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-2")), "parked")  # stopped on something not under way
+        tr.lookup("T-1").save({"prs": ["7:open"]})
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-1")), "review")
+        tr.lookup("T-1").save({"prs": ["7:merged"]})
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-1")), "merged")
+        run(*t, "set", "T-2", "status=done", "summary=x")
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-2")), "done")
+
+
 class Ui(unittest.TestCase):
     """`tracker open` shows a tracker in Herdr when Herdr is open, else in its own window; `tracker evidence` is the
     UI's link to a file."""

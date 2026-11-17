@@ -239,7 +239,10 @@ STATE_RULES = {
               "(`set` records it once; with none, nothing is due and `check` warns); `listed`: per ticket, what its "
               "issue should show as `tracker issue` last listed it; `written`: per ticket, what `tracker issue <id> "
               "--written` recorded from that listing: its summary once closed, and each settled decision's "
-              "answer; `moves`: per ticket, the issue stage (Issue stages) the model last moved its issue to. A "
+              "answer; `moves`: per ticket, the issue stage (Issue stages) the model last moved its issue to; "
+              "`held`: per ticket whose issue was last read at a stage other than its last move (a person's move, "
+              "or none on this machine), the stage its work wanted then: no move is asked for while it wants the "
+              "same. A read of a closed issue (done, or closed without the work) closes the ticket. A "
               "linked ticket's update is due when its summary differs from the one written, or a decision that "
               "touches it has an answer other than the one written or in `history`; the brief, the prompt hook and "
               "each write that makes one due ask the model for them",

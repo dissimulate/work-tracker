@@ -872,6 +872,8 @@ def cmd_issue(args):
                              *(f"{t.id}  {issue_urls(t)}\n" + "\n".join(f"  - {x}" for x in items)
                                for t, items in updates), "", ISSUE_WRITE_HOW]))
         return
+    if args.state is not None and not args.stage:
+        die("--state needs --stage: what the state means (`tracker rules`: Issue stages)")
     tr, t = locate(args, args.id)
     if t.kind != "ticket" or not t.aliases:
         die(f"{t.id} has no Issue link: add one first (`tracker add {t.id} link \"Issue: [ID Title](url)\"`)")
@@ -889,10 +891,22 @@ def cmd_issue(args):
             return  # no fields given: the issue was written, not read
     if updates:
         t.save(updates)  # not `updated_at`: reading the issue is no change to the work
+    lines = []
+    if args.stage:
+        was_closed = t.closed
+        shown = read_value("issue_state", args.state) if args.state is not None else None
+        lines = tr.record_issue_read(t, args.stage, shown)
+        updates["issue_stage"] = args.stage
+        if shown is not None:
+            updates["issue_state"] = shown
+        if t.closed and not was_closed:
+            append_log(tr, status_line(t) + " (closed in its issue tracker)", [t.id])
     state = tr.raw_state()
     state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
     tr.save_state(state)
     print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
+    if lines:
+        print("\n".join(lines))
 
 
 def issue_urls(t: Record) -> str:

@@ -530,6 +530,53 @@ class Tracker:
             not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
+    def stopped_on(self, t: Record) -> bool:
+        """It waits on something not itself under way: a decision, an action, an external blocker, or a ticket not
+        started. Work stacked on tickets under way goes on."""
+        return any(not (d.rec and d.rec.in_flight) for d in self.blockers(t))
+
+    def wanted_issue_stage(self, t: Record) -> str | None:
+        """The issue stage (ISSUE_STAGES) a linked ticket's work puts its issue at; None while todo, once dropped (a
+        person decides that issue's close), and with no Issue link."""
+        if not t.aliases:
+            return None
+        if t.stage == "in-progress":
+            return "parked" if self.stopped_on(t) else "started"
+        if t.stage == "in-review":
+            return "review"
+        if t.stage == "done":
+            return "merged" if "merged" in t.prs.values() else "done"
+        return None
+
+    def record_issue_read(self, t: Record, stage: str, state: str | None) -> list[str]:
+        """Record the issue's state as the model read it; the lines to print. A close made in the issue tracker
+        closes the ticket. A stage other than the last move the model made there (none on this machine counts) is
+        a person's move: the tracker asks for no move while the work still wants the stage it wants now
+        (STATE_RULES["issues"] `held`)."""
+        lines, updates = [], {}
+        if stage in ("done", "wontdo") and not t.closed:
+            updates = t.status_update("done" if stage == "done" else "dropped")
+            lines.append(f"{t.id}: closed in its issue tracker; set its summary: "
+                         f"`tracker set {t.id} summary=\"<what it delivered, or why dropped>\"`")
+        elif stage == "unstarted" and t.started:
+            lines.append(f"{t.id}: its issue shows not started")
+        updates["issue_stage"] = stage
+        if state is not None:
+            updates["issue_state"] = state or None
+        if "status" in updates:
+            t.change(updates)
+        else:
+            t.save(updates)  # not `updated_at`: reading the issue is no change to the work
+        state_ = self.raw_state()
+        issues = state_.setdefault("issues", {})
+        held = issues.setdefault("held", {})
+        if stage != issues.get("moves", {}).get(t.id, {}).get("stage"):
+            held[t.id] = self.wanted_issue_stage(t)
+        else:
+            held.pop(t.id, None)
+        self.save_state(state_)
+        return lines
+
     def issue_shown(self, t: Record) -> dict:
         """What t's issue should show (STATE_RULES["issues"]): its stage, its summary once closed, and the answer of
         each settled decision that touches it."""

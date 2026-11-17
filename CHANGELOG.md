@@ -7,6 +7,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Added
 
 - `tracker rules` lists the issue stages: what an issue's state means (not started, work under way, parked, in review, merged, finished, closed without the work), whatever its issue tracker calls it.
+- `tracker issue <id> --stage <stage> [--state '<name>']` records an issue's state as the agent read it. An issue closed in its issue tracker (finished, or closed without the work) closes its ticket, and a started ticket whose issue shows not started is reported.
 
 ### Changed
 
