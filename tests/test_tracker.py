@@ -1025,6 +1025,28 @@ class Upgrade(unittest.TestCase):
         model.tracker_at(s).readme.save({"schema": schema})
         return s, t
 
+    def test_format_6_keeps_what_issues_were_told_as_issue_stages(self):
+        s, t = new_tracker("Old")
+        for ident in ("T-1", "T-2", "T-3", "T-4"):
+            run(*t, "new", ident, "--title", ident)
+        tr = model.tracker_at(s)
+        tr.lookup("T-3").save({"prs": ["7:merged"]})
+        state = tr.raw_state()
+        state["issues"] = {"written": {"T-1": {"stage": "in-review", "summary": None},
+                                       "T-2": {"stage": "done", "summary": "shipped"},
+                                       "T-3": {"stage": "done", "summary": "shipped"},
+                                       "T-4": {"stage": "dropped", "summary": "no"}},
+                           "listed": {"T-1": {"stage": "in-review"}}}
+        tr.save_state(state)
+        tr.readme.save({"schema": 5})
+        run("list")
+        issues = model.tracker_at(s).raw_state()["issues"]
+        self.assertEqual({k: v["stage"] for k, v in issues["moves"].items()},
+                         {"T-1": "review", "T-2": "done", "T-3": "merged"})
+        self.assertNotIn("stage", issues["written"]["T-2"])
+        self.assertEqual(issues["written"]["T-2"]["summary"], "shipped")
+        self.assertNotIn("listed", issues)
+
     def test_any_command_migrates_every_older_tracker_once(self):
         s, t = self.old_tracker(schema=schema.SCHEMA)  # any command migrates: the older formats go on last
         other, _ = self.old_tracker(schema=schema.SCHEMA)
@@ -1705,6 +1727,36 @@ class IssueFields(unittest.TestCase):
         state = tr.raw_state()
         state.setdefault("issues", {}).setdefault("read", {})[ident] = at
         tr.save_state(state)
+
+    def test_issue_stages_are_the_contract(self):
+        self.assertEqual(list(schema.ISSUE_STAGES),
+                         ["unstarted", "started", "parked", "review", "merged", "done", "wontdo"])
+        orders = [x.order for x in schema.ISSUE_STAGES.values()]
+        self.assertEqual(orders, [0, 1, 1, 2, 3, 4, 4])
+        self.assertNotIn("parked", schema.STAGES)  # the issue's word; the tracker's own stages are unchanged
+        rules = run("rules")
+        self.assertIn("Issue stages", rules)
+        self.assertIn("merged: merged, not confirmed live", rules)
+        self.assertIn("issue_stage", rules)
+
+    def test_check_refuses_bad_issue_values(self):
+        s, t = self.tracker()
+        t1 = model.tracker_at(s).lookup("T-1")
+        t1.save({"issue_stage": "qa"})
+        self.assertIn("issue_stage 'qa' is not one of unstarted|started|parked|review|merged|done|wontdo",
+                      run(*t, "check", code=1))
+        t1.save({"issue_stage": "started", "issue_state": "In\u2028Progress"})
+        self.assertIn("issue_state", run(*t, "check", code=1))
+        t1.save({"issue_state": "x" * 41})
+        self.assertIn("issue_state", run(*t, "check", code=1))
+        t1.save({"issue_state": "In Progress"})
+        run(*t, "check")
+
+    def test_an_issue_state_is_cleaned_not_refused(self):
+        self.assertEqual(schema.read_value("issue_state", "In\u200dProgress "), "InProgress")
+        self.assertEqual(schema.read_value("issue_state", " Ready\tfor\u2029Review "), "ReadyforReview")
+        long = schema.read_value("issue_state", "y" * 50)
+        self.assertEqual((len(long), long[-1]), (40, "…"))
 
     def test_records_fields_and_says_which_are_due(self):
         s, t = self.tracker()

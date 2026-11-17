@@ -4,6 +4,14 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Added
+
+- `tracker rules` lists the issue stages: what an issue's state means (not started, work under way, parked, in review, merged, finished, closed without the work), whatever its issue tracker calls it.
+
+### Changed
+
+- Trackers move to format 6, which keeps the moves made to each issue apart from its summary and decisions. Start again any session still running the older plugin version.
+
 ### Fixed
 
 - A title, summary or other text holding a line or paragraph separator (U+2028, U+2029, U+0085) no longer breaks its record's frontmatter.

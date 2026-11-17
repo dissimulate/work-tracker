@@ -11,11 +11,11 @@ from .markdown import BULLET, headings, link_ident, parse_links, section, strip_
 from .system import warn
 from .store import HOME, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
-    OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
-    RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
-    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
-    valid_value, value_form)
+    ISSUE, ISSUE_STAGES, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE,
+    OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS,
+    README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS,
+    STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names,
+    options_problems, parse_options, stage_of, valid_value, value_form)
 from .model import (LOG, all_trackers, append_log, append_to_section, archived_trackers, blocker_link, level, names,
     norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
 from .moves import MOVE_RULE
@@ -244,6 +244,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "Issue tracker values: " + SCALE_RULE + ".",
         "Your own values: " + OWN_VALUE_RULE + ".",
         *(f"{key.capitalize()}: {scale.rule}." for key, scale in SCALES.items()),
+        "Issue stages (map the issue's state by what it means, not by its name): "
+        + "; ".join(f"{k}: {x.meaning} (e.g. {x.examples})" for k, x in ISSUE_STAGES.items()) + ".",
         "Link lines (README ## Context, ticket ## Links): `- Label: [title](url) — why it matters`, nested bullets "
         f"for detail. Labels: {', '.join(labels)}. Add one for this tracker: `tracker set tracker labels=A,B` "
         "(the tracker's own labels; the defaults stay).",
@@ -358,6 +360,18 @@ def migrate(tr: Tracker) -> None:
     state.pop("reviews", None)  # the PRs' facts in GitHub's own words
     if "synced" in state:  # a mark that held only the HEAD
         state["synced"] = {k: {"head": v, "at": 0} if isinstance(v, str) else v for k, v in state["synced"].items()}
+    issues = state.get("issues", {})
+    if tr.schema < 6 and issues:  # format 6: an issue's moves in issue stages, apart from its summary and decisions
+        moves = issues.setdefault("moves", {})
+        for ident, told in issues.get("written", {}).items():
+            stage = told.pop("stage", None)
+            t = tr.by_id(ident)
+            merged = bool(t) and "merged" in t.prs.values()
+            issue_stage = {"in-progress": "started", "in-review": "review",
+                           "done": "merged" if merged else "done"}.get(str(stage))
+            if issue_stage and ident not in moves:
+                moves[ident] = {"stage": issue_stage, "at": told.get("at", 0)}
+        issues.pop("listed", None)  # a listing in the old words: `tracker issue` lists again
     if json.dumps(state, sort_keys=True) != before:
         tr.save_state(state)
     for d in tr.decisions:

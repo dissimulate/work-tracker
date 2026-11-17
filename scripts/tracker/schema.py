@@ -7,6 +7,7 @@ import calendar
 import datetime as dt
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 
 from .system import die, env_int
@@ -46,6 +47,28 @@ PR_STAGE = {"draft": "in-progress", "open": "in-review", "merged": "done"}  # PR
 PR_STATES = ("open", "draft", "merged", "closed")  # the state of a ticket's PRs together: the first any of them has
 OPEN_PR = {"draft", "open"}  # the states of a PR not yet merged or closed
 OPEN_STAGES = {s for s, x in STAGES.items() if not x.closed}
+
+
+@dataclass(frozen=True)
+class IssueStage:
+    """What an issue's state means, whatever its issue tracker calls it. `order` ranks how far on the work is: the
+    tracker never asks to move an issue to a stage of lower order than the one it was last read at."""
+    meaning: str
+    examples: str  # common names of such a state, for `tracker rules`
+    order: int
+
+
+# The issue stages: the agent maps each issue's state onto one by meaning, and the tracker
+# asks for moves in these words (README `issue_updates`). parked and started share an order: either way is a move.
+ISSUE_STAGES = {
+    "unstarted": IssueStage("not started", "Scheduled, Triage, To do, Backlog", 0),
+    "started": IssueStage("work under way", "In Progress, In Development", 1),
+    "parked": IssueStage("started and stopped on something", "Blocked, Parked, On hold", 1),
+    "review": IssueStage("in review", "Ready for Review, Code Review", 2),
+    "merged": IssueStage("merged, not confirmed live", "Merged, QA", 3),
+    "done": IssueStage("finished, live", "Completed, Done, Released", 4),
+    "wontdo": IssueStage("closed without the work", "Won't Fix, Cancelled, Duplicate", 4),
+}
 
 
 def stage_of(kind: str, status) -> Stage:
@@ -141,6 +164,8 @@ KEYS = {
                         "merged or closed); a closed one no link names is left out while another is not closed"),
         "merged_at": ("sync", "when its last PR merged, once none is open"),
         "issue_created_at": ("issue", "when the ticket's issue was created in its issue tracker"),
+        "issue_stage": ("issue", "what its issue's state meant when last read; see Issue stages"),
+        "issue_state": ("issue", "its issue's state when last read, by the issue tracker's own name; shown only"),
     },
     "decision": {
         "id": ("decide", "D-<n>; also the file name"),
@@ -176,14 +201,15 @@ KEYS = {
         "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
-SCHEMA = 5  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 6  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
                 "action": {"opened": "created_at", "updated": "updated_at"},
                 "tracker": {"created": "created_at"}}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
-# `tracker issue`'s flags: the ticket key each records from the ticket's issue
+# `tracker issue`'s flags: the ticket key each records from the ticket's issue. Its state is a pair of flags of their
+# own: `--stage` (issue_stage) and `--state` (issue_state), which needs `--stage`.
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
               "act": "use `tracker act`", "sync": "`tracker sync` writes it from the PR",
@@ -212,11 +238,11 @@ STATE_RULES = {
               "`issue_updates: on`, `history`: the answer of each decision settled when updates were first turned on "
               "(`set` records it once; with none, nothing is due and `check` warns); `listed`: per ticket, what its "
               "issue should show as `tracker issue` last listed it; `written`: per ticket, what `tracker issue <id> "
-              "--written` recorded from that listing: its stage, its summary once closed, and each settled decision's "
-              "answer. A linked ticket's update is due when its stage or summary differs from the one written (one "
-              "never written is due once out of todo), or a decision that touches it has an answer other than the "
-              "one written or in `history`; the brief, the prompt hook and each write that makes one due ask the "
-              "model for them",
+              "--written` recorded from that listing: its summary once closed, and each settled decision's "
+              "answer; `moves`: per ticket, the issue stage (Issue stages) the model last moved its issue to. A "
+              "linked ticket's update is due when its summary differs from the one written, or a decision that "
+              "touches it has an answer other than the one written or in `history`; the brief, the prompt hook and "
+              "each write that makes one due ask the model for them",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "
                f"branch's tickets are closed, and a mark, or a handoff on a branch no ticket is on, {STATE_KEEP_DAYS} "
                f"days after it was set. `use` keeps only unfinished tickets",
@@ -234,7 +260,9 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
 LIST_KEYS = {"depends_on", "refs", "labels", "prs"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
-CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
+CHOICES = {"issue_updates": ISSUE_UPDATES, "issue_stage": tuple(ISSUE_STAGES)}  # a key that holds one of a few words
+ISSUE_STATE_MAX = 40  # an issue state's name is display text from outside: cut to this many characters when read
+OUTSIDE_TEXT_CUT = {"Cc", "Cf", "Zl", "Zp"}  # Unicode categories dropped from it: controls, format, line breaks
 
 
 class Form:
@@ -344,15 +372,33 @@ class ChoiceForm(Form):
         return text
 
 
+class OutsideTextForm(Form):
+    """A short name from outside the tracker (an issue's state): one line of shown text. Read, it loses the characters
+    of OUTSIDE_TEXT_CUT and is cut to ISSUE_STATE_MAX, never refused: the agent records what its issue tracker says.
+    Stored, anything else is refused."""
+
+    def describe(self, key: str) -> str:
+        return f"one line of at most {ISSUE_STATE_MAX} characters, without control or format characters"
+
+    def fits(self, key: str, value) -> bool:
+        return isinstance(value, str) and self.read(key, value) == value
+
+    def read(self, key: str, text: str) -> str:
+        kept = "".join(c for c in text if unicodedata.category(c) not in OUTSIDE_TEXT_CUT).strip()
+        return kept if len(kept) <= ISSUE_STATE_MAX else kept[:ISSUE_STATE_MAX - 1].rstrip() + "…"
+
+
 FORMS = {"time": TimeForm(), "day": DayForm(), "level": LevelForm(), "list": ListForm(), "choice": ChoiceForm(),
-         "": Form()}
+         "outside": OutsideTextForm(), "": Form()}
+OUTSIDE_KEYS = {"issue_state"}
 
 
 def value_form(key: str) -> str:
-    """The form of a key's value (FORMS): "time", "day", "level" (a SCALES key), "list", "choice" (a CHOICES key), or
-    "" for text."""
+    """The form of a key's value (FORMS): "time", "day", "level" (a SCALES key), "list", "choice" (a CHOICES key),
+    "outside" (an OUTSIDE_KEYS key), or "" for text."""
     return ("time" if key.endswith("_at") else "day" if key in DAY_KEYS else "level" if key in SCALES
-            else "list" if key in LIST_KEYS | LIST_OR_ONE else "choice" if key in CHOICES else "")
+            else "list" if key in LIST_KEYS | LIST_OR_ONE else "choice" if key in CHOICES
+            else "outside" if key in OUTSIDE_KEYS else "")
 
 
 def read_value(key: str, text: str):
@@ -380,7 +426,7 @@ def show_value(key: str, value) -> str:
 # A record's facts as its views show them, in this order, each by its form (show_value): the UI's opened record all
 # of them; `tracker context` and the brief, on one line, those in TEXT_FACTS (their first line holds the group and the
 # PR). A new key, a new scale's too, shows once it is here.
-FACTS = ("branch", "repo", "group", "owner", *SCALES, "due", "created_at", "started_at", "merged_at",
+FACTS = ("branch", "repo", "group", "owner", *SCALES, "due", "issue_state", "created_at", "started_at", "merged_at",
          "closed_at", "updated_at")
 TEXT_FACTS = {"branch", "repo", *SCALES, "due"}
 
