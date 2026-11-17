@@ -15,9 +15,9 @@ from .system import die
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE,
-    PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
-    utc_now, utc_seconds, Stage)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S,
+    PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of,
+    today, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -550,10 +550,10 @@ class Tracker:
 
     def record_issue_read(self, t: Record, stage: str, state: str | None) -> list[str]:
         """Record the issue's state as the model read it; the lines to print. A close made in the issue tracker
-        closes the ticket. A stage other than the last move the model made there (none on this machine counts) is
-        a person's move: the tracker asks for no move while the work still wants the stage it wants now
-        (STATE_RULES["issues"] `held`)."""
-        lines, updates = [], {}
+        closes the ticket. A stage other than both the last read and the last move the model made there (none on
+        this machine counts) is a person's move: the tracker asks for no move while the work still wants the stage it
+        wants now (STATE_RULES["issues"] `held`). The same stage as the last read is no news: a hold stays as it is."""
+        lines, updates, before = [], {}, t.get("issue_stage")
         if stage in ("done", "wontdo") and not t.closed:
             updates = t.status_update("done" if stage == "done" else "dropped")
             lines.append(f"{t.id}: closed in its issue tracker; set its summary: "
@@ -570,24 +570,40 @@ class Tracker:
         state_ = self.raw_state()
         issues = state_.setdefault("issues", {})
         held = issues.setdefault("held", {})
-        if stage != issues.get("moves", {}).get(t.id, {}).get("stage"):
-            held[t.id] = self.wanted_issue_stage(t)
-        else:
+        moved = issues.get("moves", {}).get(t.id, {}).get("stage")
+        if stage == moved:
             held.pop(t.id, None)
+        elif stage != before:
+            held[t.id] = self.wanted_issue_stage(t)
         self.save_state(state_)
         return lines
 
-    def issue_shown(self, t: Record) -> dict:
-        """What t's issue should show (STATE_RULES["issues"]): its stage, its summary once closed, and the answer of
-        each settled decision that touches it."""
-        return {"stage": t.stage, "summary": (t.get("summary") or None) if t.closed else None,
+    def move_due(self, t: Record, issues: dict) -> str | None:
+        """The issue stage t's issue is to move to now, or None (STATE_RULES["issues"]): what its work wants, once
+        its issue has been read, when the model has not moved it there, the issue is not there or further on, and
+        no person's move holds it."""
+        wanted, read = self.wanted_issue_stage(t), t.get("issue_stage")
+        if not wanted or read not in ISSUE_STAGES or wanted == read:
+            return None
+        if wanted == issues.get("moves", {}).get(t.id, {}).get("stage"):
+            return None
+        if ISSUE_STAGES[wanted].order < ISSUE_STAGES[read].order:
+            return None
+        held = issues.get("held", {})
+        return None if t.id in held and held[t.id] == wanted else wanted
+
+    def issue_shown(self, t: Record, issues: dict | None = None) -> dict:
+        """What t's issue should show (STATE_RULES["issues"]): the stage to move it to, its summary once closed, and
+        the answer of each settled decision that touches it."""
+        issues = self.raw_state().get("issues", {}) if issues is None else issues
+        return {"stage": self.move_due(t, issues), "summary": (t.get("summary") or None) if t.closed else None,
                 "decisions": {d.id: answer(d) for d in self.decisions_for(t) if d.closed}}
 
     def issue_updates_due(self) -> list[tuple[Record, list[str]]]:
         """Per linked ticket, what its issue should now show and does not yet, as items for the model to write with
-        the issue tracker's tool (STATE_RULES["issues"]): its stage, with its summary once closed; and each settled
-        decision that touches it, by title and answer. Nothing while README `issue_updates` is not on, or before
-        `set` recorded the history."""
+        the issue tracker's tool (STATE_RULES["issues"]): the stage to move it to (move_due), its summary once closed,
+        and each settled decision that touches it, by title and answer. Nothing while README `issue_updates` is not
+        on, or before `set` recorded the history."""
         issues = self.raw_state().get("issues", {})
         if self.readme.get("issue_updates") != "on" or "history" not in issues:
             return []
@@ -596,10 +612,13 @@ class Tracker:
         for t in self.tickets:
             if not t.aliases:
                 continue
-            last, now = written.get(t.id, {}), self.issue_shown(t)
+            last, now = written.get(t.id, {}), self.issue_shown(t, issues)
             items = []
-            if (now["stage"], now["summary"]) != (last.get("stage"), last.get("summary")) and (last or not t.todo):
-                items.append(f"status {now['stage']}" + (f"; summary: {now['summary']}" if now["summary"] else ""))
+            if now["stage"]:
+                items.append(f"status: move it to the state that means {ISSUE_STAGES[now['stage']].meaning} "
+                             f"(--stage {now['stage']})")
+            if now["summary"] and now["summary"] != last.get("summary"):
+                items.append(f"summary: {now['summary']}")
             told = {**history, **last.get("decisions", {})}
             items += [f"decision settled: {d.get('title')}: {now['decisions'][d.id]}" for d in self.decisions_for(t)
                       if d.closed and now["decisions"][d.id] != told.get(d.id)]
@@ -613,15 +632,20 @@ class Tracker:
         state.setdefault("issues", {})["listed"] = {t.id: self.issue_shown(t) for t, _ in due}
         self.save_state(state)
 
-    def mark_issue_written(self, t: Record) -> bool:
-        """Record that t's issue now shows what `tracker issue` last listed for it; False when it listed nothing for
-        t. A change after the listing stays due."""
+    def mark_issue_written(self, t: Record, stage: str | None = None) -> bool:
+        """Record that t's issue now shows the summary and decisions `tracker issue` last listed for it, and, given
+        `stage`, that the model moved it there; False when it listed nothing for t. A change after the listing stays
+        due."""
         state = self.raw_state()
         issues = state.setdefault("issues", {})
         shown = issues.get("listed", {}).pop(t.id, None)
         if shown is None:
             return False
-        issues.setdefault("written", {})[t.id] = {**shown, "at": time.time()}
+        now = time.time()
+        issues.setdefault("written", {})[t.id] = {"summary": shown["summary"], "decisions": shown["decisions"],
+                                                  "at": now}
+        if stage:
+            issues.setdefault("moves", {})[t.id] = {"stage": stage, "at": now}
         self.save_state(state)
         return True
 

@@ -410,12 +410,15 @@ def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
 
 
 ISSUE_UPDATES_OFF = "tell the user that `tracker set tracker issue_updates=off` stops these requests"
-ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool: move the issue to the state in its "
-                   "own workflow that means the ticket's status (" + ", ".join(STAGES) + "), and comment a closed "
-                   "ticket's summary and each settled decision, by its title and answer. Once every update of a "
-                   "ticket is written, run `tracker issue <id> --written`: it records what this list showed. When "
-                   "one fails, leave that ticket: it stays due. " + ISOLATION_RULE + " With no tool for that issue "
-                   "tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
+ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool. For a status item, open the issue "
+                   "first: when its state already means that stage or one further on, or a person has moved it "
+                   "elsewhere, do not move it: record what it shows with `tracker issue <id> --stage <stage> --state "
+                   "'<its name>'`. Otherwise move it to the state in its own workflow that means that stage, then "
+                   "comment a closed ticket's summary and each settled decision, by its title and answer; when the "
+                   "move fails, post nothing. Name a blocker by its Issue id or URL, or not at all. Once a ticket's "
+                   "updates are written, run `tracker issue <id> --written`, with `--stage <stage> --state '<name>'` "
+                   "for a move: it records what this list showed. When one fails, leave that ticket: it stays due. "
+                   + ISOLATION_RULE + " With no tool for that issue tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
 
 
 def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:

@@ -1840,10 +1840,17 @@ class IssueFields(unittest.TestCase):
         return [f"{t.id}: {'; '.join(items)}" for t, items in model.tracker_at(s).issue_updates_due()]
 
     def write(self, t: tuple[str, str], *ids: str) -> None:
-        """The model's write: list the updates, then record each ticket's as written."""
+        """The model's write: list the updates, then record each ticket's as written; `T-1:review` also records the
+        stage it moved the issue to."""
         run(*t, "issue")
-        for ident in ids:
-            run(*t, "issue", ident, "--written")
+        for x in ids:
+            ident, _, stage = x.partition(":")
+            run(*t, "issue", ident, "--written", *(["--stage", stage] if stage else []))
+
+    @staticmethod
+    def move(stage: str) -> str:
+        """A due status move as `issue_updates_due` words it."""
+        return f"status: move it to the state that means {schema.ISSUE_STAGES[stage].meaning} (--stage {stage})"
 
     def test_issue_updates_are_off_until_the_tracker_turns_them_on(self):
         s, t = self.tracker()
@@ -1859,9 +1866,9 @@ class IssueFields(unittest.TestCase):
         s, t = self.tracker()
         run(*t, "decide", "Settled before", "--refs", "T-1", "--resolve", "Old answer", "--by", "me")
         run(*t, "set", "tracker", "issue_updates=on")
-        # T-1 has not started and was never written: its issue keeps whatever it shows. T-3 closed with a summary.
-        # A decision settled before the tracker turned updates on is history, not news.
-        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        # T-1 has not started: its issue keeps whatever it shows. T-3 closed with a summary; its state was never
+        # read, so it is not moved. A decision settled before the tracker turned updates on is history, not news.
+        self.assertEqual(self.updates(s), ["T-3: summary: shipped"])
         run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres, for the joins", "--by", "me")
         run(*t, "decide", "Which queue", "--blocks", "T-1", "--question", "SQS or Kafka?")
         self.assertEqual(self.updates(s)[0], "T-1: decision settled: Which store: Postgres, for the joins")
@@ -1878,10 +1885,11 @@ class IssueFields(unittest.TestCase):
         self.assertNotIn("T-2", listing)  # no Issue link: nowhere to write
 
         self.assertIn("T-1: written as listed", run(*t, "issue", "T-1", "--written"))
-        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        self.assertEqual(self.updates(s), ["T-3: summary: shipped"])
+        run(*t, "issue", "T-1", "--stage", "unstarted")
         run(*t, "set", "T-1", "status=in-progress")
-        self.assertEqual(self.updates(s)[0], "T-1: status in-progress")  # a later change is due again
-        self.write(t, "T-1", "T-3")
+        self.assertEqual(self.updates(s)[0], f"T-1: {self.move('started')}")  # a later change is due again
+        self.write(t, "T-1:started", "T-3")
         self.assertEqual(self.updates(s), [])
         self.assertIn("has no Issue link", run(*t, "issue", "T-2", "--written", code=2))
         self.assertIn("listed no update", run(*t, "issue", "T-1", "--written", code=2))  # nothing listed to record
@@ -1891,27 +1899,29 @@ class IssueFields(unittest.TestCase):
         run(*t, "decide", "Which cache", "--refs", "T-1", "--resolve", "None", "--by", "me")
         self.assertEqual(self.updates(s), [])
         run(*t, "set", "tracker", "issue_updates=on")  # on again: what changed while off is due
-        self.assertEqual(self.updates(s), ["T-1: status dropped; summary: not needed; "
-                                           "decision settled: Which cache: None"])
+        self.assertEqual(self.updates(s), ["T-1: summary: not needed; decision settled: Which cache: None"])
 
     def test_a_changed_answer_summary_or_stage_is_due_again(self):
         s, t = self.tracker()
         run(*t, "decide", "Which queue", "--refs", "T-1", "--resolve", "SQS", "--by", "me")
         run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "issue", "T-1", "--stage", "unstarted")
+        run(*t, "issue", "T-3", "--stage", "review")  # first read, at a stage the tracker never moved it to: held
         run(*t, "set", "T-1", "status=in-progress")
-        self.write(t, "T-1", "T-3")
+        self.assertEqual(self.updates(s), [f"T-1: {self.move('started')}", "T-3: summary: shipped"])
+        self.write(t, "T-1:started", "T-3")
         run(*t, "decide", "D-1", "--resolve", "Kafka", "--by", "me")  # settled again: history holds the old answer
         run(*t, "set", "T-3", "summary=shipped, with the retry")  # set after the close
         self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: Kafka",
-                                           "T-3: status done; summary: shipped, with the retry"])
+                                           "T-3: summary: shipped, with the retry"])
         self.write(t, "T-1", "T-3")
-        run(*t, "set", "T-3", "status=in-progress")  # reopened: its old summary is not news
+        run(*t, "set", "T-3", "status=in-progress")  # reopened here: its issue is not moved back from finished
         tr = model.tracker_at(s)
         tr.lookup("T-1").save({"prs": ["9:open"]})  # what `sync` writes: its PR is in review
-        self.assertEqual(self.updates(s), ["T-1: status in-review", "T-3: status in-progress"])
-        self.write(t, "T-1")
+        self.assertEqual(self.updates(s), [f"T-1: {self.move('review')}"])
+        self.write(t, "T-1:review")
         tr.lookup("T-1").save({"prs": ["9:merged"]})
-        self.assertEqual(self.updates(s), ["T-1: status done", "T-3: status in-progress"])
+        self.assertEqual(self.updates(s), [f"T-1: {self.move('merged')}"])
 
     def test_written_records_what_was_listed_not_what_changed_since(self):
         s, t = self.tracker()
@@ -1942,16 +1952,16 @@ class IssueFields(unittest.TestCase):
         self.assertEqual(self.updates(s), [])  # not every issue written again
         self.assertIn("no record of what its issues show", run(*t, "check"))
         run(*t, "set", "tracker", "issue_updates=on")  # already on: starts the record
-        self.assertEqual(self.updates(s), ["T-3: status done; summary: shipped"])
+        self.assertEqual(self.updates(s), ["T-3: summary: shipped"])
         self.assertNotIn("no record", run(*t, "check"))
         run(*t, "decide", "Which queue", "--refs", "T-1", "--resolve", "SQS", "--by", "me")
         run(*t, "set", "tracker", "issue_updates=on")  # on again: the history stays, and so does what is due
-        self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: SQS",
-                                           "T-3: status done; summary: shipped"])
+        self.assertEqual(self.updates(s), ["T-1: decision settled: Which queue: SQS", "T-3: summary: shipped"])
 
     def test_a_write_asks_for_the_update_it_makes_due(self):
         s, t = self.tracker()
         run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "issue", "T-1", "--stage", "unstarted")
         self.write(t, "T-3")
         out = run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
         self.assertIn("[work-tracker] Issue updates to write for 1 ticket(s): T-1", out)
@@ -1965,6 +1975,7 @@ class IssueFields(unittest.TestCase):
         for n in range(4, 10):
             run(*t, "new", f"T-{n}", "--title", f"Linked {n}")
             run(*t, "add", f"T-{n}", "link", f"Issue: [SC-{n} Story](https://issues.example/story/{n})")
+            run(*t, "issue", f"T-{n}", "--stage", "unstarted")
             run(*t, "set", f"T-{n}", "status=in-progress")
         tr = model.tracker_at(s)
         request = views.issue_update_request(tr, [tr.lookup("T-9")])
@@ -1973,7 +1984,7 @@ class IssueFields(unittest.TestCase):
     def test_the_brief_and_the_prompt_hook_ask_for_due_updates_once_per_change(self):
         s, t = self.tracker()
         sid, work = f"sid{time.monotonic_ns()}", repo("feat/T-1")
-        run(*t, "issue", "T-1")
+        run(*t, "issue", "T-1", "--stage", "unstarted")
         run(*t, "issue", "T-3")  # no issue fields due: only updates are asked for
         run(*t, "set", "tracker", "issue_updates=on")
         run(*t, "set", "T-1", "status=in-progress", cwd=work)
@@ -1985,7 +1996,7 @@ class IssueFields(unittest.TestCase):
         run(*t, "decide", "Which store", "--refs", "T-1", "--resolve", "Postgres", "--by", "me")
         self.assertIn("Issue updates to write", said(hook("prompt", sid, work, prompt="next")))  # a new one
         self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="again")))  # told once
-        self.write(t, "T-1")
+        self.write(t, "T-1:started")
         self.assertNotIn("Issue updates", said(hook("prompt", sid, work, prompt="later")))  # T-3 left: not asked again
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):  # this session's write asks, and has told it
             self.assertIn("Issue updates to write", run(*t, "set", "T-1", "status=dropped", "summary=not needed"))
@@ -2138,6 +2149,103 @@ class IssueSync(unittest.TestCase):
         run(*t, "set", "T-2", "status=done", "summary=x")
         tr = model.tracker_at(s)
         self.assertEqual(tr.wanted_issue_stage(tr.lookup("T-2")), "done")
+
+    # -- moves: with issue updates on, each ticket read once first
+    def synced(self) -> tuple[str, tuple[str, str]]:
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        for ident in ("T-1", "T-2"):
+            run(*t, "issue", ident, "--stage", "unstarted", "--state", "To do")
+        return s, t
+
+    def moves(self, s: str) -> dict[str, str]:
+        """Per ticket, the stage its due status move asks for."""
+        out = {}
+        for t, items in model.tracker_at(s).issue_updates_due():
+            for x in items:
+                m = re.search(r"\(--stage (\w+)\)", x)
+                if x.startswith("status") and m:
+                    out[t.id] = m[1]
+        return out
+
+    def move(self, t, ident: str, stage: str) -> None:
+        """The model's write of a due move: list, move the issue, record it."""
+        run(*t, "issue")
+        run(*t, "issue", ident, "--written", "--stage", stage, "--state", stage.title())
+
+    def test_each_move_the_work_causes_is_due_until_written(self):
+        s, t = self.synced()
+        self.assertEqual(self.moves(s), {})  # todo: nothing to move
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertEqual(self.moves(s), {"T-1": "started"})
+        self.assertIn("work under way", run(*t, "issue"))
+        self.move(t, "T-1", "started")
+        self.assertEqual(self.moves(s), {})
+        model.tracker_at(s).lookup("T-1").save({"prs": ["7:open"]})
+        self.assertEqual(self.moves(s), {"T-1": "review"})
+        self.move(t, "T-1", "review")
+        model.tracker_at(s).lookup("T-1").save({"prs": ["7:merged"]})
+        self.assertEqual(self.moves(s), {"T-1": "merged"})
+        self.move(t, "T-1", "merged")
+        self.assertEqual(self.moves(s), {})
+        self.assertEqual(model.tracker_at(s).lookup("T-1").get("issue_state"), "Merged")
+
+    def test_done_with_no_pr_is_finished(self):
+        s, t = self.synced()
+        run(*t, "set", "T-1", "status=in-progress")
+        self.move(t, "T-1", "started")
+        run(*t, "step", "T-1", "--done", "config only")
+        self.assertEqual(self.moves(s), {"T-1": "done"})
+
+    def test_never_backwards(self):
+        s, t = self.synced()
+        run(*t, "set", "T-1", "status=in-progress")
+        run(*t, "issue", "T-1", "--stage", "review")  # a person moved it on already
+        self.assertEqual(self.moves(s), {})
+        model.tracker_at(s).lookup("T-1").save({"prs": ["7:merged"]})
+        run(*t, "set", "T-1", "status=done", "summary=x")
+        run(*t, "issue", "T-1", "--stage", "done")  # live already: never back to merged
+        self.assertEqual(self.moves(s), {})
+
+    def test_a_persons_move_holds_until_the_work_changes(self):
+        s, t = self.synced()
+        run(*t, "set", "T-1", "status=in-progress")
+        self.move(t, "T-1", "started")
+        run(*t, "issue", "T-1", "--stage", "parked")  # a person parked it
+        self.assertEqual(self.moves(s), {})
+        model.tracker_at(s).lookup("T-1").save({"prs": ["7:open"]})  # the work moved on
+        self.assertEqual(self.moves(s), {"T-1": "review"})
+
+    def test_a_stale_read_leaves_a_move_held_not_lost(self):
+        s, t = self.synced()
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertEqual(self.moves(s), {"T-1": "started"})
+        run(*t, "issue", "T-1", "--stage", "unstarted")  # read again before the move was written
+        self.assertEqual(self.moves(s), {"T-1": "started"})  # the same stage as the last read: no person moved it
+
+    def test_a_wait_parks_and_its_end_unparks(self):
+        s, t = self.synced()
+        run(*t, "set", "T-2", "status=in-progress")
+        self.move(t, "T-2", "started")
+        run(*t, "act", "Get the keys", "--blocks", "T-2")
+        self.assertEqual(self.moves(s), {"T-2": "parked"})
+        self.move(t, "T-2", "parked")
+        run(*t, "act", "A-1", "--done")
+        self.assertEqual(self.moves(s), {"T-2": "started"})
+
+    def test_a_drop_comments_its_summary_and_moves_nothing(self):
+        s, t = self.synced()
+        run(*t, "set", "T-1", "status=in-progress")
+        self.move(t, "T-1", "started")
+        run(*t, "set", "T-1", "status=dropped", "summary=not needed")
+        due = dict((x.id, items) for x, items in model.tracker_at(s).issue_updates_due())
+        self.assertEqual(due["T-1"], ["summary: not needed"])
+
+    def test_an_issue_never_read_is_not_moved(self):
+        s, t = self.tracker()
+        run(*t, "set", "tracker", "issue_updates=on")
+        run(*t, "set", "T-1", "status=in-progress")
+        self.assertEqual(self.moves(s), {})  # read its state first: it may be further on
 
 
 class Ui(unittest.TestCase):

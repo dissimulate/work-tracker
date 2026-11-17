@@ -195,9 +195,10 @@ KEYS = {
         "owner": ("set", "who owns the work"),
         "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
-        "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
-                                 "decisions settled on it to the ticket's issue, with the issue tracker's tool "
-                                 "(`tracker issue` says what is due); off or empty: the tracker never asks"),
+        "issue_updates": ("set", "on: the model moves each linked ticket's issue as its work moves, and writes its "
+                                 "summary once closed and the decisions settled on it to the issue, with the issue "
+                                 "tracker's tool (`tracker issue` says what is due); off or empty: the tracker never "
+                                 "asks"),
         "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
@@ -243,7 +244,10 @@ STATE_RULES = {
               "`held`: per ticket whose issue was last read at a stage other than its last move (a person's move, "
               "or none on this machine), the stage its work wanted then: no move is asked for while it wants the "
               "same. A read of a closed issue (done, or closed without the work) closes the ticket. A "
-              "linked ticket's update is due when its summary differs from the one written, or a decision that "
+              "linked ticket's update is due when its issue is to move (the stage its work wants: started, parked "
+              "when it waits on something not under way, review, merged, or done with no PR; once its issue was "
+              "read, never to a stage of lower order than the one read, not to the model's last move, and not "
+              "while held), its summary differs from the one written, or a decision that "
               "touches it has an answer other than the one written or in `history`; the brief, the prompt hook and "
               "each write that makes one due ask the model for them",
     "cleanup": f"while a branch has an unfinished ticket its entries stay. Otherwise a handoff goes once the "

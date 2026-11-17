@@ -883,12 +883,13 @@ def cmd_issue(args):
         if given is not None:
             updates[key] = read_value(key, given) or None  # empty: the issue has none now
     if args.written:
-        if not tr.mark_issue_written(t):
+        if not tr.mark_issue_written(t, args.stage):
             die(f"{t.id}: `tracker issue` listed no update for it to write; run `tracker issue` first")
-        left = next((items for x, items in tr.issue_updates_due() if x.id == t.id), None)
-        print(f"{t.id}: written as listed" + (f"; due since the listing: {'; '.join(left)}" if left else ""))
-        if not updates:
+        if not updates and not args.stage:
+            left = next((items for x, items in tr.issue_updates_due() if x.id == t.id), None)
+            print(f"{t.id}: written as listed" + (f"; due since the listing: {'; '.join(left)}" if left else ""))
             return  # no fields given: the issue was written, not read
+        print(f"{t.id}: written as listed")
     if updates:
         t.save(updates)  # not `updated_at`: reading the issue is no change to the work
     lines = []
