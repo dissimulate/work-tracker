@@ -689,6 +689,15 @@ class Flow(unittest.TestCase):
 class FileSafety(unittest.TestCase):
     """A tracker write changes only its intended file and keeps private files private."""
 
+    def test_a_value_with_a_line_break_python_splits_on_stays_one_value(self):
+        s, t = new_tracker("Work")
+        run(*t, "new", "T-1", "--title", "Plain")
+        tr = model.tracker_at(s)
+        for value in ("a\u2028status: dropped", "a\u2029b", "a\x85b", ["x\u2028y", "z"]):
+            tr.lookup("T-1").save({"title": value})
+            t1 = model.tracker_at(s).lookup("T-1")
+            self.assertEqual((t1.get("title"), t1.get("status"), t1.problems), (value, "todo", []))
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(dir=BASE))
 

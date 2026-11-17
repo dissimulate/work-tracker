@@ -4,6 +4,10 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Fixed
+
+- A title, summary or other text holding a line or paragraph separator (U+2028, U+2029, U+0085) no longer breaks its record's frontmatter.
+
 ## 0.32.0 - 2026-11-17
 
 ### Added
