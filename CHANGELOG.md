@@ -4,6 +4,10 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Fixed
+
+- The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
+
 ## 0.32.0 - 2026-11-17
 
 ### Added

@@ -207,6 +207,13 @@ export function followNotice(agent, slug) {
   return agent.machine ? `The focused agent on ${agent.machine} has no tracker.` : "The focused agent has no tracker.";
 }
 
+// Why the tracker menu has no rows; "" when it has some. `trackers` is `tracker list --json`, null until it answers.
+export function menuNotice(trackers) {
+  if (!trackers) return "Reading trackers…";
+  if (!trackers.active.length && !trackers.archived.length) return "No trackers yet. Ask an agent to start one.";
+  return "";
+}
+
 // Whether the view waits for what it will show: it has no page, nothing went wrong, and its first look still runs or
 // a tracker is being read.
 export const isLoading = ({ view, error, starting, slug }) => !view && !error && (starting || Boolean(slug));

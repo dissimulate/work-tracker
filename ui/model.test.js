@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, menuNotice, linkTarget, liveLine, meaningOf, moveStatus,
   naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue, isLoading } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
@@ -195,6 +195,13 @@ test("a view that follows says why it shows no tracker", () => {
   assert.equal(followNotice(null, null), "No agent is focused.");
   assert.equal(followNotice({ address: "t1", machine: null }, null), "The focused agent has no tracker.");
   assert.match(followNotice({ address: "mac/t1", machine: "mac" }, null), /agent on mac has no tracker/);
+});
+
+test("the tracker menu says why it has no rows", () => {
+  assert.equal(menuNotice(null), "Reading trackers…");
+  assert.equal(menuNotice({ active: [], archived: [] }), "No trackers yet. Ask an agent to start one.");
+  assert.equal(menuNotice({ active: [{ slug: "a" }], archived: [] }), "");
+  assert.equal(menuNotice({ active: [], archived: [{ slug: "b" }] }), "");
 });
 
 test("a README's Goal and Scope become labelled rows, with their sub-headings as bold lines", () => {
