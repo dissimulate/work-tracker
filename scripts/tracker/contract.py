@@ -7,16 +7,17 @@ import json
 import os
 import re
 
-from .markdown import headings, link_ident, parse_links, section
+from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
 from .store import HOME, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OWNER_HINT, OWN_VALUE_RULE,
-    PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
-    SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES,
-    STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, stage_of, valid_value, value_form)
+    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
+    OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
+    RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
+    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
+    valid_value, value_form)
 from .model import (LOG, all_trackers, append_log, append_to_section, archived_trackers, blocker_link, level, names,
-    norm_id, pr_key, relabel, resolution, sequence, unknown_dep, Record, Tracker)
+    norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
 from .moves import MOVE_RULE
 
 # ---------------------------------------------------------------- check
@@ -180,6 +181,8 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
             warnings.append(f"{r.id}: sections out of order (expected {', '.join(kind.sections)})")
         if "Links" in kind.sections:
             check_links(tr, f"{r.id} Links", section(r.body, "Links"), errors)
+        if problems := ("Options" in kind.sections and options_problems(strip_comments(section(r.body, "Options")))):
+            errors.append(f"{r.id} ## Options: {'; '.join(problems)}. {OPTION_RULE}")
 
 
 def idle_days(r: Record) -> int:
@@ -280,6 +283,26 @@ def renamed_keys(r: Record) -> dict:
     return upd
 
 
+def move_notes(d: Record) -> None:
+    """Format 5 keeps only choices in a decision's ## Options (OPTION_RULE): the rest (a dated note, evidence, prose, a
+    bullet with nested lines) moves to ## Notes, in its order. An undated bullet was a choice."""
+    lines = [ln for ln in strip_comments(section(d.body, "Options")).splitlines() if ln.strip()]
+    blocks = []  # each bullet with its nested lines, and each other line on its own
+    for ln in lines:
+        if ln[:1].isspace() and blocks and BULLET.match(blocks[-1][0]):
+            blocks[-1].append(ln)
+        else:
+            blocks.append([f"- {ln[2:]}" if ln.startswith("* ") else ln])
+    choice = [len(b) == 1 and not parse_options(b[0])[1] for b in blocks]
+    keep = [b[0] for b, c in zip(blocks, choice) if c]
+    if keep == lines:
+        return
+    put_section(d, "Options", "\n".join(keep))
+    for b, c in zip(blocks, choice):
+        if not c:
+            append_to_section(d, "Notes", "\n".join(b))
+
+
 def migrate(tr: Tracker) -> None:
     """Bring a tracker written for an older version to the current rules. Each step looks for what it changes, so a run
     that stopped part way can run again; the schema goes last. Only here does code read an older format."""
@@ -338,6 +361,7 @@ def migrate(tr: Tracker) -> None:
     if json.dumps(state, sort_keys=True) != before:
         tr.save_state(state)
     for d in tr.decisions:
+        move_notes(d)
         waiting = {t.id for t in tr.waiting_on(d.id)}
         drop = [r for r in d.list("refs") if tr.canonical(r) in waiting]
         if drop:

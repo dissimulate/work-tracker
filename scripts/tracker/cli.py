@@ -98,8 +98,9 @@ def build_parser():
                              "add T-8 plan \"...\" --replace \"old text\"")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
-                                    "options, context, goal, scope; a README section it names none of is new")
-    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context). A link "
+                                    "options, notes, context, goal, scope; a README section it names none of is new")
+    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context, Options, "
+                                 "Notes). A link "
                                  f"line's label is one of {', '.join(DEFAULT_LABELS)}, or one of the tracker's own "
                                  "(`rules` lists them)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
@@ -108,7 +109,7 @@ def build_parser():
                              "text, given or from stdin: put T-8 carry - <<'EOF' … EOF")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
-                                    "options, context, goal, scope; a README section it names none of is new")
+                                    "options, notes, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", nargs="?", default="-", help="the section's whole new text; `-` or left out: from stdin")
     sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("drop", cmd_drop, "remove the one line of a section that holds this text (a bullet goes with its "
@@ -122,7 +123,7 @@ def build_parser():
     sp.add_argument("ids", nargs="+", metavar="ID", help="ticket, decision or action ids (a comma list works "
                                                           "too), `tracker` for the README, or `log` for its last lines")
     sp.add_argument("--section", help="comma list of sections, by a prefix of the name: plan, carry, links, question, "
-                                      "options, resolution, context, goal, scope")
+                                      "options, notes, resolution, context, goal, scope")
     sp = add("history", cmd_history, "read the log: its last lines, oldest first, or those about some tickets or "
                                      "decisions, or since a date: history --ref T-8 D-2 --since 2026-10-01")
     sp.add_argument("--ref", **IDS, help="only the lines about these ids")
@@ -155,7 +156,10 @@ def build_parser():
     sp = add("decide", cmd_decide, "open a direction decision (by title), or update / resolve one (by D-id)")
     sp.add_argument("target", nargs="?", help="a new decision's title, or an existing D-id")
     sp.add_argument("--question", help="what must be decided and why it matters (new: defaults to the title)")
-    sp.add_argument("--note", help="an option, proposal or new fact; added to ## Options")
+    sp.add_argument("--option", action="append", metavar="CHOICE", help="a choice to decide between, `<choice>` or "
+                                                                        "`<choice> — <what it costs>`; one per choice")
+    sp.add_argument("--recommend", metavar="CHOICE", help="the choice you recommend; added when it is new")
+    sp.add_argument("--note", help="a fact, proposal or finding; a dated line in ## Notes")
     sp.add_argument("--resolve", help="the answer; closes the decision")
     sp.add_argument("--by", help="who decided")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")

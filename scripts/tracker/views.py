@@ -321,9 +321,9 @@ def protocol(slug: str) -> str:
         "line shows what the PR waits on",
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
-        "- as they happen: a direction choice `decide`; an order or blocker `wait`; a result file "
-        "`attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a sign-off): ask "
-        "them, then `act \"<what, with whom>\" --refs <ids>`",
+        "- as they happen: a direction choice `decide`, each choice an `--option`; an order or blocker `wait`; a "
+        "result file `attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a "
+        "sign-off): ask them, then `act \"<what, with whom>\" --refs <ids>`",
         "- a subagent writes no tracker (a hook tells it): put what it needs in its prompt (`context <id> --brief`), "
         "and record what it reports",
         "- `[work-tracker]` hook lines are the tracker's requests: act on each in the same turn. A write prints the "

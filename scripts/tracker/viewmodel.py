@@ -6,8 +6,8 @@ from __future__ import annotations
 import datetime as dt
 import time
 
-from .markdown import headings, section_block, strip_comments, without_section, Link
-from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, show_value
+from .markdown import headings, section, section_block, strip_comments, without_section, Link
+from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, sequence,
     sort_key, span, Dep, Record, Tracker)
 from .moves import is_pr_link, linked_prs, whose_move, Move
@@ -18,7 +18,7 @@ from .github import pr_url
 from .watcher import watches_of
 from .lifecycle import in_use
 
-VIEW_SCHEMA = 6  # a UI that reads another number says which side is older
+VIEW_SCHEMA = 7  # a UI that reads another number says which side is older
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -127,7 +127,8 @@ def time_view(t: Record) -> list[dict]:
 
 def record_view(tr: Tracker, r: Record) -> dict:
     """What a record shows when it opens: its lead line (its next or summary), what it waits on and what waits on it
-    (dep_facts, as the text views give them), its facts and links, then its body in Markdown."""
+    (dep_facts, as the text views give them), its facts and links, then its body in Markdown. An open decision gives
+    its choices apart (`answer`), for the UI to offer each as the answer, and who answers (its owner)."""
     g = tr.gate(r)
     deps = [{"label": label, "text": v} if isinstance(v, str) else {"label": label, "items": [dep_view(d) for d in v]}
             for label, v in dep_facts(tr, r)]
@@ -137,6 +138,9 @@ def record_view(tr: Tracker, r: Record) -> dict:
             for d in tr.decisions_for(r)]})
     move = whose_move(tr, r) if r.kind == "ticket" else None
     word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
+    asks = r.kind == "decision" and not r.closed
+    options = parse_options(strip_comments(section(r.body, "Options")))[0] if asks else []
+    body = without_section(r.body, "Links")
     return {
         "id": r.id, "title": str(r.get("title")), "stage": r.stage,
         "state": ticket_state(tr, r) if r.kind == "ticket" else r.stage,
@@ -149,7 +153,9 @@ def record_view(tr: Tracker, r: Record) -> dict:
         "facts": [{"label": k.removesuffix("_at"), "text": show_value(k, r.get(k)), "code": k == "branch"}
                   for k in FACTS if r.get(k)],
         "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
-        "body": strip_comments(without_section(r.body, "Links")).strip(),
+        "answer": {"options": [{"text": o.text, "cost": o.cost, "recommended": o.recommended} for o in options],
+                   "by": str(r.get("owner") or "user")} if asks else None,
+        "body": strip_comments(without_section(body, "Options") if options else body).strip(),
     }
 
 

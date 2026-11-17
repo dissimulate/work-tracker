@@ -8,15 +8,17 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .system import ROOT, die, open_with_system
-from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section_block,
-    split_frontmatter)
+from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
+    split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, record_cli
 from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIVE_SYNC_S,
-    MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA, STAGES, STATUSES,
-    a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, read_value, stage_of, today, utc_now)
+    MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA,
+    STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
+    parse_options, read_value, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_log, append_notes, append_to_section, archived_at,
     archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record, names,
     put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, tracker_at,
@@ -442,7 +444,7 @@ def cmd_ready(args):
 # a fact goes in without a hand edit of the file. A list section takes one bullet per `add`; link lines are checked as
 # `check` would. The edits themselves are in `model`.
 
-LIST_SECTIONS = {"Carry forward", "Links", "Context"}
+LIST_SECTIONS = {"Carry forward", "Links", "Context", "Options", "Notes"}
 LINK_SECTIONS = {"Links", "Context"}
 OWNED_SECTIONS = {"Resolution": "`tracker decide D-<n> --resolve`"}
 
@@ -483,6 +485,11 @@ def require_links(tr: Tracker, text: str) -> None:
             die(f"label '{x.label}' is not one of {', '.join(tr.labels)} (`tracker set tracker labels=...` adds one)")
 
 
+def require_options(text: str) -> None:
+    if problems := options_problems(text):
+        die(f"{'; '.join(problems)}. {OPTION_RULE}")
+
+
 def section_edit(args, new: bool = True) -> tuple[Tracker, Record, str]:
     """The record and section an `add`, `put` or `drop` changes. A started ticket's Plan is the agreed plan: it
     changes only with a reason (--why), which the log keeps."""
@@ -513,6 +520,8 @@ def cmd_add(args):
         text = "- " + text
     if heading in LINK_SECTIONS:
         require_links(tr, text)
+    if heading == "Options":
+        require_options(f"{strip_comments(section(rec.body, heading))}\n{text}")
     append_to_section(rec, heading, text)
     section_done(tr, rec, heading, args.why, "added")
 
@@ -525,6 +534,8 @@ def cmd_put(args):
         die("put takes the section's whole new text: pass it, or `-` and pipe it (a heredoc: <<'EOF')")
     if heading in LINK_SECTIONS:
         require_links(tr, text)
+    if heading == "Options":
+        require_options(text)
     put_section(rec, heading, text)
     section_done(tr, rec, heading, args.why, "replaced")
 
@@ -593,7 +604,7 @@ def cmd_attach(args):
             if not any(f"({EVIDENCE_DIR}/{name})" in x.text for x in rec.links):
                 append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
         elif not (args.append is not None and f"({EVIDENCE_DIR}/{name})" in rec.body):
-            append_to_section(rec, "Options", f"- {today()}: {EVIDENCE}: {link}")
+            append_to_section(rec, "Notes", f"- {today()}: {EVIDENCE}: {link}")
         rec.change()
         refs.append(rec.id)
     append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
@@ -686,22 +697,57 @@ def refs_after(tr: Tracker, rec: Record, refs: list[str], unrefs: set[str], bloc
     return sorted((set(rec.list("refs")) | set(refs)) - unrefs - waiting, key=sort_key)
 
 
+def choice(text: str) -> Option:
+    """One choice as `--option` or `--recommend` gives it (OPTION_RULE)."""
+    found, bad = parse_options(f"- {text.strip()}")
+    if bad or len(found) != 1 or found[0].recommended:
+        die(f"a choice is one line, `<choice>` or `<choice> — <what it costs>`, not: {short(text, 60)}")
+    return found[0]
+
+
+def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
+    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
+    changed, for the log."""
+    options, bad = parse_options(strip_comments(section(d.body, "Options")))
+    if bad:
+        die(f"{d.id} ## Options holds a line that is no choice ({short(bad[0], 60)}): fix it first. {OPTION_RULE}")
+    known = {o.text.lower() for o in options}
+    said = []
+    for o in [*given, *([pick] if pick else [])]:
+        if o.text.lower() not in known:
+            options.append(o)
+            known.add(o.text.lower())
+            if o is not pick:
+                said.append(f"option {short(o.text, 40)}")
+    if pick:
+        options = [replace(o, recommended=o.text.lower() == pick.text.lower()) for o in options]
+        said.append(f"recommends {short(pick.text, 40)}")
+    put_section(d, "Options", "\n".join(o.line() for o in options))
+    return said
+
+
 def cmd_decide(args):
     tr = resolve(args)
     refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
+    given = [choice(x) for x in args.option or []]
+    pick = choice(args.recommend) if args.recommend else None
     d = existing(tr, "decision", args.target)
     if d:
-        if not (args.note or args.resolve or refs or unrefs or blocks or args.owner or args.question):
-            die("nothing to change: pass --note, --resolve, --refs, --unref, --blocks, --owner or --question")
+        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or args.owner or args.question):
+            die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
+                "or --question")
         upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
         d.change({**upd, **({"owner": args.owner} if args.owner else {})})
         if args.question:
             append_to_section(d, "Question", dated(args.question))
+        said = add_choices(d, given, pick) if given or pick else []
         if args.note:
-            append_to_section(d, "Options", f"- {dated(args.note)}")
-            append_log(tr, f"Updated {d.id}: {short(args.note)}", [d.id, *tr.touched_by(d)])
+            append_to_section(d, "Notes", f"- {dated(args.note)}")
+            said.append(short(args.note))
+        if said:
+            append_log(tr, f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)])
         if msg := blocks_line(tr, d, blocks):
             print(msg)
         print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
@@ -711,8 +757,10 @@ def cmd_decide(args):
     refuse_similar(tr, "decision", args.target, args.force)
     d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
     append_to_section(d, "Question", args.question or args.target)
+    if given or pick:
+        add_choices(d, given, pick)
     if args.note:
-        append_to_section(d, "Options", f"- {args.note}")
+        append_to_section(d, "Notes", f"- {dated(args.note)}")
     if args.resolve:
         resolve_decision(tr, d, args.resolve, args.by)
         print(f"{d.id} recorded as settled: {d.path}")

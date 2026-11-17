@@ -22,9 +22,12 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `Code` is a link label in every tracker, for a place in the code: `- Code: [title](url) — why`. `tracker add --help` lists the labels.
 - `tracker watch --only <kinds>` prints only those kinds of change, and `--hold <seconds>` prints the changes that do not need you as one batch (a `!` line still comes at once). The watch also says when an agent ends its turn.
 - `tracker agents` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
+- An open decision in the view lists its options: click one to answer with it, or write your own answer in the box below them.
+- `tracker decide --option "<choice> — <what it costs>"` adds a choice to a decision, and `--recommend "<choice>"` marks the one recommended.
 
 ### Changed
 
+- A decision's ## Options holds only its choices, one line each. `tracker decide --note` and `tracker attach` now write to a new ## Notes section. Existing decisions migrate: a dated line, an evidence link, prose or a bullet with nested lines moves from Options to Notes.
 - A tracker in an older format now migrates itself, archived ones too, the first time a command or hook of this version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/` and adds a log line. Restart a session that still runs an older plugin version.
 - The live view is now native: a tab in Herdr, or its own window through `gpui-shell`. `tracker open` shows it. It needs Herdr with the mod installed (`tracker install-mod`) or `gpui-shell` 0.9.0; without them `tracker open` says so, and `tracker index` and `tracker context <id>` still show the same facts.
 - An opened ticket, decision, action or Current row shows in a modal over the page, not inside its row. A press outside it, Escape or Close closes it. An empty section of a record does not show, and an opened ticket has a row for each of its PRs.

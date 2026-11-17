@@ -73,7 +73,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 |---|---|
 | `README.md` | the work: Context, Goal, Scope; optionally Instructions, this work's standing rules for the agent, which every brief prints |
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
-| `decisions/D-<n>.md` | one direction decision: Question, Options, Resolution |
+| `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
 | `log.md` | dated one-line history |
 | `evidence/` | files the records cite: runs, measurements |
@@ -134,7 +134,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
   - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, yellow while in review, grey once closed.
   - Hover a row to see only what its ticket waits on and unblocks.
   - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. The columns are Status, Priority, Size, Group, Waits on and Unblocks; a narrow view leaves them out from the right as they stop fitting, and keeps Status.
-- **A record** (a ticket, decision or action) opens in a modal over the page when you click it, and a press outside it or Escape closes it: what it waits on and unblocks, its facts and links, its body. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
+- **A record** (a ticket, decision or action) opens in a modal over the page when you click it, and a press outside it or Escape closes it: what it waits on and unblocks, its facts and links, its body. An open decision lists its options: click one to answer with it, or write your own answer in the box below them and press Answer. The answer closes the decision, as `tracker decide D-<n> --resolve` does, and the agents see it with the next change. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
 - **Wait time** runs from when a ticket's issue was created (`issue_created_at`) to when the ticket started (`started_at`, which its first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`). Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days. An opened ticket gives its own. A ticket has none when it was dropped, lacks either exact time, or ends before it starts (its issue was created after the work started).
 - **Reference** (bottom): the closed decisions and actions, the rest of the README, the log.
 

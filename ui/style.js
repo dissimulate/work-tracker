@@ -7,7 +7,7 @@ import { meaningOf } from "./model.js";
 
 // A colour fainter than the theme's: a theme's colour is "#rrggbb", and two more digits are its alpha.
 const faint = (color, alpha) => `${String(color).slice(0, 7)}${alpha}`;
-const ROW = "73", FILL = "1f", HOVER = "12", RULE = "80"; // alphas: a row's background, a toggle's while on and under the pointer, a table's rule
+const ROW = "73", FIELD = "38", FILL = "1f", HOVER = "12", RULE = "80"; // alphas: a row's background, a text box's, a toggle's while on and under the pointer, a table's rule
 
 // Each meaning's colour, by the theme's names: red, yellow, the terminal's green, blue, grey. `working` is only the
 // yellow here, as an agent at work is green; `done` is not used, as its colour differs from host to host.
@@ -93,6 +93,10 @@ export function card(id, head, t, { click = null, after = [] } = {}) {
       .children(head))
     .when(after.length > 0, el => el.pr(SPACE.xl).gap(SPACE.sm).children(after));
 }
+
+// A text box as a card's row, fainter: in a list of cards, it lines up with them.
+export const field = (el, t) => el.w_full().flex_none().min_h(SIZE.card).px(SPACE.xl).py(SPACE.md).rounded(RADIUS.card).border_0()
+  .bg(faint(t.raised, FIELD)).text_size(TEXT.small).text_color(t.foreground);
 
 // A list of cards. Text on a card that the page would draw dim takes t.muted: dim is too faint on t.raised.
 export const cards = items => v_flex().w_full().gap(SPACE.sm).children(items);

@@ -176,7 +176,7 @@ KEYS = {
         "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
-SCHEMA = 4  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 5  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
@@ -477,11 +477,49 @@ DECIDED = '`tracker decide "<title>" --resolve "..." --by <who>`'  # a choice ma
 DECISION_BAR = (
     "A decision is a direction choice: it changes the Goal or Scope, a ticket's plan, order or split, a contract "
     "between tickets, a product, design or architecture rule, or it needs someone else's sign-off. Record it with "
-    "`tracker decide \"<title>\" --refs <ids> --question \"...\"` when it is raised, and resolve it with "
+    "`tracker decide \"<title>\" --refs <ids> --question \"...\" --option \"<choice> — <what it costs>\"` (one "
+    "`--option` per choice, `--recommend \"<choice>\"` for the one you recommend) when it is raised, and resolve it "
+    "with "
     f"{RESOLVE} when it is answered, including an answer given in chat (a choice made on the spot is one command: "
     f"{DECIDED}). "
     "A choice inside one ticket's build (implementation detail, review fix, naming, styling) is not a decision: "
     "it goes in that ticket's Plan, `next` or PR.")
+# A decision's ## Options holds only its choices, one line each, so a UI can offer each one as an answer; what is said
+# about them (a fact, a proposal, evidence) goes in ## Notes.
+RECOMMENDED = "(recommended)"
+OPTION_LINE = re.compile(rf"- (?:{re.escape(RECOMMENDED)} )?(.+?)(?: — (.+))?")
+OPTION_RULE = (f"## Options holds only the choices, one line each: `- <choice>`, or `- <choice> — <what it costs>`; "
+               f"the one recommended starts `- {RECOMMENDED} `. Facts, proposals and evidence go in ## Notes.")
+
+
+@dataclass(frozen=True)
+class Option:
+    text: str  # the choice, as an answer that takes it says it
+    cost: str = ""
+    recommended: bool = False
+
+    def line(self) -> str:
+        return f"- {RECOMMENDED + ' ' if self.recommended else ''}{self.text}{f' — {self.cost}' if self.cost else ''}"
+
+
+def parse_options(text: str) -> tuple[list[Option], list[str]]:
+    """A decision's ## Options text (no comments) as its choices, and each line that is no choice: a dated line is a
+    note."""
+    options, bad = [], []
+    for ln in text.splitlines():
+        m = OPTION_LINE.fullmatch(ln.rstrip())
+        if m and not re.match(r"\d{4}-\d{2}-\d{2}\b", m[1]):
+            options.append(Option(m[1].strip(), (m[2] or "").strip(), ln.startswith(f"- {RECOMMENDED} ")))
+        elif ln.strip():
+            bad.append(ln.strip())
+    return options, bad
+
+
+def options_problems(text: str) -> list[str]:
+    """What breaks OPTION_RULE in a decision's ## Options text."""
+    options, bad = parse_options(text)
+    return ([f"'{x[:60]}' is no choice" for x in bad]
+            + (["more than one choice is recommended"] if sum(o.recommended for o in options) > 1 else []))
 ACTION_BAR = (
     "An action is a task for the user that you cannot or should not do: talk to or follow up with a person, get an "
     "access or a sign-off, a step on a system you have no access to. It is never your own next step (`next`), a "
@@ -533,9 +571,9 @@ KINDS = {
     "ticket": Kind("tickets", "", "new", ("Plan", "Carry forward", "Links"), ("Plan", "Carry forward", "Links"),
                    rule=f"Carry forward ≤ {MERGED_CARRY_FORWARD_MAX} bullets once done. Ids: letters, "
                         "digits, `.`, `_`, `-`."),
-    "decision": Kind("decisions", "D", "decide", ("Question", "Options", "Resolution"), ("Question",), "Resolution",
-                     frozenset({"ticket"}), "## Resolution holds one dated line per answer, `YYYY-MM-DD (who): "
-                                            "answer`; the latest holds."),
+    "decision": Kind("decisions", "D", "decide", ("Question", "Options", "Notes", "Resolution"), ("Question",),
+                     "Resolution", frozenset({"ticket"}), f"{OPTION_RULE} ## Resolution holds one dated line per "
+                                                          "answer, `YYYY-MM-DD (who): answer`; the latest holds."),
     "action": Kind("actions", "A", "act", refs=frozenset({"ticket", "decision"}),
                    rule="A task for the user; its body holds note lines, one fact each (`tracker act A-<n> --note`)."),
 }

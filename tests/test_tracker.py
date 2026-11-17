@@ -1140,6 +1140,26 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1", "T-2", "T-3", "T-4"])
         self.assertNotIn("priority", run(*t, "check"))
 
+    def test_migrate_to_format_5_keeps_only_choices_in_options(self):
+        s, t = self.old_tracker(schema=schema.SCHEMA)
+        run(*t, "decide", "Which store")
+        run(*t, "decide", "Which queue", "--resolve", "SQS", "--by", "me")
+        old = ("- Option A: the first\n- 2026-01-02: a fact\n  - its detail\n"
+               "- 2026-01-03: Evidence: [f.txt](evidence/f.txt)\nSome prose\n* Option B\n")
+        tr = model.tracker_at(s)
+        for ident in ("D-01", "D-02"):
+            model.put_section(tr.lookup(ident), "Options", old)
+        model.tracker_at(s).readme.save({"schema": schema.SCHEMA - 1})
+        run("list")
+        tr = model.tracker_at(s)
+        for ident in ("D-01", "D-02"):
+            d = tr.lookup(ident)
+            self.assertEqual(markdown.section(d.body, "Options"), "- Option A: the first\n- Option B")
+            self.assertEqual(markdown.section(d.body, "Notes"), "- 2026-01-02: a fact\n  - its detail\n"
+                             "- 2026-01-03: Evidence: [f.txt](evidence/f.txt)\n\nSome prose")
+        self.assertEqual(markdown.headings(tr.lookup("D-02").body), ["Question", "Options", "Notes", "Resolution"])
+        self.assertNotIn("D-0", run(*t, "check"))
+
     def test_migrate_to_format_3_reads_open_issues_again(self):
         s, t = self.old_tracker(schema=schema.SCHEMA)
         for ident in ("T-1", "T-2"):
@@ -3111,6 +3131,59 @@ class Values(unittest.TestCase):
         self.assertEqual(a.get("closed_at"), "2026-09-01")  # an action's `updated` was when it closed
         self.assertEqual((tr.meta.get("created_at"), tr.schema), ("2026-08-01", schema.SCHEMA))
         self.assertEqual(contract.check(tr), ([], ["README.md: ## Context lists nothing"]))
+
+
+class DecisionOptions(unittest.TestCase):
+    """A decision's ## Options holds only its choices, which the view offers as answers; the rest is in ## Notes."""
+
+    def options(self, s: str, ident: str = "D-01") -> str:
+        return markdown.section(model.tracker_at(s).lookup(ident).body, "Options")
+
+    def test_choices_notes_and_the_recommended_one(self):
+        s, t = new_tracker("Options")
+        run(*t, "decide", "Which store", "--option", "Postgres — a migration", "--option", "SQLite",
+            "--recommend", "SQLite", "--note", "Joins matter")
+        self.assertEqual(self.options(s), "- Postgres — a migration\n- (recommended) SQLite")
+        notes = markdown.section(model.tracker_at(s).lookup("D-01").body, "Notes")
+        self.assertRegex(notes, r"^- \d{4}-\d{2}-\d{2}: Joins matter$")
+        run(*t, "decide", "D-1", "--option", "postgres", "--recommend", "Redis")  # a choice it has is not added again
+        self.assertEqual(self.options(s), "- Postgres — a migration\n- SQLite\n- (recommended) Redis")
+        self.assertIn("Updated D-01: recommends Redis", run(*t, "history"))
+        for bad in ("2026-01-02: a fact", "one\ntwo", "(recommended) Kafka"):
+            with self.subTest(bad=bad):
+                self.assertIn("a choice is one line", run(*t, "decide", "D-1", "--option", bad, code=2))
+        self.assertIn("more than one choice is recommended",
+                      run(*t, "add", "D-1", "options", "(recommended) Kafka", code=2))
+        run(*t, "add", "D-1", "options", "Kafka")
+        self.assertIn("- Kafka", self.options(s))
+
+    def test_check_names_a_line_that_is_no_choice(self):
+        s, t = new_tracker("Options")
+        run(*t, "decide", "Which store", "--option", "Postgres")
+        d = model.tracker_at(s).lookup("D-01")
+        d.rewrite(d.path.read_text().replace("- Postgres", "- Postgres\nSome prose"))
+        errors, _ = contract.check(model.tracker_at(s))
+        self.assertTrue(any("D-01 ## Options: 'Some prose' is no choice" in x for x in errors), errors)
+        self.assertIn("fix it first", run(*t, "decide", "D-1", "--option", "SQLite", code=2))
+
+    def test_the_view_offers_an_open_decisions_choices(self):
+        s, t = new_tracker("Options")
+        run(*t, "decide", "Which store", "--owner", "Sam", "--option", "Postgres — a migration",
+            "--recommend", "SQLite")
+        run(*t, "decide", "Which queue")
+        records = data(s)["records"]
+        self.assertEqual(records["D-01"]["answer"], {"by": "Sam", "options": [
+            {"text": "Postgres", "cost": "a migration", "recommended": False},
+            {"text": "SQLite", "cost": "", "recommended": True}]})
+        self.assertNotIn("## Options", records["D-01"]["body"])  # the choices show as answers, not as text
+        self.assertEqual(records["D-02"]["answer"], {"by": "user", "options": []})
+        run(*t, "decide", "D-1", "--resolve", "SQLite", "--by", "Sam")
+        run(*t, "decide", "D-1", "--note", "Settled in the call")  # a note after the answer goes before it
+        d = data(s)["records"]["D-01"]
+        self.assertIsNone(d["answer"])
+        self.assertIn("## Options", d["body"])
+        self.assertEqual(markdown.headings(model.tracker_at(s).lookup("D-01").body),
+                         ["Question", "Options", "Notes", "Resolution"])
 
 
 if __name__ == "__main__":

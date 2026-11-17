@@ -21,12 +21,12 @@
 //                       null when the focus is on something else; undefined when it is on no terminal. With it the
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
-import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
+import { Popover, Popup, Textarea, TextareaState, TextView, h_flex, v_flex } from "gpui-base";
 import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
-import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
+import { button, card, cards, chip, chipButton, dropdown, field, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
-const SCHEMA = 6; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 7; // viewmodel.VIEW_SCHEMA
 const TITLE_MIN = 120; // the least width a ticket's title keeps in the sequence before a column leaves
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 // The longest the view waits for a change: a session that ends with no hook, and another machine's tracker, change
@@ -52,6 +52,9 @@ export function trackerView(host) {
       this.error = ""; // why the data cannot be read: gone once it can
       this.refused = ""; // why a change the user asked for did not happen: stays until they act again
       this.busy = false;
+      // The open decision's answer in the user's own words, sent by its Answer button: Herdr's text box cannot be
+      // told to send on Enter.
+      this.answerText = TextareaState.new({ placeholder: "Or write your own answer", rows: 2 });
       this.view = null;
       this.starting = true; // the first look at which tracker to show still runs
       this.trackers = null;
@@ -281,9 +284,24 @@ export function trackerView(host) {
     }
 
     select(id, cx) {
+      if (id !== this.selected) this.answerText.set_value("");
       this.selected = id;
       this.keys.focus();
       cx.notify();
+    }
+
+    // An open decision answered from its modal: the CLI closes it, and its agents learn of it as of any change. The
+    // answer is one line of ## Resolution.
+    answer(cx, r, text) {
+      const answer = text.replace(/\s+/g, " ").trim();
+      if (!answer || this.busy) return;
+      this.change(cx, ["--tracker", this.slug, "decide", r.id, `--resolve=${answer}`, `--by=${r.answer.by}`],
+        { then: () => this.answerText.set_value("") });
+    }
+
+    answerTyped(cx) {
+      const r = this.view?.records[this.selected];
+      if (r?.answer) this.answer(cx, r, this.answerText.value());
     }
 
     closeRecord(cx) {
@@ -610,6 +628,9 @@ export function trackerView(host) {
         ...r.links.map((x, i) => [x.label, this.linkText(`link-${r.id}-${i}`, x, t)]),
         ...this.nowRows(view.now?.items.find(item => item.key === id), t),
       ];
+      const parts = bodyParts(r.body).map((x, i) => this.part(x.label, this.md(`body-${r.id}-${i}`, x.text)));
+      // An open decision's choices come right after its question.
+      if (r.answer) parts.splice(bodyParts(r.body).findIndex(x => x.label === "Question") + 1, 0, this.answerPart(r, t));
       return modal("details", t, this.width, this.keys, cx => this.closeRecord(cx), [
         this.modalHead([
           this.mono(div().flex_none().text_color(t.muted).child(r.id)),
@@ -617,10 +638,30 @@ export function trackerView(host) {
           div().flex_1().min_w(0).text_size(TEXT.title).font_medium().child(r.title),
         ], t),
         this.grid(rows, t),
-        ...bodyParts(r.body).map((x, i) => v_flex().flex_none().w_full().mt(SPACE.xs).gap(SPACE.xs)
-          .when(Boolean(x.label), el => el.child(div().text_size(TEXT.title).font_medium().child(x.label)))
-          .child(this.md(`body-${r.id}-${i}`, x.text))),
+        ...parts,
       ]);
+    }
+
+    part(label, ...children) {
+      return v_flex().flex_none().w_full().mt(SPACE.xs).gap(SPACE.xs)
+        .when(Boolean(label), el => el.child(div().text_size(TEXT.title).font_medium().child(label)))
+        .children(children);
+    }
+
+    // An open decision's choices, each a row whose click answers with it, then a box for an answer of the user's own.
+    answerPart(r, t) {
+      const off = this.busy;
+      const choices = r.answer.options.map((o, i) => card(`option-${r.id}-${i}`, [
+        v_flex().flex_1().min_w(0).py(SPACE.sm)
+          .child(div().text_color(off ? t.dim : t.foreground).child(o.text))
+          .when(Boolean(o.cost), el => el.child(div().text_size(TEXT.tiny).child(o.cost))),
+        ...(o.recommended ? [chip("recommended", "recommended", t)] : []),
+      ], t, { click: off ? null : cx => this.answer(cx, r, o.text) }));
+      return this.part(choices.length ? "Options" : "Answer",
+        cards([...choices, field(Textarea.new(this.answerText), t)]),
+        h_flex().w_full().gap(SPACE.sm).items_center()
+          .child(div().flex_1().min_w(0).text_size(TEXT.small).text_color(tone("error", t)).child(this.refused))
+          .child(button(`answer-${r.id}`, "Answer", t, cx => this.answerTyped(cx), { off })));
     }
 
     menuRow(x, archived, t) {

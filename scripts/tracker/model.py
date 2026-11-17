@@ -955,12 +955,23 @@ def relabel(rec: Record, link: Link, label: str) -> bool:
     return bool(n)
 
 
+def with_section(rec: Record, text: str, heading: str, body: str) -> str:
+    """The file's text with a section it lacks: before the first section its kind puts after it, else at the end."""
+    order = KINDS[rec.kind].sections if rec.kind in KINDS else ()
+    after = order[order.index(heading) + 1:] if heading in order else ()
+    later = [m.start() for h in after if (m := section_span(text, h))]
+    block = f"## {heading}\n\n{body}\n"
+    if not later:
+        return text.rstrip("\n") + f"\n\n{block}"
+    return text[:min(later)] + block + "\n" + text[min(later):]
+
+
 def append_to_section(rec: Record, heading: str, line: str) -> None:
     """Add text at the end of a section: a bullet joins the list before it; anything else is a new paragraph."""
     text = rec.path.read_text()
     m = section_span(text, heading)
     if not m:
-        text = text.rstrip("\n") + f"\n\n## {heading}\n\n{line}\n"
+        text = with_section(rec, text, heading, line)
     else:
         block = strip_comments(m.group(0)).rstrip()
         last = block.splitlines()[-1]
@@ -982,13 +993,13 @@ def replace_in_section(rec: Record, heading: str, old: str, new: str) -> None:
 
 
 def put_section(rec: Record, heading: str, new: str) -> None:
-    """Replace a section's whole text, its template comment too; a section the file lacks is added at its end."""
+    """Replace a section's whole text, its template comment too; a section the file lacks is added (`with_section`)."""
     text = rec.path.read_text()
     m = section_span(text, heading)
-    block = f"## {heading}\n\n{new.strip()}\n"
     if not m:
-        rec.rewrite(text.rstrip("\n") + f"\n\n{block}")
+        rec.rewrite(with_section(rec, text, heading, new.strip()))
         return
+    block = f"## {heading}\n\n{new.strip()}\n" if new.strip() else f"## {heading}\n"
     rest = text[m.end():].lstrip("\n")
     rec.rewrite(text[:m.start()] + block + (f"\n{rest}" if rest else ""))
 
