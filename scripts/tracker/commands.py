@@ -120,7 +120,7 @@ def cmd_index(args):
         die(f"--status takes {'|'.join(STAGES)}")
     if args.active:
         stages = OPEN_STAGES
-    lines = index_lines(tr, stages, args.group)
+    lines = index_lines(tr, stages, args.group, issue_states=True)
     print("\n".join(lines[:1] + span_lines(tr) + lines[1:]))
 
 

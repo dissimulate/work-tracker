@@ -92,7 +92,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 ### Tickets, branches and sessions
 
-- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review`, and once merged makes it `done`.
+- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review`, and once merged makes it `done`. Its issue's state, when read (see Issue state), is shown beside it by the issue tracker's own name in `tracker context`, `tracker index` and the view, and never in the brief: it is text from outside the tracker.
 - `depends_on` sets the order and the blockers. What is ready or blocked, and the branch a ticket can start from (stacked on work under way), are computed.
 - The branch names the session's tickets: each ticket whose `branch` it is, a `tracker use <id>` choice, a ticket id or Issue id in the branch name, or the branch's PR.
 - Many sessions can share one tracker. `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.

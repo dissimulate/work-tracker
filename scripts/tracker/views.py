@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 from pathlib import Path
 
@@ -24,8 +25,15 @@ def pr_label(t: Record) -> str:
                      for n, state in t.prs.items()) or "—"
 
 
+def issue_state_text(rec: Record, sep: str = ": ") -> str:
+    """A ticket's issue state as views on demand show it: quoted, as text from outside the tracker; "" with none.
+    The brief and the hook lines never show it."""
+    state = rec.get("issue_state")
+    return f"issue{sep}{json.dumps(str(state), ensure_ascii=False)}" if state else ""
+
+
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,
-                titles: bool = False, width: int = 0, urls: bool = True) -> list[str]:
+                titles: bool = False, width: int = 0, urls: bool = True, issue_states: bool = False) -> list[str]:
     counts = stage_counts(tr)
     tally = " · ".join(f"{s} {counts[s]}" for s in STAGES if s in counts)
     out = [f"{tr.headline()} · {len(tr.tickets)} tickets · {tally}"]
@@ -40,7 +48,9 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
     w_group = max([len(str(t.get("group") or "—")) for t in rows] + [1])
     for t in rows:
         nxt = gate(tr, t) + short((not t.closed and t.get("next")) or t.get("summary") or t.get("title"), 90)
-        out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}")
+        issue = issue_state_text(t, " ") if issue_states else ""
+        out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}"
+                   + (f" · {issue}" if issue else ""))
     moves = move_lines(tr) if not stages or any(stage_of("ticket", s).in_flight for s in stages) else []
     out += [""] + moves + [""] * bool(moves) + order_lines(tr)
     decisions = tr.open_decisions()
@@ -208,13 +218,16 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
             *(f"  {cut(x, width)}" for x in lines)] if lines else []
 
 
-def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, its TEXT_FACTS, next action or summary, move, handoff, dependencies and links."""
+def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0,
+                 issue_state: bool = False) -> list[str]:
+    """A ticket's own facts: its line, its TEXT_FACTS (and, asked for, its issue state), next action or summary, move,
+    handoff, dependencies and links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
     closed = rec.closed
     facts = [f"{k}: {show_value(k, rec.get(k))}" for k in FACTS if k in TEXT_FACTS and rec.get(k)]
+    facts += [x for x in [issue_state_text(rec) if issue_state else ""] if x]
     out += [" · ".join(facts)] if facts else []
     k = "summary" if closed else "next"
     if rec.get(k):
@@ -288,7 +301,7 @@ def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[s
 
 def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log: int = CONTEXT_LOG) -> list[str]:
     if rec.kind == "ticket":
-        out = ticket_lines(tr, rec) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
+        out = ticket_lines(tr, rec, issue_state=True) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
     else:
         out = [f"{rec.id} · {rec.get('status')} · {rec.get('title')}", *dep_lines(tr, rec)]
         if rec.closed and KINDS[rec.kind].closing:

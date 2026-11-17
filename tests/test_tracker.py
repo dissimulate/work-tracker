@@ -2327,6 +2327,19 @@ class IssueSync(unittest.TestCase):
         tr.readme.save({"schema": schema.SCHEMA + 1})
         self.assertEqual(views.issue_request(model.tracker_at(s)), "")
 
+    def test_context_and_index_show_the_issue_state_quoted_and_the_brief_does_not(self):
+        s, t = self.tracker()
+        sid, work = f"sid{time.monotonic_ns()}", repo("feat/T-1")
+        run(*t, "set", "T-1", "status=in-progress", cwd=work)
+        run(*t, "issue", "T-1", "--priority", "2", "--stage", "started", "--state", "Doing it")
+        self.assertIn('issue: "Doing it"', run(*t, "context", "T-1"))
+        self.assertRegex(run(*t, "index"), r'(?m)^T-1 .*issue "Doing it"')
+        env = {**os.environ, "TRACKER_SESSION": sid}
+        brief = subprocess.run([str(ROOT / "bin/tracker"), "start", s], cwd=work, env=env, capture_output=True,
+                               text=True, check=True).stdout
+        self.assertIn("T-1", brief)
+        self.assertNotIn("Doing it", brief)  # text from outside stays out of every session's context
+
 
 class Ui(unittest.TestCase):
     """`tracker open` shows a tracker in Herdr when Herdr is open, else in its own window; `tracker evidence` is the
