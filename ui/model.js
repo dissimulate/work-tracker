@@ -1,0 +1,299 @@
+// What the view works out with no UI in it: from `tracker data`, which rows show, in what order, and the graph's
+// geometry; from its host, how to start the CLI and what a change in the folder means. Runs on any JavaScript engine:
+// node runs its tests (model.test.js), QuickJS runs it in a host.
+
+// The rows any of the filters keeps, each a stage or `blocked`, which a ticket's dependencies decide; with none on,
+// every row. A ticket that can stack on work under way still waits, so it counts as blocked.
+export function filterRows(tickets, filters) {
+  const blocked = t => !t.closed && ["blocked", "stack"].includes(t.gate.state);
+  return filters.length ? tickets.filter(t => filters.some(f => (f === "blocked" ? blocked(t) : t.stage === f))) : tickets;
+}
+
+// The sequence's filters in the order they show, each with how many tickets it keeps: `blocked`, then each of `stages`
+// (the tracker's, in order) that a ticket is at.
+export function filterCounts(tickets, stages) {
+  return ["blocked", ...stages].map(key => [key, filterRows(tickets, [key]).length]).filter(([key, n]) => n || key === "blocked");
+}
+
+// The numbers in a value compare as numbers ("T-2" before "T-10"). QuickJS's localeCompare takes no `numeric` option.
+export function naturalCompare(a, b) {
+  const parts = s => String(s).toLowerCase().match(/\d+|\D+/g) ?? [];
+  const x = parts(a), y = parts(b);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    if (x[i] === y[i]) continue;
+    const both = /^\d/.test(x[i]) && /^\d/.test(y[i]);
+    return both ? Number(x[i]) - Number(y[i]) : x[i] < y[i] ? -1 : 1;
+  }
+  return x.length - y.length;
+}
+
+// What a column sorts by: what its row shows, or what the CLI gives for the rest (a status's place, a level's rank).
+const SORT_BY = { step: t => t.order, ticket: t => t.id, group: t => t.group, waits: t => t.waits.length, unblocks: t => t.unblocks.length };
+
+// Rows with no value go last in either direction; equal values keep the dependency order.
+export function sortRows(rows, { key, desc }) {
+  const empty = v => v === null || v === undefined || v === "";
+  const value = SORT_BY[key] ?? (t => t.sort[key]);
+  return [...rows].sort((a, b) => {
+    const x = value(a), y = value(b);
+    if (empty(x) !== empty(y)) return empty(x) ? 1 : -1;
+    const by = empty(x) ? 0 : naturalCompare(x, y);
+    return (desc ? -by : by) || a.order - b.order;
+  });
+}
+
+// The next sort after a click on a column's heading. Step is the dependency order, and has no direction.
+export function nextSort(sort, key) {
+  return key === "step" ? { key, desc: false } : { key, desc: sort.key === key && !sort.desc };
+}
+
+// What each status says to the user: the one table of them. A meaning has one colour (style.js), wherever a status
+// shows: a pill, a dot, a line or text. A status not here, such as a tracker's unknown one, is quiet.
+export const MEANINGS = {
+  "needs-you": ["blocked", "you", "overdue", "error", "agent-waiting"],
+  held: ["in-review", "open", "stack", "today", "in-use", "agent-idle"], // waits on someone or something else
+  moving: ["in-progress", "active", "agent-busy", "mark-done"],
+  "can-start": ["ready"],
+  quiet: ["todo", "planning", "paused", "done", "closed", "dropped", "them", "your-work", "no-ticket", "agent-none", "mark-dropped"],
+};
+const MEANING_OF = new Map(Object.entries(MEANINGS).flatMap(([meaning, statuses]) => statuses.map(s => [s, meaning])));
+export const meaningOf = status => MEANING_OF.get(status) ?? "quiet";
+
+// A row's sessions as one status: the most urgent of them.
+export const agentStatus = agents => (!agents.length ? "agent-none" : agents.some(a => a.status === "waiting") ? "agent-waiting"
+  : agents.some(a => a.status === "busy") ? "agent-busy" : "agent-idle");
+// A move: yours to act on, your own work going on as planned, or someone else's.
+export const moveStatus = move => (!move.mine ? "them" : move.quiet ? "your-work" : "you");
+
+const HOLLOW = new Set(["closed", "dropped"]);
+// What gives a row its colour: its state, and for work under way its stage, which tells in progress from in review.
+export const rowStatus = t => (t.state === "going" ? t.stage : t.state);
+// What a row's status says in words: its stage, as a ticket that can start says so.
+export const rowWord = t => (t.state === "ready" ? "ready" : t.stage);
+const lineTone = t => (HOLLOW.has(t.state) ? "closed" : t.state === "going" ? t.stage : "blocked");
+
+export const GRAPH = {
+  width: 8, // a column's
+  space: 4, // between two columns with no tracks between them
+  pad: 3, // between a column and its gap's tracks
+  track: 4, // between two tracks
+  radius: 3.5, // a dot's
+  halo: 1, // round a dot, in the panel colour, over the lines behind it
+  ring: 1.5, // a hollow dot's stroke
+  turn: 4, // a corner's radius
+};
+
+// The dependency graph over the rows as they are shown, each rowHeight high. A ticket's dot sits in the column of its
+// step; a step with no row shown takes no column. A ticket's links leave its dot along its own column, as a branch
+// does in a git graph, when that column is free over their rows: no other dot there, and no other ticket's run.
+// Otherwise they leave level and run in a track in the gap just left of each waiting ticket's column, so a link never
+// passes through another dot. A dot takes its ticket's state, and a link the state of the ticket waited on. With a
+// focused row, only what its ticket waits on and unblocks keeps its colour, through any chain.
+//
+// Gives { width, lines, dots }: a line's `path` is a list of ["move" | "line", x, y] and ["curve", x, y, cx, cy], in px
+// from the graph's top left.
+export function graphLayout(rows, rowHeight, focusId = null) {
+  const empty = { width: 0, lines: [], dots: [] };
+  if (!rows.length) return empty;
+  const at = new Map(rows.map((t, i) => [t.id, i]));
+  const steps = [...new Set(rows.map(t => t.step))].sort((a, b) => a - b);
+  const column = new Map(steps.map((s, k) => [s, k + 1]));
+  const col = i => column.get(rows[i].step); // a row's column, from 1
+  const cols = steps.length;
+  const links = rows.flatMap((t, to) => t.links.filter(id => at.has(id)).map(id => [at.get(id), to]));
+  const widen = ([first, last], to) => [Math.min(first, to), Math.max(last, to)];
+
+  // Column runs: a ticket's links along its own column, taken in row order while the column is free over them.
+  const reach = new Map(); // per ticket waited on: the rows of its links
+  links.forEach(([from, to]) => reach.set(from, widen(reach.get(from) ?? [from, from], to)));
+  const own = new Set(); // the tickets whose links run in their column
+  const taken = []; // per column: the rows its runs hold
+  [...reach].sort((a, b) => a[0] - b[0]).forEach(([from, [first, last]]) => {
+    const c = col(from);
+    const crowded = rows.some((_, i) => i !== from && i >= first && i <= last && col(i) === c);
+    if (crowded || (taken[c] ?? []).some(([a, b]) => a <= last && first <= b)) return;
+    (taken[c] ??= []).push([first, last]);
+    own.add(from);
+  });
+
+  // Gap runs, for the rest: one per ticket and column it links to. A run takes the first track free by its first row.
+  const runs = new Map();
+  const runKey = (from, to) => `${from} ${col(to)}`;
+  links.filter(([from]) => !own.has(from)).forEach(([from, to]) => {
+    const key = runKey(from, to);
+    runs.set(key, { gap: col(to), rows: widen(runs.get(key)?.rows ?? [from, from], to) });
+  });
+  const tracks = Array.from({ length: cols + 1 }, () => []); // per gap: each track's last row
+  [...runs.values()].sort((a, b) => a.rows[0] - b.rows[0]).forEach(run => {
+    const ends = tracks[run.gap];
+    run.track = ends.findIndex(end => end < run.rows[0]);
+    if (run.track < 0) run.track = ends.length;
+    ends[run.track] = run.rows[1];
+  });
+
+  // Columns and gaps, left to right: a gap is as wide as its tracks need, or only spaces the dots.
+  const colX = [0, GRAPH.width / 2];
+  const trackX = [0, 0]; // per gap: its first track
+  for (let c = 2; c <= cols; c++) {
+    const n = tracks[c].length;
+    trackX[c] = colX[c - 1] + GRAPH.width / 2 + GRAPH.pad;
+    colX[c] = colX[c - 1] + GRAPH.width + (n ? 2 * GRAPH.pad + (n - 1) * GRAPH.track : GRAPH.space);
+  }
+  const x = i => colX[col(i)];
+  const y = i => rowHeight * (i + 0.5);
+
+  // The focused ticket's chains: the links up to what it waits on and down to what it unblocks, and their tickets.
+  const focus = at.get(focusId);
+  const near = new Set(focus === undefined ? [] : [focus]);
+  const nearLinks = new Set();
+  const walk = (i, end, next) => links.forEach((link, k) => {
+    if (link[end] !== i || nearLinks.has(k)) return;
+    nearLinks.add(k);
+    near.add(link[next]);
+    walk(link[next], end, next);
+  });
+  if (focus !== undefined) {
+    walk(focus, 1, 0);
+    walk(focus, 0, 1);
+  }
+
+  // The focused chains go last, over the grey.
+  const lines = links.map((link, k) => [link, k]).sort(([, a], [, b]) => nearLinks.has(a) - nearLinks.has(b))
+    .map(([[from, to], k]) => {
+      const [x1, y1, x2, y2] = [x(from), y(from), x(to), y(to)];
+      const r = Math.min(GRAPH.turn, Math.abs(y2 - y1) / 2);
+      const dy = Math.sign(y2 - y1) * r;
+      const run = runs.get(runKey(from, to));
+      const tx = run ? trackX[run.gap] + run.track * GRAPH.track : x1;
+      const path = [["move", x1, y1]];
+      if (run) path.push(["line", tx - r, y1], ["curve", tx, y1 + dy, tx, y1]); // a gap run leaves level
+      path.push(["line", tx, y2 - dy], ["curve", tx + r, y2, tx, y2], ["line", x2, y2]);
+      return { tone: lineTone(rows[from]), dim: focus !== undefined && !nearLinks.has(k), path };
+    });
+  const dots = rows.map((t, i) => ({
+    id: t.id, x: x(i), y: y(i), state: rowStatus(t), hollow: HOLLOW.has(t.state),
+    dim: focus !== undefined && !near.has(i),
+  }));
+  return { width: colX[cols] + GRAPH.width / 2, lines, dots };
+}
+
+// Where a link in a record's text goes: `record` an id here, `evidence` a file of the tracker's evidence/, `web` a URL
+// for the system. Tracker text is written by agents, so any other scheme stays plain text: a click must not reach
+// `javascript:`, `file:` or an app's own scheme.
+export function linkTarget(url) {
+  if (/^https?:\/\//i.test(url)) return { kind: "web", url }; // all that cx.open_url takes
+  const decoded = text => { try { return decodeURIComponent(text); } catch { return null; } }; // `100%` is no escape
+  const id = url.startsWith("#") ? decoded(url.slice(1)) : null;
+  if (id) return { kind: "record", id };
+  const file = decoded(/^evidence\/(.+)$/.exec(url)?.[1] ?? "");
+  return file ? { kind: "evidence", file } : null;
+}
+
+// A one-line row's text: Markdown's marks off, a link by its text. An opened record draws the Markdown.
+export const plainInline = text => String(text)
+  .replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1").replace(/`([^`]+)`/g, "$1")
+  .replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(?<![*\w])\*([^*\s][^*]*)\*(?!\w)/g, "$1");
+
+// `tracker open`'s request: "<slug>/<id>", the id optional.
+export function parseOpen(text) {
+  const [slug, ...rest] = String(text ?? "").split("/");
+  return { slug: slug || null, id: rest.join("/") || null };
+}
+
+// Why a view that follows the focused agent shows no tracker; "" when it shows one. `agent` is what host.agentAt() gave.
+export function followNotice(agent, slug) {
+  if (slug) return "";
+  if (!agent) return "No agent is focused.";
+  return agent.machine ? `The focused agent on ${agent.machine} has no tracker.` : "The focused agent has no tracker.";
+}
+
+// Whether the view waits for what it will show: it has no page, nothing went wrong, and its first look still runs or
+// a tracker is being read.
+export const isLoading = ({ view, error, starting, slug }) => !view && !error && (starting || Boolean(slug));
+
+// The width of a column of ids in a monospace font, in px: room for the longest, within limits so that a short list
+// keeps its shape and a very long id does not take the row. A mono font's advance is about 0.6 of its size: only a
+// whisker over, so the gap after the longest id is the row's gap.
+export function idWidth(ids, size) {
+  const longest = Math.max(0, ...[...ids].map(id => String(id).length));
+  return Math.ceil(Math.min(Math.max(longest, 4), 16) * size * 0.605);
+}
+
+// A record's or a README's text in parts: each `## Heading` a label and its text, whose `### Heading` is a bold line,
+// since a heading's size would be too big beside a label. Text before the first heading has no label. A heading with
+// nothing under it is no part.
+export function bodyParts(body) {
+  const [lead, ...parts] = String(body ?? "").split(/^## +/m);
+  return [{ label: "", text: lead }, ...parts.map(part => {
+    const [label, ...rest] = part.split("\n");
+    return { label: label.trim(), text: rest.join("\n") };
+  })].map(({ label, text }) => ({ label, text: text.replace(/^### +(.+)$/gm, "\n**$1**\n").replace(/\n{3,}/g, "\n\n").trim() }))
+    .filter(part => part.text);
+}
+
+// The width of a column of text in the UI font, in px: room for its longest value. No host measures text for a script:
+// this font's letters average about 0.48 of its size, so 0.55 leaves room for a wide word.
+export function fitWidth(texts, size) {
+  return Math.ceil(Math.max(0, ...[...texts].map(x => String(x ?? "").length)) * size * 0.55);
+}
+
+// How many of a row's columns fit in `room` px, each `gap` before it: they come in the order they leave as the row
+// narrows, last first, so that a column shows only with all those before it. The first always shows.
+export function columnsThatFit(widths, room, gap) {
+  let n = 0, used = 0;
+  for (const w of widths) {
+    used += gap + w;
+    if (n && used > room) break;
+    n++;
+  }
+  return n;
+}
+
+export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+
+// What the live line says: when the data was read, when GitHub was, and the issue fields' state.
+export function liveLine(view, now) {
+  return [`live ${hhmm(now)}`, view.synced ? `PRs from GitHub ${hhmm(new Date(view.synced * 1000))}` : "", view.issues]
+    .filter(Boolean).join(" · ");
+}
+
+const REMOTE_DIR = ".claude/trackers"; // another machine's trackers, from its home: only a host here is told otherwise
+
+// How to start a machine's CLI: what the host was told, else the CLI's own record (`store.record_cli`), as the plugin's
+// path changes with each version. Read each time, so a record that comes later or moves counts at once. Here, with no
+// record, `tracker` on PATH. On another machine PATH holds no plugin, so there it is an error, which the view shows.
+export async function findCli(host, dir, machine) {
+  const told = machine ? null : host.cli?.();
+  if (told?.length) return told;
+  let argv = null;
+  try {
+    argv = JSON.parse(await host.readText(`${machine ? REMOTE_DIR : dir}/.cli.json`, machine))?.argv;
+  } catch {
+    // No hook has run yet, or the host cannot read it.
+  }
+  if (Array.isArray(argv) && argv.length) return argv;
+  if (machine) throw new Error(`No tracker CLI recorded on ${machine}: it needs this plugin version, and a session on a tracker there`);
+  return ["tracker"];
+}
+
+// Whether to ask GitHub while this shows: its data is old, and no try was made this round. `triedAt` counts because a
+// sync that reads nothing (gh missing, offline, no repo) leaves `synced` as it was.
+export const syncDue = (view, triedAt, nowS) => Boolean(view) && !view.archived && nowS - Math.max(view.synced, triedAt) >= view.sync_every;
+
+// What a batch of changed paths under the trackers' folder holds for this view: `tracker`, whether its tracker's files
+// or its watch changed; `sessions`, the session files that changed, whose tracker the view still has to read. null when
+// it cannot tell: no paths (a timer, a host with no folder watch), or a path not plainly under the folder (the folder
+// itself, which means everything; a linked folder).
+export function changesOf(paths, dir, slug) {
+  if (!paths || paths.some(p => !p.startsWith(`${dir}/`))) return null;
+  const sessions = `${dir}/.sessions/`; // <session id>.json; a write's temporary file starts with a dot
+  return {
+    tracker: Boolean(slug) && paths.some(p => p.startsWith(`${dir}/${slug}/`) || p.startsWith(`${dir}/.watch/${slug}/`)),
+    sessions: paths.filter(p => p.startsWith(sessions) && /^[^./][^/]*\.json$/.test(p.slice(sessions.length))),
+  };
+}
+
+// Whether a session file's text puts it on the tracker `slug`.
+export const sessionOn = (text, slug) => {
+  try { return JSON.parse(text)?.tracker === slug; } catch { return false; }
+};

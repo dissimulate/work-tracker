@@ -28,4 +28,4 @@ tracker add DEMO-1 carry "email unique"
 tracker step DEMO-1 "Users table and migration merged" --done "the users table and its migration"
 tracker add DEMO-2 plan "GET /users and GET /users/<id>, behind auth."
 tracker set DEMO-2 status=in-progress "next=Build GET /users"
-tracker synced
+tracker step

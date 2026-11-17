@@ -1,5 +1,5 @@
 """The operating system: this Python and the CLI as processes, whether a process runs, and the system's trash. The
-tracker's own files are model's."""
+tracker's own files are store's and model's."""
 
 from __future__ import annotations
 
@@ -11,34 +11,84 @@ from pathlib import Path
 
 WINDOWS = os.name == "nt"
 PACKAGE = Path(__file__).resolve().parent
-# This Python, as scripts/python.sh says to start it: no module in the cwd replaces a stdlib one; UTF-8 mode
-PYTHON = [sys.executable, "-I", "-X", "utf8"]
+ROOT = PACKAGE.parent.parent  # the plugin: bin/, scripts/, templates/, ui/
+BIN = ROOT / "bin" / "tracker"  # the CLI
+UI_DIR = ROOT / "ui"  # the view: the Herdr mod's files and the window's
+# This Python, started as scripts/python.sh says (the reasons are there), its compiled bytecode kept where this
+# process keeps it
+PYTHON = [sys.executable, "-I", "-X", "utf8",
+          *(["-X", f"pycache_prefix={sys.pycache_prefix}"] if sys.pycache_prefix else [])]
 # The CLI on this Python, as bin/tracker starts it: Windows starts no shell script as a process
-CLI = [*PYTHON, "-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()",
-       str(PACKAGE.parent)]
+CLI_START = "import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()"
+CLI = [*PYTHON, "-c", CLI_START, str(PACKAGE.parent)]
+# What the CLI and `gh` need of the environment. A UI's host can start programs with none (gpui-shell does).
+CLI_ENV = ("TRACKER_HOME", "TRACKER_SYNC", "CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE", "SYSTEMROOT", "PATH",
+           "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "GH_HOST")
+# What makes a process outlive this one
+DETACH = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
+          else {"start_new_session": True})
 
 
-def env_int(names: str | tuple[str, ...], default: int, least: int = 0) -> int:
-    """A whole-number setting from the first of `names` that is set, and at least `least`. A value that is not a
-    whole number gives `default`, with a warning on stderr: a typo in a setting stops no command and no hook."""
-    for name in (names,) if isinstance(names, str) else names:
-        text = os.environ.get(name, "").strip()
-        if not text:
-            continue
-        try:
-            return max(least, int(text))
-        except ValueError:
-            print(f"work-tracker: {name}={text!r} is not a whole number; using {default}", file=sys.stderr)
-            return default
-    return default
+def warn(msg: str) -> None:
+    """A problem that stops nothing, on stderr."""
+    print(f"tracker: {msg}", file=sys.stderr)
+
+
+def die(msg: str, code: int = 2) -> None:
+    warn(msg)
+    sys.exit(code)
+
+
+def mod_file(name: str) -> bool:
+    """Whether a file of `ui/` is one of the Herdr mod's: not the window's entry (app.js) or manifest (gpui-shell.json,
+    which Herdr refuses), a test, or what a host wrote there when it loaded the UI (types, jsconfig.json)."""
+    return name == "mod.json" or (name.endswith((".js", ".svg")) and name != "app.js" and not name.endswith(".test.js"))
+
+
+def mod_files() -> list[Path]:
+    """This copy's files of the Herdr mod."""
+    return sorted(p for p in UI_DIR.iterdir() if mod_file(p.name))
+
+
+def env_int(name: str, default: int, least: int = 0) -> int:
+    """A whole-number setting, at least `least`. A value that is not a whole number gives `default`, with a warning on
+    stderr: a typo in a setting stops no command and no hook."""
+    text = os.environ.get(name, "").strip()
+    if not text:
+        return default
+    try:
+        return max(least, int(text))
+    except ValueError:
+        warn(f"{name}={text!r} is not a whole number; using {default}")
+        return default
 
 
 def spawn(*args: str) -> None:
     """Start `tracker <args>` in the background: it outlives this process and writes to no terminal."""
-    detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
-              else {"start_new_session": True})
     subprocess.Popen([*CLI, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     **detach)
+                     **DETACH)
+
+
+def cli_for_ui() -> list[str]:
+    """How a UI starts the CLI: as CLI, with this environment as the default for what it finds unset. Never a secret:
+    CLI_ENV names none, and `gh` keeps its login in its own config."""
+    env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
+    start = f"import os; os.environ.update({{**{env!r}, **os.environ}}); {CLI_START}"
+    return [*PYTHON, "-c", start, str(PACKAGE.parent)]
+
+
+def open_with_system(path: Path, reveal: bool = False) -> None:
+    """Open a file in the app the system has for it, or with `reveal` show it in its folder. Raises OSError."""
+    if WINDOWS:
+        if reveal:
+            subprocess.Popen(["explorer", f"/select,{path}"])
+        else:
+            os.startfile(path)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.run(["open", *(["-R"] if reveal else []), str(path)], check=True, capture_output=True)
+    else:
+        subprocess.Popen(["xdg-open", str(path.parent if reveal else path)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
 
 
 def to_trash(path: Path) -> None:

@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import re
 
-from .markdown import format_value, headings, link_ident, parse_links, section
-from .model import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, LOG, MERGED_CARRY_FORWARD_MAX, MOVE_RULE, OPEN_DECISIONS_WARN, OWN_VALUE_RULE,
-    OWNER_HINT, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS,
-    RETIRED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
-    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, append_to_section, blocker_link, days_since, kind_names, level, names,
-    norm_id, relabel, resolution, sequence, stage_of, unknown_dep, valid_value, value_form, Record, Tracker)
+from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
+from .system import warn
+from .store import HOME, locked, read_json
+from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
+    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
+    OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
+    RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
+    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
+    valid_value, value_form)
+from .model import (LOG, all_trackers, append_log, append_to_section, archived_trackers, blocker_link, level, names,
+    norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
+from .moves import MOVE_RULE
 
 # ---------------------------------------------------------------- check
 
@@ -31,17 +38,18 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         if KINDS[r.kind].refs:
             check_refs(tr, r, errors, warnings)
         if r.get("closed_at") and not stage_of(r.kind, r.get("status")).closed:
-            warnings.append(f"{r.id}: closed_at, but its status {r.get('status')} is open — `tracker migrate` removes "
-                            f"it")
+            warnings.append(f"{r.id}: closed_at, but its status {r.get('status')} is open — remove the key")
     check_meta(tr, "README.md", "tracker", tr.meta, errors, warnings)
     if tr.meta.get("issue_updates") == "on" and "history" not in tr.raw_state().get("issues", {}):
         warnings.append("README.md: issue_updates is on, but .state.json has no record of what its issues show, so "
                         "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
                         "so far count as written, and each linked ticket out of todo is due once for its status")
     if tr.schema < SCHEMA:
-        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA} — run `tracker migrate`")
+        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate — the "
+                        f"next command tries again, and says why on stderr")
     elif tr.schema > SCHEMA:
-        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the plugin")
+        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
+                      f"plugin")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
     aliases: dict[str, str] = {}
     for t in tr.tickets:
@@ -50,9 +58,9 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             warnings.append(f"{t.id}: {t.stage} but Carry forward has {len(t.carry_forward)} bullets "
                             f"(limit {MERGED_CARRY_FORWARD_MAX}) — keep what a later ticket needs; the detail is in "
                             f"the PR (`tracker drop {t.id} carry \"<text>\"`)")
-        if t.todo and t.get("pr_state") in PR_STAGE:
-            warnings.append(f"{t.id}: todo, but its PR #{t.get('pr')} is {t.get('pr_state')} — `tracker migrate` "
-                            f"sets it in progress; a PR overlays only started work")
+        if t.todo and t.pr_state in PR_STAGE:
+            warnings.append(f"{t.id}: todo, but its PRs {t.pr_refs} are {t.pr_state} — a PR overlays only started "
+                            f"work: `tracker set {t.id} status=in-progress`")
         if t.stage == "in-progress" and idle_days(t) > STALE_TICKET_DAYS:
             warnings.append(f"{t.id}: in-progress, no update for {idle_days(t)} days")
         for a in t.aliases:
@@ -60,7 +68,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             if other and other != t.id:
                 errors.append(f"{t.id}: Issue id {a} also names {other} — an id finds one ticket")
             aliases[norm_id(a)] = t.id
-        if (t.get("branch") or t.get("pr")) and len(tr.repos) > 1 and not t.get("repo"):
+        if (t.get("branch") or t.prs) and len(tr.repos) > 1 and not t.get("repo"):
             errors.append(f"{t.id}: the tracker spans {len(tr.repos)} repos — set the ticket's repo")
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
@@ -101,19 +109,16 @@ def check_refs(tr: Tracker, r: Record, errors: list[str], warnings: list[str]) -
 
 
 def check_meta(tr: Tracker, where: str, kind: str, meta: dict, errors: list[str], warnings: list[str]) -> None:
-    """A file's frontmatter: known keys, a status of its kind's, and each value in its key's form (value_form). An
-    older format's value may be one `migrate` changes."""
-    warnings += [f"{where}: frontmatter key '{k}' is retired — run `tracker migrate`" if k in RETIRED_KEYS[kind]
-                 else f"{where}: unknown frontmatter key '{k}' (keys: {', '.join(KEYS[kind])})"
+    """A file's frontmatter: known keys, a status of its kind's, and each value in its key's form (value_form)."""
+    warnings += [f"{where}: unknown frontmatter key '{k}' (keys: {', '.join(KEYS[kind])})"
                  for k in meta if k not in KEYS[kind]]
     statuses, status = STATUSES[kind], meta.get("status", "")
-    hint = " — run `tracker migrate`" if tr.schema < SCHEMA else ""
     if (kind != "tracker" or "status" in meta) and status not in statuses:
-        stage = " — run `tracker migrate`" if kind == "ticket" and status in STAGES else hint
+        stage = " — it comes from the ticket's PR" if kind == "ticket" and status in STAGES else ""
         errors.append(f"{where}: status '{status}' not one of {'|'.join(statuses)}{stage}")
     for k, v in meta.items():
         if not valid_value(k, v):
-            errors.append(f"{where}: {k} '{v}' is not {FORMS[value_form(k)].describe(k)}{hint}")
+            errors.append(f"{where}: {k} '{v}' is not {FORMS[value_form(k)].describe(k)}")
 
 
 def check_deps(tr: Tracker, t: Record, errors: list[str], warnings: list[str]) -> None:
@@ -154,9 +159,7 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
     errors += [f"README.md: missing ## {h}" for h in README_SECTIONS if h not in heads]
     if all(h in heads for h in README_SECTIONS) and heads[:len(README_SECTIONS)] != README_SECTIONS:
         warnings.append(f"README.md: sections should start {', '.join(README_SECTIONS)}, in that order")
-    old = {new: old for old, new in RENAMED_KEYS["tracker"].items()}  # `migrate` renames it; check_meta says so
-    errors += [f"README.md: missing frontmatter {k}" for k in README_KEYS
-               if k not in tr.meta and old.get(k) not in tr.meta]
+    errors += [f"README.md: missing frontmatter {k}" for k in README_KEYS if k not in tr.meta]
     if "Context" in heads:
         if not tr.context:
             warnings.append("README.md: ## Context lists nothing")
@@ -178,6 +181,8 @@ def check_contract(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
             warnings.append(f"{r.id}: sections out of order (expected {', '.join(kind.sections)})")
         if "Links" in kind.sections:
             check_links(tr, f"{r.id} Links", section(r.body, "Links"), errors)
+        if problems := ("Options" in kind.sections and options_problems(strip_comments(section(r.body, "Options")))):
+            errors.append(f"{r.id} ## Options: {'; '.join(problems)}. {OPTION_RULE}")
 
 
 def idle_days(r: Record) -> int:
@@ -188,7 +193,7 @@ def idle_days(r: Record) -> int:
 
 
 def rules_lines(tr: Tracker | None) -> list[str]:
-    """The tracker's contract, from the constants that `check`, `set` and the viewer use."""
+    """The tracker's contract, from the constants that `check`, `set` and the UI use."""
     def keys(kind: str) -> list[str]:
         return [f"    {k}" + ("" if w == "set" else f" ({w})") + f": {meaning}"
                 for k, (w, meaning) in KEYS[kind].items()]
@@ -207,14 +212,13 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"Files (a key marked {', '.join(owners[:-1])} or {owners[-1]} is written by that, never by `set`):",
         f"  README.md: sections {', '.join('## ' + h for h in README_SECTIONS)} first, in that order; ## Scope holds "
         f"{' and '.join('### ' + h for h in SCOPE_PARTS)}; any sections may follow. An optional "
-        f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it. Under "
-        f"~{README_TOKEN_BUDGET} "
-        f"tokens; rewritten, never appended to. Frontmatter:",
+        f"## {README_INSTRUCTIONS} holds this work's standing rules for the agent: every brief prints it, cut when "
+        f"long. Under ~{README_TOKEN_BUDGET} tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
         "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
         "a note no other write holds. The hooks add the branch's new commits (`"
-        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `pause` the handoff's first words.",
+        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `step --pause` the handoff's first words.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
@@ -228,7 +232,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         + ", ".join(f"{what} {most}" for most, what, _ in TEXT_MAX.values()) + ".",
         f"Ticket status (you set it): {'|'.join(STATUSES['ticket'])}. Set in-progress when its work starts: "
         f"from a branch, that records the branch when the ticket has none (a branch holds any number of tickets). Once "
-        f"in progress, its PR overlays the stage: " + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
+        f"in progress, its PRs overlay the stage, all equal, any open one first: "
+        + ", ".join(f"{k} PR → {v}" for k, v in PR_STAGE.items())
         + f". Stages {', '.join(s for s, x in STAGES.items() if x.closed)} are closed; closing clears `next` and wants "
         "a `summary`.",
         *(f"{kind.capitalize()} status: {'|'.join(STATUSES[kind])}, changed only by `tracker {owner}`."
@@ -251,12 +256,8 @@ def rules_lines(tr: Tracker | None) -> list[str]:
     ]
 
 
-# Schema 1 kept an issue's priority in its issue tracker's words; these become levels, as P0-P4 do. Any other word
-# goes, and the issue is read again.
-PRIORITY_WORDS = {"urgent": 0, "highest": 0, "critical": 0, "blocker": 0, "high": 1, "medium": 2, "normal": 2,
-                  "low": 3, "lowest": 4, "trivial": 4}
-
-
+# Schema 1 kept an issue's priority in its issue tracker's words; these become levels (PRIORITY_WORDS), as P0-P4 do.
+# Any other word goes, and the issue is read again.
 def priority_from_word(word: str) -> int | None:
     word = word.strip().lower()
     if re.fullmatch(r"p\d", word) and int(word[1]) in SCALES["priority"].levels:
@@ -282,19 +283,49 @@ def renamed_keys(r: Record) -> dict:
     return upd
 
 
-def migrate(tr: Tracker, apply: bool) -> list[str]:
-    """What it takes to bring a tracker written for an older version to the current rules; with apply, do it."""
-    out = []
-    reread = []
+def move_notes(d: Record) -> None:
+    """Format 5 keeps only choices in a decision's ## Options (OPTION_RULE): the rest (a dated note, evidence, prose, a
+    bullet with nested lines) moves to ## Notes, in its order. An undated bullet was a choice."""
+    lines = [ln for ln in strip_comments(section(d.body, "Options")).splitlines() if ln.strip()]
+    blocks = []  # each bullet with its nested lines, and each other line on its own
+    for ln in lines:
+        if ln[:1].isspace() and blocks and BULLET.match(blocks[-1][0]):
+            blocks[-1].append(ln)
+        else:
+            blocks.append([f"- {ln[2:]}" if ln.startswith("* ") else ln])
+    choice = [len(b) == 1 and not parse_options(b[0])[1] for b in blocks]
+    keep = [b[0] for b, c in zip(blocks, choice) if c]
+    if keep == lines:
+        return
+    put_section(d, "Options", "\n".join(keep))
+    for b, c in zip(blocks, choice):
+        if not c:
+            append_to_section(d, "Notes", "\n".join(b))
+
+
+def migrate(tr: Tracker) -> None:
+    """Bring a tracker written for an older version to the current rules. Each step looks for what it changes, so a run
+    that stopped part way can run again; the schema goes last. Only here does code read an older format."""
+    state, reread = tr.raw_state(), []
+    before = json.dumps(state, sort_keys=True)
     for t in tr.tickets:
         upd = {}
         status = t.get("status")
-        if status == "in-review" or (status == "merged" and t.get("pr_state") == "merged"):
+        old_state = str(t.meta.get("pr_state") or "")
+        if status == "in-review" or (status == "merged" and old_state == "merged"):
             upd["status"] = "in-progress"  # the PR shows it as in-review or merged
         elif status == "merged":
             upd["status"] = "done"
-        elif status == "todo" and t.get("pr_state") in PR_STAGE:
-            upd["status"] = "in-progress"  # its PR showed it started; a PR now overlays only started work
+        elif status == "todo" and old_state in PR_STAGE:
+            upd["status"] = "in-progress"  # its PR showed it started; a PR overlays only started work
+        if t.meta.keys() & {"pr", "pr_state", "base"}:  # a ticket's one PR: `prs` holds any number
+            upd |= {"pr": None, "pr_state": None, "base": None}
+            number = str(t.meta.get("pr") or "")
+            if number:
+                upd["prs"] = [f"{number}:{old_state}" if old_state else number]
+                facts = state.get("prs", {}).get(pr_key(tr.repo_of(t), number))
+                if facts is not None and old_state in OPEN_PR and t.meta.get("base"):
+                    facts["base"] = str(t.meta["base"])  # a PR's base is a fact of the PR; `sync` reads the rest
         if t.get("next") == "—":
             upd["next"] = ""
         if str(t.get("priority", "")).strip() and level(t, "priority") is None:
@@ -312,67 +343,105 @@ def migrate(tr: Tracker, apply: bool) -> list[str]:
                 continue
             named = next((x for x in t.links if names(x, ident)), None)
             if named:
-                out.append(f"{t.id}: `- {named.label}:` line for external blocker {ident} → `- {BLOCKER}:`")
-                if apply and not relabel(t, named, BLOCKER):
-                    out.append(f"{t.id}: could not relabel the line for {ident}; change its label by hand")
+                relabel(t, named, BLOCKER)  # `check` names a blocker left with no such line
         if "key" in t.meta:
             upd["key"] = None
             key = str(t.get("key") or "")
             if key and key.lower() not in (a.lower() for a in t.aliases):
-                out.append(f"{t.id}: key {key} → a `- {ISSUE}: {key}` line")
-                if apply:
-                    append_to_section(t, "Links", f"- {ISSUE}: {key}")
+                append_to_section(t, "Links", f"- {ISSUE}: {key}")
         if upd:
-            out.append(f"{t.id}: " + ", ".join(f"{k}={'(removed)' if v is None else format_value(v)}"
-                                               for k, v in upd.items()))
-            if apply:
-                t.save(upd)
+            t.save(upd)
     if tr.schema < 3:  # format 3 takes size and due from the issue, and reads an open ticket's issue only once
-        again = [t.id for t in tr.tickets if t.aliases and not t.closed and t.id not in reread]
-        if again:
-            out.append(f".state.json: issue fields to read again for size and due: {', '.join(again)}")
-            reread += again
-    if reread and apply:
-        state = tr.raw_state()
-        for ident in reread:
-            state.get("issues", {}).get("read", {}).pop(ident, None)
+        reread += [t.id for t in tr.tickets if t.aliases and not t.closed and t.id not in reread]
+    for ident in reread:
+        state.get("issues", {}).get("read", {}).pop(ident, None)
+    state.pop("reviews", None)  # the PRs' facts in GitHub's own words
+    if "synced" in state:  # a mark that held only the HEAD
+        state["synced"] = {k: {"head": v, "at": 0} if isinstance(v, str) else v for k, v in state["synced"].items()}
+    if json.dumps(state, sort_keys=True) != before:
         tr.save_state(state)
     for d in tr.decisions:
+        move_notes(d)
         waiting = {t.id for t in tr.waiting_on(d.id)}
         drop = [r for r in d.list("refs") if tr.canonical(r) in waiting]
         if drop:
-            out.append(f"{d.id}: refs drops {', '.join(drop)} (they wait on it; depends_on says so)")
-            if apply:
-                d.save({"refs": [r for r in d.list("refs") if r not in drop]})
+            d.save({"refs": [r for r in d.list("refs") if r not in drop]})
         if "resolved" in d.meta:
-            out.append(f"{d.id}: resolved=(removed) (the date is on the ## Resolution line)")
-            if apply:
-                d.save({"resolved": None})
+            d.save({"resolved": None})
     for r in [tr.readme, *tr.records]:
         upd = renamed_keys(r)
         if upd:
-            out.append(f"{r.path.name}: " + ", ".join(f"{k}={'(removed)' if v is None else format_value(v)}"
-                                                      for k, v in upd.items()))
-            if apply:
-                r.save(upd)
+            r.save(upd)
     for r in tr.records:  # an earlier version stamped it when a ticket started
         if r.get("closed_at") and not stage_of(r.kind, r.get("status")).closed:
-            out.append(f"{r.id}: closed_at=(removed) (its status {r.get('status')} is open)")
-            if apply:
-                r.save({"closed_at": None})
+            r.save({"closed_at": None})
     used = {x.label for x in tr.context} | {x.label for t in tr.tickets for x in t.links}
     extra = sorted(used - set(tr.labels) - {ISSUE, BLOCKER})
     if extra:
-        out.append(f"README.md: labels += {', '.join(extra)} (labels in use that are not defaults)")
-        if apply:
-            own = [x for x in tr.labels if x not in DEFAULT_LABELS]
-            tr.readme.save({"labels": own + extra})
-    if tr.schema < SCHEMA:
-        out.append(f"README.md: schema={SCHEMA} (the tracker format this version writes)")
-        if apply:
-            tr.readme.save({"schema": SCHEMA})
-    for r in [tr.readme, *tr.records]:
-        unknown = [k for k in r.meta if k not in KEYS[r.kind] and k not in RETIRED_KEYS[r.kind]]
-        if unknown:
-            out.append(f"{r.path.name}: unknown keys {', '.join(unknown)} — not changed; remove or rename by hand")
-    return out
+        tr.readme.save({"labels": [x for x in tr.labels if x not in DEFAULT_LABELS] + extra})
+    tr.readme.save({"schema": SCHEMA})
+
+
+BACKUPS = HOME / ".backups"
+# How the migrate command of 0.31.1 and earlier named a backup: <slug>-<date>-<time>.
+OLD_BACKUP = re.compile(r".+-\d{8}-\d{6}")
+
+
+def upgrade(tr: Tracker) -> None:
+    """Back a tracker up, once per format it leaves, and migrate it. A README that cannot be read is left to `check`."""
+    import shutil  # only here: a hook loads this module, and rarely gets this far
+    with locked():
+        tr = Tracker(tr.root)  # another process may have done it while this one waited
+        if tr.schema >= SCHEMA or tr.readme_problems:
+            return
+        backup = BACKUPS / f"{tr.slug}-schema{tr.schema}"
+        if not backup.exists():
+            # Not Finder's files, half-writes, or the evidence/ folder: no migration changes it, and it can be large.
+            top = str(tr.root)
+            shutil.copytree(tr.root, backup, ignore=lambda folder, names: {
+                x for x in names if x == ".DS_Store" or x.endswith(".tmp") or folder == top and x == EVIDENCE_DIR})
+        migrate(tr)
+        append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
+
+
+def prune_backups() -> None:
+    """Remove the backups that the migrate command of 0.31.1 and earlier made: each holds a tracker as it was before
+    that run, which this version's own backup (`<slug>-schema<n>`) replaces, and the evidence/ folder whole. Once per
+    plugin version (`hooks.record_version`)."""
+    import shutil
+    for old in BACKUPS.glob("*"):
+        if OLD_BACKUP.fullmatch(old.name) and old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old, ignore_errors=True)
+
+
+OLD_VIEWER = HOME / ".viewer.json"  # the browser viewer's of 0.31.1 and earlier: its port and pid
+
+
+def stop_old_viewer() -> None:
+    """Stop the browser viewer of 0.31.1 or earlier: it runs on while any session is on a tracker, and writes the older
+    format. A session of that version may start it again, so each run looks. Only a process that answers as that
+    viewer is stopped: the pid of an old file may be another program's now."""
+    import signal
+    import urllib.request
+    info = read_json(OLD_VIEWER)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(info['port'])}/ping", timeout=1) as answer:
+            if answer.read().decode(errors="replace").startswith("work-tracker"):
+                os.kill(int(info["pid"]), signal.SIGTERM)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # nothing answers as the viewer, or it has gone
+    OLD_VIEWER.unlink(missing_ok=True)
+
+
+def upgrade_trackers() -> None:
+    """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
+    tracker that fails stays as it is, says why, and tries again next time. Also stops the old viewer
+    (`stop_old_viewer`)."""
+    if OLD_VIEWER.exists():
+        stop_old_viewer()
+    for tr in (*all_trackers(), *archived_trackers()):
+        if tr.schema < SCHEMA:
+            try:
+                upgrade(tr)
+            except (Exception, SystemExit) as exc:  # one bad tracker stops no command and no hook
+                warn(f"could not migrate {tr.slug} to format {SCHEMA}: {exc}")

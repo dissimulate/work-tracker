@@ -6,7 +6,62 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Added
 
+- `tracker install-window` downloads what the view's own window needs, on macOS, x86-64 Linux and x86-64 Windows, with no change to your PATH. `tracker open --window` opens that window also when Herdr is open.
+- `tracker install-mod` installs the view as a Herdr mod, on macOS, Linux and Windows. Each later plugin version updates the mod you installed, at its first session on a tracker or `tracker open`. When `tracker open` shows the window and Herdr is installed with no mod, it says so.
+- The view's own window has a title bar: drag the header to move the window, and the window's buttons no longer cover the header.
+- A ticket can have several PRs, all equal. `tracker sync` reads those from the ticket's branch and its `PR:` links; the ticket counts as merged only once none is open, and its move is the most urgent of its open PRs'.
+- A session's status comes from the tracker's hooks on any host, and adds "needs you" while any of its agents asks for a permission or an answer. In the view, each Current row's dot is red for that, green while working, yellow while idle, and a grey ring with no session. `tracker watch` reports an agent that has asked for 30 s.
+- The view's colours mean one thing each, on any host and in any part: red needs you, yellow waits on someone else, green is moving, blue can start, grey has nothing to do. Closed tickets are now grey, and a `todo` ticket shows its blocked or stacked colour everywhere. A move of `draft` or `no PR yet` is still yours, but is grey: red is for a move that has stopped to wait for you.
+- A ticket under way with a `PR:` link that `sync` has not read now has the move `PR not synced`, or `PR in <repo>` for a repo `sync` does not read, in place of `no PR yet`.
+- A ticket whose PR merged is now `done`: one status for finished work, set by `sync` or by you. The PR's own state stays `merged`, as in `PR #12 merged` in the log.
+- The view's Refresh (`tracker refresh`): pull PR state now, and have the next session prompt read the issue fields again.
+- In a Herdr layout, the view follows the focused agent: it shows that agent's tracker, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes. An agent on another Herdr machine shows its tracker from that machine.
 - Issue updates: with `tracker set tracker issue_updates=on`, the agent writes a linked ticket's status, its summary once it closes, and each decision settled on it to the ticket's issue with its own tool for the issue tracker, then records it with `tracker issue <id> --written`. `tracker issue` lists what is due, and the agent is asked right after the change, in the brief, and at your next message when a new update is due. Off by default.
+- The view shows a spinner in its centre while it loads, when it opens and when it changes to another tracker or agent, in place of an empty page or a short "No tracker open".
+- `tracker new <ID> --plan -` takes the ticket's Plan when it creates the ticket, so no `tracker put <id> plan -` has to follow.
+- `Code` is a link label in every tracker, for a place in the code: `- Code: [title](url) — why`. `tracker add --help` lists the labels.
+- `tracker watch --only <kinds>` prints only those kinds of change, and `--hold <seconds>` prints the changes that do not need you as one batch (a `!` line still comes at once). The watch also says when an agent ends its turn.
+- `tracker agents` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
+- An open decision in the view lists its options: click one to answer with it, or write your own answer in the box below them.
+- `tracker decide --option "<choice> — <what it costs>"` adds a choice to a decision, and `--recommend "<choice>"` marks the one recommended.
+
+### Changed
+
+- A decision's ## Options holds only its choices, one line each. `tracker decide --note` and `tracker attach` now write to a new ## Notes section. Existing decisions migrate: a dated line, an evidence link, prose or a bullet with nested lines moves from Options to Notes.
+- A tracker in an older format now migrates itself, archived ones too, the first time a command or hook of this version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/` and adds a log line. Restart a session that still runs an older plugin version.
+- The live view is now native: a tab in Herdr, or its own window through `gpui-shell`. `tracker open` shows it. It needs Herdr with the mod installed (`tracker install-mod`) or `gpui-shell` 0.9.0; without them `tracker open` says so, and `tracker index` and `tracker context <id>` still show the same facts.
+- An opened ticket, decision, action or Current row shows in a modal over the page, not inside its row. A press outside it, Escape or Close closes it. An empty section of a record does not show, and an opened ticket has a row for each of its PRs.
+- The view has a new look: its header holds the tracker's status, its name as a dropdown, its owner and its date; actions, decisions and Current items are rounded cards with status pills, and their ids line up. An action's Done and Drop are green and grey pills, and a section's heading is only its title, with no counts.
+- The sequence's columns are Status, Priority, Size, Group, Waits on and Unblocks, and a narrow view leaves them out from the right as they stop fitting: Priority and Size now stay longest.
+- The sequence's filters are `blocked` and each status, and turn on and off together; with none on, all tickets show. Its columns fit their content, and the title takes the rest.
+- Links in a record open only `http` and `https`: a `mailto:` link no longer opens.
+- One hook runs after every tool, in place of four, and starts Python only when the tool needs it. A Bash command whose output, not the command, names `git commit` or `gh pr` no longer starts it.
+- In Herdr, the view runs the `tracker` CLI only when its tracker, or a session on it, changes: another tracker's sessions no longer make it read again. Its own window waits the same way.
+- The `blocked` filter's count is the number of tickets it shows.
+- The watch skill's command is `/work-tracker:watch` (`$work-tracker:watch` in Codex): a bare `/watch` may be another plugin's.
+- Only a ticket's `next` has a length limit (400 characters): every brief prints it whole. A log line (`tracker log`, a `step` message, `--why`), a summary, a Carry forward bullet, an action and an action's note take a text of any length.
+- A session on a tracker starts without waiting for GitHub: the PR state sync runs in the background, and your next message reports what it changed on the session's tickets. The brief no longer has a `Synced PR state` line.
+- A session with no ticket under way gets the state line ("No ticket in progress…") only when there is work since the branch's mark, not on every 5th message.
+- A migration's backup leaves out the tracker's `evidence/` folder, which no migration changes.
+- The watch skill keeps one `tracker watch` running under Claude Code's Monitor, in place of a new run after each batch, and sends the changes that do not need you at most once a minute.
+- `tracker watch` goes on reading the tracker and its agents while a GitHub sync runs.
+- A watch is no longer read-only or one per tracker. The watching session writes to the tracker and can be on one; several sessions can watch one tracker, one watch each; and an agent starts a watch when you, or a skill or instruction of yours, tell it to. The watch skill has no task of its own: give it one, as in `/work-tracker:watch payments tell me when a review comes back`. `tracker watch --stop` ends a session's watch.
+
+### Fixed
+
+- `tracker watch` sees an agent change branch: it read each worktree's branch only once.
+- On Windows, new tickets, decisions, actions and log lines end their lines with LF, as the tracker's other writes do.
+- With the macOS system Python, each hook and command starts about three times faster: Python compiled the plugin's code again at every start. It now keeps the compiled code in `$TRACKER_HOME/.pycache/`, on macOS and Linux.
+- A write to a ticket of another tracker (`tracker step <slug>:<id> ...`, or an id found only in another tracker) now reports what it unblocked and the `check` problems it added in that tracker, not in the session's tracker.
+
+### Removed
+
+- The browser page and its local server, with the `TRACKER_VIEWER_IDLE` and `TRACKER_VIEWER_PORT` settings and `tracker open --no-browser`. Bookmarks to `http://127.0.0.1:7316/` no longer work. A viewer of 0.31.1 or earlier that still runs stops at the first command or hook of this version, as it would write the old format.
+- The sort in the address (`?sort=`): the view starts in dependency order.
+- `tracker migrate`: migration is automatic. The first session on a tracker of this version removes the backups it made (`$TRACKER_HOME/.backups/<slug>-<date>-<time>/`), each a whole copy of a tracker with its evidence; the backups of this version (`<slug>-schema<n>`) stay.
+- The settings `TRACKER_VIEWER_SYNC` and `TRACKER_WATCH_SYNC`: use `TRACKER_SYNC`.
+- `tracker pause "<text>"`: use `tracker step <id> "..." --pause "<text>"`.
+- `tracker synced`: run `tracker step` with no arguments, which now does the same.
 
 ## 0.31.1 - 2026-10-12
 

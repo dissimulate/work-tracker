@@ -1,12 +1,15 @@
 #!/bin/sh
 # Hook entry point: hooks/hooks.json runs `hook.sh <event>` with the hook JSON on stdin. Each event is filtered here
-# with shell built-ins, so Python (about 40 ms) starts only when it can add something. The filters only rule events
-# out; Python decides what matches:
+# in shell, so Python (about 40 ms) starts only when it can add something. The filters only rule events out; Python
+# decides what matches:
 # - a session with no tracker (no `tracker start`, no TRACKER): one file test, then exit. At its start, Python only
 #   on a git branch (git's files are read, git does not run), to look for an open ticket and link it or offer the
 #   link, or while a session that /clear ended hands its tracker over (.cleared.json);
+# - post-tool: one hook after every tool. It runs the tool's handler (post-bash, edit, answered) and `resumed`, each
+#   only when its filter below passes, in one Python;
 # - edit: Python only for a tracker file edited by hand (the project's files: git shows that work, see `lag`);
-# - post-bash: Python only when the command names git and commit or push, or gh and pr;
+# - post-bash: Python only when the command (not its output) names git and commit or push, or gh and pr;
+# - resumed: Python only for a session that waited on the user;
 # - prompt: in any session, Python for the user's /work-tracker:watch, which gives the session the watch or ends it.
 event=$1
 input=$(cat)
@@ -25,8 +28,8 @@ field() {
 field session_id
 case $value in *[!A-Za-z0-9._-]*) sid= ;; *) sid=$value ;; esac
 # Claude's shell commands get their id and PATH through its env file. Other hosts get both as a command prefix in
-# context (`command_context` in Python), else read their own session id (`session_id`) and take bin/tracker's path
-# from the skill.
+# context (`hooks.command_context`), else read their own session id (`session.session_id`) and take bin/tracker's
+# path from the skill.
 if [ "$event" = session-start ] && [ -n "$CLAUDE_ENV_FILE" ] && [ -n "$sid" ]; then
   echo "export TRACKER_SESSION=$sid" >> "$CLAUDE_ENV_FILE"
   bin=$(cd "${0%/*}/../bin" && pwd)
@@ -56,7 +59,7 @@ on_branch() {
 watch=
 if [ "$event" = prompt ]; then
   field prompt
-  case $value in /work-tracker:watch*|/watch*|'$work-tracker:watch'*|'$watch'*) watch=1 ;; esac
+  case $value in /work-tracker:watch*|'$work-tracker:watch'*) watch=1 ;; esac  # not a bare /watch: another plugin's
 fi
 
 if [ -z "$watch" ] && [ -z "$TRACKER" ] && ! { [ -n "$sid" ] && [ -f "$session.json" ]; }; then
@@ -65,22 +68,48 @@ if [ -z "$watch" ] && [ -z "$TRACKER" ] && ! { [ -n "$sid" ] && [ -f "$session.j
   { [ -n "$PLUGIN_ROOT" ] && [ -z "$CLAUDE_ENV_FILE" ]; } || [ -f "$home/.cleared.json" ] || on_branch || exit 0
 fi
 
-case $event in
-  edit)
-    [ -n "$sid" ] && [ -f "$session.json" ] || exit 0
-    field file_path  # a tracker file: Python counts the change as this session's. On Windows, Python decides
-    case $value in "$home"/*|[A-Za-z]:*) ;; *)
-      # apply_patch has no file_path: its paths are in its command, absolute or relative to a cwd in $home.
-      case $input in *"$home"*) ;; *) exit 0 ;; esac
+# Whether the handler for $1 can add something.
+wanted() {
+  case $1 in
+    edit)
+      [ -n "$sid" ] && [ -f "$session.json" ] || return 1
+      field file_path  # a tracker file: Python counts the change as this session's. On Windows, Python decides
+      case $value in "$home"/*|[A-Za-z]:*) ;; *)
+        # apply_patch has no file_path: its paths are in its command, absolute or relative to a cwd in $home.
+        case $input in *"$home"*) ;; *) return 1 ;; esac
+        ;;
+      esac
       ;;
-    esac
-    ;;
-  post-bash)
-    case $input in *git*commit*|*git*push*|*gh*pr*) ;; *) exit 0 ;; esac
-    ;;
-esac
-# Only the hooks' modules load, not the CLI's or the viewer's; Python reuses their compiled bytecode.
+    post-bash)
+      command=${input#*\"tool_input\":}  # the command, not its output
+      command=${command%%\"tool_response\":*}
+      case $command in *git*commit*|*git*push*|*gh*pr*) ;; *) return 1 ;; esac
+      ;;
+    resumed)
+      # After every tool of every tracked session: only a session that waited on the user has anything to write.
+      [ -n "$sid" ] && [ -f "$session.json" ] || return 1
+      case $(cat "$session.json") in *'"status": "waiting"'*) ;; *) return 1 ;; esac
+      ;;
+  esac
+}
+
+if [ "$event" = post-tool ]; then
+  field tool_name
+  case $value in
+    Bash) events=post-bash ;;
+    Edit|Write|MultiEdit|apply_patch) events=edit ;;
+    AskUserQuestion|request_user_input) events=answered ;;
+    *) events= ;;
+  esac
+  { [ -n "$events" ] && wanted "$events"; } || events=
+  ! wanted resumed || events="$events resumed"
+  [ -n "$events" ] || exit 0
+else
+  events=$event
+  wanted "$event" || exit 0
+fi
+# Only the hooks' modules load, not the CLI's.
 . "${0%/*}/python.sh"
-printf '%s' "$input" | "$python" -I -X utf8 -c \
-  'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.hooks import run_hook; run_hook(sys.argv[1])' \
-  "${0%/*}" "$event"
+printf '%s' "$input" | "$python" -I -X utf8 ${pycache:+-X} ${pycache:+"pycache_prefix=$pycache"} -c \
+  'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.hooks import run_hook; run_hook(*sys.argv[1:])' \
+  "${0%/*}" $events

@@ -1,5 +1,5 @@
 """The tracker files as text: the frontmatter (a flat YAML subset), `## ` sections, bullets and link lines. Pure
-functions of a file's text: reading and writing the files is model's."""
+functions of a file's text: reading and writing the files is store's and model's."""
 
 from __future__ import annotations
 

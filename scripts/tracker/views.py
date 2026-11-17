@@ -6,11 +6,13 @@ import datetime as dt
 import time
 from pathlib import Path
 
+from .system import BIN
 from .markdown import section, strip_comments
-from .model import (BIN, FACTS, ISOLATION_RULE, KINDS, LOG_LINE, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SPANS,
-    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, cut, days_since, due_date, link_lines,
-    logged_decision, resolution, sequence, short, show_value, span, stage_of, utc_seconds, whose_move, Dep, Record,
-    Start, Tracker)
+from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, STAGES, STALE_ACTION_DAYS,
+    STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
+from .model import (LOG_LINE, SPANS, cut, due_date, link_lines, logged_decision, resolution, sequence, short, span, Dep,
+    Record, Start, Tracker)
+from .moves import whose_move
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
 from .contract import check
@@ -18,11 +20,8 @@ from .contract import check
 # ---------------------------------------------------------------- views
 
 def pr_label(t: Record) -> str:
-    pr = t.get("pr")
-    if not pr:
-        return "—"
-    state = t.get("pr_state")
-    return f"#{pr}" + (f" {state}" if state and state != "merged" else "")
+    return ", ".join(f"#{n}" + (f" {state}" if state and state != "merged" else "")
+                     for n, state in t.prs.items()) or "—"
 
 
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,
@@ -99,7 +98,7 @@ def stage_counts(tr: Tracker) -> dict[str, int]:
 
 
 def gate(tr: Tracker, t: Record) -> str:
-    """`[waits on T-5, D-10] `, `[stacks on T-4] ` (it waits only on work under way) or `[ready] ` (Tracker.gate)."""
+    """`[waits on T-5, D-10] `, `[stacks on T-4] ` or `[ready] ` (`Gate`); "" for none."""
     g = tr.gate(t)
     return f"[{g.text()}] " if g.state else ""
 
@@ -116,7 +115,7 @@ def start_text(tr: Tracker, s: Start) -> str:
         b = s.base
         where = f"stack on {b.get('branch')}" if b.get("branch") else f"stack on {b.id}'s work (no branch recorded)"
         move = whose_move(tr, b)
-        facts = [f"{b.id} {b.stage}" + (f", #{b.get('pr')}" if b.get("pr") else ""), *([move.text()] if move else [])]
+        facts = [f"{b.id} {b.stage}" + (f", {b.pr_refs}" if b.prs else ""), *([move.text()] if move else [])]
         return f"{where} ({'; '.join(facts)})"
     if s.apart:
         on = " and ".join(f"{b.id} ({b.get('branch') or 'no branch'})" for b in s.apart)
@@ -143,7 +142,7 @@ def order_lines(tr: Tracker) -> list[str]:
 
 
 def dep_facts(tr: Tracker, rec: Record) -> list[tuple[str, list[Dep] | str]]:
-    """What a record waits on and what waits on it, as the text views (dep_lines) and the viewer both show it: a
+    """What a record waits on and what waits on it, as the text views (dep_lines) and a UI both show it: a
     ticket's dependencies and where it can start stacked, the tickets that wait on the record, and the records it
     touches (refs). Each as (label, the records it names, or a text)."""
     out: list[tuple[str, list[Dep] | str]] = []
@@ -210,8 +209,7 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
 
 
 def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, its TEXT_FACTS (branch, repo, priority, size, due day), next action or summary,
-    move, handoff, dependencies and links."""
+    """A ticket's own facts: its line, its TEXT_FACTS, next action or summary, move, handoff, dependencies and links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
@@ -234,11 +232,12 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
 
 def carry_lines(tr: Tracker, tickets: list[Record], deep: bool = False, limit: int = 0) -> list[str]:
     """What the tickets build on, each fact once: their direct dependencies' Carry forward, then the rest of the
-    chain's. `limit` (a brief) caps the direct bullets at that many characters and names the rest of the chain only."""
+    chain's. `limit` (a brief) caps the direct bullets at that many characters, a single longer one too, and names the
+    rest of the chain only."""
     direct = list({d.ident: d.rec for t in tickets for d in tr.deps(t) if d.kind == "ticket"}.values())
     which = tickets[0].id if len(tickets) == 1 else "<id>"
     out = []
-    cf = [(t.id, b) for t in direct for b in t.carry_forward]
+    cf = [(t.id, cut(b, limit)) for t in direct for b in t.carry_forward]
     shown, size = [], 0
     for i, b in cf:
         size += len(i) + len(b) + 4
@@ -305,9 +304,8 @@ def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log:
 
 
 def protocol(slug: str) -> str:
-    """The protocol each session-start brief carries: each event and the command that records it. The skill holds
-    the rest."""
-    most = {k: v[0] for k, v in TEXT_MAX.items()}
+    """The protocol the brief carries when a session starts on a tracker or links one (`tracker start`): each event
+    and the command that records it. The skill holds the rest."""
     return "\n".join([
         f"Tracker protocol (CLI `tracker`; fallback `{BIN.as_posix()} --tracker {slug} <command>`):",
         f"- {ISOLATION_RULE}",
@@ -319,15 +317,13 @@ def protocol(slug: str) -> str:
         "`set <id> status=in-progress`",
         "- the hooks log each commit on the branch of a ticket under way. A step ends or `next` changes: "
         f"`step <id> --next \"...\"`, with {STEP_MESSAGE}, and `--carry \"...\"` for each fact a later ticket "
-        "needs. `next` is your own next action: a `move:` "
-        "line shows what the PR waits on. "
-        f"Limits in characters: the message {most['log']}, `next` {most['next']}, `--done` {most['summary']}, each "
-        f"`--carry` {most['carry']}; the detail goes in the PR",
+        f"needs. `next` is your own next action, in at most {TEXT_MAX['next'][0]} characters: a `move:` "
+        "line shows what the PR waits on",
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
-        "- as they happen: a direction choice `decide`; an order or blocker `wait`; a result file "
-        "`attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a sign-off): ask "
-        "them, then `act \"<what, with whom>\" --refs <ids>`",
+        "- as they happen: a direction choice `decide`, each choice an `--option`; an order or blocker `wait`; a "
+        "result file `attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a "
+        "sign-off): ask them, then `act \"<what, with whom>\" --refs <ids>`",
         "- a subagent writes no tracker (a hook tells it): put what it needs in its prompt (`context <id> --brief`), "
         "and record what it reports",
         "- `[work-tracker]` hook lines are the tracker's requests: act on each in the same turn. A write prints the "
@@ -344,9 +340,8 @@ PICK_ONE = ("More than one ticket is under way here. When this session's work is
             "without an id then use it.")
 BRANCH_RULE = ("Change git branches only when the user asks. When the user asks for a branch for a ticket, run "
                "`tracker context <id>` first, start the branch from the one its `start:` line names (else the "
-               "default branch), and name it for the work, led by the ticket's Issue id when it has one "
-               "(`feat/<ISSUE>-<slug>`); `tracker set <id> status=in-progress` then records it on the ticket, which "
-               "ties this session to it.")
+               "default branch), and name it for the work, led by the ticket's Issue id when it has one; "
+               "`tracker set <id> status=in-progress` then records it on the ticket, which ties this session to it.")
 
 
 # A brief goes into every session's context: each fact once, and small. `tracker context <id>` has the rest.
@@ -369,7 +364,7 @@ def duration(seconds: float) -> str:
 
 def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
     """A line per span (SPANS) that some ticket has: the median, the fastest ticket, and the median of the spans that
-    ended in the last 7 days."""
+    ended within SPAN_RECENT_S."""
     from statistics import median  # here: the hooks never show a span
     now = time.time() if now is None else now
     lines = []
@@ -382,7 +377,7 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
                  f"{len(spans)}", f"fastest {duration(fastest[1])} ({fastest[0].id})"]
         recent = [x for t, x in spans if now - (utc_seconds(t.get(end)) or 0) <= SPAN_RECENT_S]
         if recent:
-            parts.append(f"last 7 days: median {duration(median(recent))} over {len(recent)}")
+            parts.append(f"last {SPAN_RECENT_S // 86400} days: median {duration(median(recent))} over {len(recent)}")
         lines.append(" · ".join(parts))
     return lines
 
@@ -395,6 +390,12 @@ ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time wi
              "field the issue tracker lacks; pass it empty when the issue's value means none. Never guess a value.")
 
 
+def shown_ids(due: list[Record]) -> str:
+    """`T-1, T-2 +3`: the first ISSUE_SHOWN ids, and how many more."""
+    more = len(due) - ISSUE_SHOWN
+    return ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{more}" if more > 0 else "")
+
+
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
     """The request for the issue fields to read (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
     session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The model reads
@@ -402,7 +403,7 @@ def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
     due = sorted(tr.issues_to_read(), key=lambda t: t not in first)
     if not due:
         return ""
-    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    ids = shown_ids(due)
     return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
             "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
             "them: never guess a value.")
@@ -424,7 +425,7 @@ def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
     due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
     if not due:
         return ""
-    ids = ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{len(due) - ISSUE_SHOWN}" if len(due) > ISSUE_SHOWN else "")
+    ids = shown_ids(due)
     return (f"[work-tracker] Issue updates to write for {len(due)} ticket(s): {ids}. With a tool for their issue "
             "tracker, run `tracker issue` for what to write, write it, then `tracker issue <id> --written`; with "
             f"none, leave them and {ISSUE_UPDATES_OFF}.")
@@ -460,8 +461,8 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
                       else "Tracker check, on this work:", *(f"  ⚠ {short(w, BRIEF_LINE_CHARS)}" for w in mine)])
 
 
-def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str = "", compact: bool = False,
-          full: bool = False, with_protocol: bool = True) -> str:
+def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full: bool = False,
+          with_protocol: bool = True) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
@@ -518,8 +519,6 @@ def brief(m: Match, cwd: str | Path, synced: list[str] | None = None, note: str 
             parts.append(f"No open ticket on {m.branch}. To start one here: `tracker set <id> status=in-progress`"
                          + (f" (can start: {', '.join(ready)})" if ready else "") + ".")
         parts.append("\n".join(index_lines(tr, OPEN_STAGES, titles=compact, width=BRIEF_LINE_CHARS, urls=False)))
-    if synced:
-        parts.append("Synced PR state: " + "; ".join(synced))
     for ask in (issue_request(tr, focus), issue_update_request(tr, focus)):
         if ask:
             parts.append(ask)

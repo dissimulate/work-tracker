@@ -3,3 +3,8 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 evals/results/
+
+# Written by gpui-shell and herdr-app when they load the UI
+ui/**/gpui-kit.d.ts
+ui/**/herdr.d.ts
+ui/**/jsconfig.json

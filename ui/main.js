@@ -1,0 +1,40 @@
+// The tracker as a Herdr mod. All of Herdr that the UI uses is here.
+import { svg } from "gpui-kit";
+import { agents, exec, focused, home, nextCommand, props, readTextFile, settings, terminals, theme, watchFolder } from "herdr";
+import { trackerView } from "./view.js";
+
+export default trackerView({
+  dir: () => props()?.trackers ?? `${home()}/.claude/trackers`,
+  readText: (path, machine) => readTextFile(path, { on: machine ?? null }),
+  run: (command, args, machine) => exec(command, args, { on: machine ?? null }),
+  // The next batch of changed paths in the folder, or null at `atLeastMs`. A folder that cannot be watched yet, or at
+  // all, rejects: wait, and look again.
+  changed: async (cx, dir, _slug, atLeastMs) => {
+    const atLeast = cx.sleep(atLeastMs);
+    return (await Promise.race([watchFolder(dir).catch(() => atLeast), atLeast])) ?? null;
+  },
+  colors: () => theme(),
+  font: () => settings()?.font_family || "JetBrains Mono",
+  spinner: color => svg("mods/workspace-chrome/spinner.svg").size(16).flex_none().text_color(color).spin(900), // the agents' ring
+  sized: (el, set) => el
+    .when(Boolean(props()?.layoutFramed), el => el.bg("#00000000"))
+    .on_size_change((size, cx) => set(size.width, cx)),
+  start: () => ({ slug: props()?.slug ?? null, id: props()?.open ?? null }),
+  // `tracker open` on a tab that runs: `work-tracker.open:<slug>/<id>`.
+  nextOpen: async () => {
+    for (;;) {
+      const command = await nextCommand();
+      if (command.startsWith("open:")) return command.slice(5);
+    }
+  },
+  framed: () => !props()?.slug && !props()?.layoutFramed, // a pane or framed layout block already has a frame
+  agentAt: () => {
+    const focus = focused();
+    const address = focus?.shown ?? focus?.terminal ?? focus?.agent;
+    if (!address) return undefined;
+    const terminal = terminals().find(x => x.address === address && x.state === "live");
+    if (!terminal || !(terminal.program?.agent || terminal.status || agents().some(x => x.address === address))) return null;
+    return { address, machine: address.includes("/") ? address.split("/")[0] : null, // another machine's: "macbook/t1"
+      pid: terminal.foreground?.pid ?? null, cwd: terminal.foreground?.cwd ?? terminal.cwd ?? null };
+  },
+});

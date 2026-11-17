@@ -1,0 +1,202 @@
+"""Where the UI in `ui/` runs: a Herdr mod when Herdr is open with the mod installed, else its own window through
+gpui-shell; installing each, and keeping an installed mod at this plugin version. The UI reads and changes a tracker
+only through this CLI (`viewmodel`), so nothing here serves it."""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+from .system import DETACH, UI_DIR, WINDOWS, cli_for_ui, die, mod_file, mod_files, warn
+from .store import HOME, atomic_file
+
+MOD_NAME = "work-tracker"
+# The version the window is checked on
+GPUI_SHELL_VERSION = json.loads((UI_DIR / "gpui-shell.json").read_text())["shell-version"]
+RELEASES = "https://github.com/longbridge/gpui-kit/releases"
+SHELL_ARCHIVES = {  # (platform.system(), platform.machine().lower()): GPUI_SHELL_VERSION's archive, and its SHA-256
+    ("Darwin", "arm64"): ("gpui-shell-aarch64-apple-darwin.tar.gz",
+                          "c454743247877d56a86ba9745a11e28af4d2ca6098d175b45976bfca76a3a79e"),
+    ("Darwin", "x86_64"): ("gpui-shell-x86_64-apple-darwin.tar.gz",
+                           "c0e91893a73d15d8772d720c7b5040c838818194a00e07ca81af040688c17a40"),
+    ("Linux", "x86_64"): ("gpui-shell-x86_64-unknown-linux-gnu.tar.gz",
+                          "65aec2b478f07eb180c996ed870d3c42b5a030fd3159e9f43dd481b1b929b79d"),
+    ("Windows", "amd64"): ("gpui-shell-x86_64-pc-windows-msvc.zip",
+                           "e6defad5d60cad9055cf34b9c5fe25c8cf630a486606a6268f2c29f0863dc389"),
+}
+DOWNLOAD_TIMEOUT_S = 60
+WINDOW_START_S = 2  # gpui-shell refuses an app before it runs it: this long with no exit, the window is up
+NO_HOST = ("the tracker's UI needs Herdr (https://herdr.dev) open with its mod installed (`tracker install-mod`), "
+           "or its own window: run `tracker install-window` once. Without them, `tracker index` and "
+           "`tracker context <id>` show the same facts as text.")
+# After `tracker open` showed the window: Herdr's own guide says to tell the user what a mod runs before it is added.
+MOD_OFFER = ("Herdr is installed, with no work-tracker mod: `tracker install-mod` shows the view in a Herdr tab. The "
+             "mod runs the `tracker` CLI and reads the trackers' folder; each later plugin version updates it.")
+
+
+def herdr_home() -> Path:
+    return Path(os.environ.get("HERDR_APP_HOME") or Path.home() / ".config" / "herdr-app")
+
+
+def mod_dir() -> Path:
+    return herdr_home() / "mods" / MOD_NAME
+
+
+def put_mod(target: Path) -> None:
+    """Make `target` this version's mod: write each file that differs, and remove each file of the mod that this
+    version no longer has. Herdr reloads a mod as its files change. A link, or a folder, is the user's own: it stays."""
+    shipped = {p.name: p for p in mod_files()}
+    target.mkdir(parents=True, exist_ok=True)
+    for name, source in shipped.items():
+        dest, content = target / name, source.read_bytes()
+        if dest.is_symlink() or dest.is_dir() or (dest.is_file() and dest.read_bytes() == content):
+            continue
+        with atomic_file(dest) as f:
+            f.write(content)
+    for old in target.iterdir():
+        if mod_file(old.name) and old.name not in shipped and old.is_file() and not old.is_symlink():
+            old.unlink()
+
+
+def install_mod() -> Path:
+    """Install the UI as a Herdr mod, or bring the mod to this version: its folder."""
+    home, target = herdr_home(), mod_dir()
+    if not home.is_dir():
+        die(f"no Herdr in {home}: install Herdr (https://herdr.dev) and open it once, or set HERDR_APP_HOME")
+    if target.is_symlink():
+        die(f"{target} is a link, not an installed mod: remove it, then run `tracker install-mod` again")
+    try:
+        put_mod(target)
+    except OSError as e:
+        die(f"could not install the mod in {target}: {e}")
+    return target
+
+
+def update_mod() -> None:
+    """Bring the mod the user installed to this version: at `tracker open`, and in the hooks once per plugin version.
+    Never a first install: that adds a program to Herdr, which is the user's to decide."""
+    target = mod_dir()
+    if target.is_symlink() or not target.is_dir():
+        return
+    try:
+        put_mod(target)
+    except OSError as exc:  # stops no hook and no `open`
+        warn(f"could not update the Herdr mod in {target}: {exc}")
+
+
+def herdr(*args: str) -> dict | None:
+    """`herdr-app <args>`'s JSON answer; None when Herdr is not installed, its window is not open, or it refuses."""
+    app = shutil.which("herdr-app")
+    if not app:
+        return None
+    try:
+        done = subprocess.run([app, *args], capture_output=True, text=True, timeout=10)
+        answer = json.loads(done.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    return answer if done.returncode == 0 and isinstance(answer, dict) and "error" not in answer else None
+
+
+def open_in_herdr(slug: str, ident: str = "") -> bool:
+    """Show the tracker in its tab: the one it has, or a new one. False when Herdr cannot, or has no mod to show it."""
+    window = herdr("ls") if mod_dir().is_dir() else None
+    if window is None:
+        return False
+    name = f"tracker: {slug}"
+    for space in window.get("spaces", []):
+        for tab in space.get("tabs", []):
+            if tab.get("name") == name and herdr("do", "tab.select", json.dumps({"id": tab["id"]})) is not None:
+                if ident:  # the tab runs: the mod's nextCommand() takes it
+                    herdr("do", f"{MOD_NAME}.open:{slug}/{ident}")
+                return True
+    props = {"slug": slug, **({"open": ident} if ident else {}),
+             **({"trackers": str(HOME)} if "TRACKER_HOME" in os.environ else {})}  # the mod's own home is the default
+    return herdr("do", "tab.new", json.dumps({"name": name, "mod": MOD_NAME, "props": props})) is not None
+
+
+def own_shell() -> Path:
+    """Where `tracker install-window` puts gpui-shell: by version, as the UI needs the version it is checked on."""
+    return HOME / ".gpui-shell" / GPUI_SHELL_VERSION / ("gpui-shell.exe" if WINDOWS else "gpui-shell")
+
+
+# The modules only the download and the window need load in the functions that use them: every command imports this
+# module, and they slow its start.
+def fetch(url: str) -> bytes:
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as answer:
+        return answer.read()
+
+
+def unpack(archive: bytes, name: str, member: str) -> bytes:
+    """One file of a release's archive: only the binary leaves it, so no path in the archive can write elsewhere."""
+    import tarfile
+    import zipfile
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(archive)) as files:
+            return files.read(member)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as files:
+        return files.extractfile(member).read()
+
+
+def install_window() -> Path:
+    """Install gpui-shell for this system, unless it is there: the path of the binary."""
+    import http.client
+    import platform
+    shell = own_shell()
+    if shell.is_file():
+        return shell
+    system, machine = platform.system(), platform.machine().lower()
+    if (system, machine) not in SHELL_ARCHIVES:
+        die(f"gpui-shell {GPUI_SHELL_VERSION} has no build for {system} {machine}. Use Herdr, or the text views: "
+            "`tracker index` and `tracker context <id>`.")
+    name, digest = SHELL_ARCHIVES[system, machine]
+    try:
+        archive = fetch(f"{RELEASES}/download/v{GPUI_SHELL_VERSION}/{name}")
+    except (OSError, http.client.HTTPException) as e:
+        die(f"could not download {name}: {e}. Try again, or install gpui-shell {GPUI_SHELL_VERSION} from {RELEASES} "
+            "on your PATH.")
+    if hashlib.sha256(archive).hexdigest() != digest:
+        die(f"{name} is not the file this plugin version expects, so it is not installed.")
+    binary = unpack(archive, name, f"{name.split('.')[0]}/{shell.name}")
+    shell.parent.mkdir(parents=True, exist_ok=True)
+    part = shell.with_name(shell.name + ".part")  # an interrupted install leaves no binary that seems whole
+    part.write_bytes(binary)
+    part.chmod(0o755)
+    part.replace(shell)
+    return shell
+
+
+def open_in_window(slug: str, ident: str = "") -> bool:
+    """Open the UI's own window, which outlives this command. False when gpui-shell is not installed. When gpui-shell
+    refuses at once (a version it cannot run, a bad manifest), says why: the window itself reports nothing."""
+    import tempfile
+    own = own_shell()
+    shell = str(own) if own.is_file() else shutil.which("gpui-shell")
+    if not shell:
+        return False
+    env = {**os.environ, "TRACKER_OPEN": f"{slug}/{ident}", "TRACKER_CLI": json.dumps(cli_for_ui())}
+    with tempfile.TemporaryFile() as errors:  # a file: a pipe would break the window's stderr once this command ends
+        started = subprocess.Popen([shell, "run", "--dir", str(UI_DIR)], env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=errors, **DETACH)
+        try:
+            code = started.wait(WINDOW_START_S)
+        except subprocess.TimeoutExpired:
+            return True
+        if code:
+            errors.seek(0)
+            why = errors.read().decode(errors="replace").strip()
+            die(f"gpui-shell could not open the view (exit {code}){f': {why}' if why else ''}")
+    return True
+
+
+def open_ui(slug: str, ident: str = "", window: bool = False) -> str:
+    """Show a tracker, and a record of it when `ident` names one: which host shows it, or "" when none can. `window`:
+    its own window, also when Herdr is open."""
+    if not window and open_in_herdr(slug, ident):
+        return "Herdr"
+    return "gpui-shell" if open_in_window(slug, ident) else ""

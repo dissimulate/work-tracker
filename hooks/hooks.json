@@ -34,33 +34,59 @@
         ]
       }
     ],
-    "PostToolUse": [
+    "PermissionRequest": [
       {
-        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" post-bash",
-            "timeout": 15
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" waiting",
+            "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Edit|Write|MultiEdit|apply_patch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" edit",
-            "timeout": 10
-          }
-        ]
-      },
+      }
+    ],
+    "PreToolUse": [
       {
         "matcher": "AskUserQuestion|request_user_input",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" answered",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" waiting",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" post-tool",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" resumed",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" resumed",
             "timeout": 5
           }
         ]
@@ -73,6 +99,17 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" stop",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\" stop-failure",
+            "timeout": 5
           }
         ]
       }

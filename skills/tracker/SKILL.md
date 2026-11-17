@@ -1,12 +1,12 @@
 ---
 name: tracker
-description: Work tracker - the local plan and progress record for a piece of work (tickets, decisions, log). Use when the user says to start or work on a tracker or epic by name, when a `[work-tracker]` block is in context, before starting, after finishing or before pausing work on a tracked ticket, when a decision is made or opened, when the user has a task only they should do, or when the user asks to create, view, migrate or update a tracker.
+description: Work tracker - the local plan and progress record for a piece of work (tickets, decisions, log). Use when the user says to start or work on a tracker or epic by name, when a `[work-tracker]` block is in context, before starting, after finishing or before pausing work on a tracked ticket, when a decision is made or opened, when the user has a task only they should do, or when the user asks to create, view, import or update a tracker.
 argument-hint: "[tracker command, e.g. index --active]"
 ---
 
 # Work tracker
 
-A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the page the user watches (`tracker open`). It lives in `$TRACKER_HOME/<slug>/` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
+A tracker is the single record of a piece of work's plan and state: the **hand-off** to the next session, which starts with no memory of this one, and the view the user watches (`tracker open`). It lives in `$TRACKER_HOME/<slug>/` (default `~/.claude/trackers/<slug>/`), outside every repo, so every worktree and session reads one copy. It is **isolated**: the isolation rule, first in the brief's protocol and in `tracker rules`, governs every text you write outside it.
 
 The CLI is `tracker`; `tracker <command> --help` gives each command's syntax. If this skill is invoked with arguments, run `tracker $ARGUMENTS` and report the result; with none, run `tracker start`.
 
@@ -23,8 +23,7 @@ A tracker holds `README.md` (the work: Context, Goal, Scope, optional Instructio
 1. **Which work.** `tracker start <name words>` ties the tracker the user names to this session (its hooks and commands then use it) and prints the brief; `tracker start` alone takes the tracker with an open ticket on this branch. When it lists options (exit 3), ask the user which one. `--tracker <slug>` works for one command. At session start, a `[work-tracker]` line says when the session linked by itself, or asks you to offer the link: link only on the user's yes. When the user says this session is not that work, or answers "Not now", run `tracker start --decline` (no link or offer on this branch for a day).
 2. **Which tickets.** The branch names them: every ticket whose `branch` it is; else a `tracker use` choice for this worktree (a shared branch such as `main`); else an id in the branch name; at session start, else the branch's PR. `tracker here` prints the brief again. When the match is wrong, `tracker use <id>` puts the ticket on this branch. When the branch holds several tickets and this session's work is one of them, `tracker start <slug> --on <id>` puts this session on it alone (the other sessions keep theirs). Make or switch branches only when the user asks; name a new branch for the work, led by the ticket's Issue id when it has one.
 3. **Another ticket or decision.** `tracker context <id>` before you touch it. Ids ignore case and leading zeros; a PR (`#123`), a branch or `<tracker>:<id>` also work. Its dependencies' Carry forward is the contract you build on (`--deep` for the whole chain); its settled decisions hold. When a README Context document governs a choice you are making, open it and work from it. `tracker show <ids> --section <name>` prints records' own text, whole or by section (`show D-01 D-02 --section resolution`): read records through it or `context`, not with `cat` or `sed`.
-4. **The whole picture**: `tracker index` (`--active`; under its headline, the wait and cycle time lines), `tracker decisions` (the open ones; `--all`), `tracker actions` (the user's open tasks; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker), `tracker history` (the log's last lines; `--ref <ids>`, `--since <date>`). `tracker open [id]` opens the live page for the user. Read a file only when one of these points you to it.
-5. **Changes by others.** A `Changed since your brief` line on a user message reports another session's or a PR sync's change to your tickets' dependencies or decisions: act on it.
+4. **The whole picture**: `tracker index` (`--active`), `tracker decisions` (the open ones; `--all`), `tracker actions` (the user's open tasks; `--all`), `tracker seq`, `tracker ready` (what can start now: from the default branch, or stacked on a named branch of work under way; answer "what next" from it), `tracker find <text>` (`--all` for every tracker), `tracker history` (the log's last lines; `--ref <ids>`, `--since <date>`). `tracker open [id]` opens the live view for the user. Read a file only when one of these points you to it.
 
 ## Write
 
@@ -34,11 +33,11 @@ Record each fact at the moment it forms, in its home:
 |---|---|
 | you start a ticket's work | `tracker context <id>` (a `start:` line names the branch to start from), then `tracker set <id> status=in-progress` (records the branch, and says when it does not contain that base) |
 | a step ends, or only the next action changes | `tracker step <id> --next "<one concrete action>"`, with `--carry "<fact>"` for each fact a later ticket must know (a contract, a shared module, a changed rule, a trap). Add a message (`step <id> "<text>" --next ...`) only for what the commit subjects do not say: a result, a measurement, why. Log no push, merge, review round or test run: the PR, its checks and `sync` hold those |
-| a ticket ends | `tracker step <id> --done "<what it delivered>"`; `drop` Carry forward to ≤ 5 bullets. Dropped: `tracker set <id> status=dropped summary="<why>"` |
+| a ticket ends | `tracker step <id> --done "<what it delivered>"`; `drop` the Carry forward bullets no later ticket needs. Dropped: `tracker set <id> status=dropped summary="<why>"` |
 | you stop with the work unfinished: a pause, a compaction, the session's end | `tracker step <id> "..." --pause "<what is done, what is half-done and uncommitted, the next step>"` |
 | the agreed plan changes | `tracker add <id> plan "<new>" --replace "<old>" --why "<why>"`, or the whole Plan with `tracker put <id> plan - --why "<why>"` and a heredoc |
 | a section changes as a whole (Carry forward kept short, Links sorted), or the README needs a section of its own (`put tracker "Why this order" -` makes it) | `tracker put <id> <section> -` with the new text in a heredoc (`<<'EOF'` … `EOF`) |
-| you cite a document or a PR | `tracker add <id> link "Label: [title](url) — why"`; README Context: `tracker add tracker context "..."` |
+| you cite a document, a PR or a place in the code | `tracker add <id> link "<Label>: [title](url) — why"`, with a label of Spec, Design, Doc, Issue, PR, Commit, Code, Blocker, Evidence, Related, or one of the tracker's own; README Context: `tracker add tracker context "..."`. A `PR:` link to a PR in the ticket's repo also makes `sync` follow that PR, with those from the ticket's branch |
 | a run or a measurement supports a ticket or decision | `tracker attach <file> --ref <ids> --note "<what it shows>"`; more text for a file it keeps: `tracker attach <name> --append -` with a heredoc |
 | a direction choice is raised or settled | `tracker decide` (below) |
 | the user gives a standing rule for this work (how to handle a kind of ticket, an action to add when something happens) | `tracker put tracker instructions -` with the whole section in a heredoc, or one line `tracker add tracker instructions "..."`; follow the section the brief prints |
@@ -54,8 +53,8 @@ Record each fact at the moment it forms, in its home:
 - **The id** of `step` and `set` can be left out when the session has one ticket (its `--on` choice, or the one ticket under way on the branch): `tracker step "<what and why>" --next "..."`.
 - **Carry forward** holds only what a *later* ticket needs; this ticket's build detail goes in the PR and commits. `tracker drop <id> carry "<text>"` removes a bullet that no longer holds.
 - **Decisions** are *direction* choices only (`tracker rules` gives the bar); a choice inside one ticket's build goes in its Plan or `next`. Record each one when it is raised or settled, in chat, in an answered question or in review:
-  - raised: `tracker decide "<title>" --refs <ids> --question "<what and why it matters>" [--owner <who>]`; it stops tickets: `--blocks <ids>`
-  - new option or fact: `tracker decide D-<n> --note "..."`
+  - raised: `tracker decide "<title>" --refs <ids> --question "<what and why it matters>" --option "<choice> — <what it costs>" --option "..." --recommend "<choice>" [--owner <who>]`; it stops tickets: `--blocks <ids>`. Each `--option` is one choice the user can pick as the answer
+  - new choice: `tracker decide D-<n> --option "..."` (`--recommend "<choice>"` marks the one you recommend); new fact or proposal: `tracker decide D-<n> --note "..."`
   - settled: `tracker decide D-<n> --resolve "<answer>" --by <who>`; settled on the spot: `tracker decide "<title>" --resolve "..." --by <who>`
 - **Actions** are few and only the user's: never your own next step (`next`), a wait the PR shows (a review, checks) or a choice (a decision). Before you add one, check the open ones in the brief or `tracker actions`:
   - added: `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day; it stops tickets: `--blocks <ids>`
@@ -65,8 +64,7 @@ Record each fact at the moment it forms, in its home:
 
 Completion: each ticket under way has a `next` true as of now (a `[work-tracker]` line says when commits pass it), every fact above is in its home, and each `check` error a write printed is fixed.
 
-## New tracker, migration, import
+## New tracker, import
 
-- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill the README with `tracker put tracker <section> -`: Context first (every document linked from the parent issue or brief, as link lines), then Goal and Scope. Add tickets with `tracker new <ID> --title "..." [--group <label>] [--depends <ids>] [--priority <0-4>] [--size <1-5>] [--due <YYYY-MM-DD>]`; a group is only a label.
-- **Older format**: when `tracker check` says so, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up first).
+- **New**: `tracker init <slug> --title "..." --owner <name> [--repo owner/name[,owner/other]]` (`--repo` enables GitHub sync). Fill the README with `tracker put tracker <section> -`: Context first (every document linked from the parent issue or brief, as link lines), then Goal and Scope. Add tickets with `tracker new <ID> --title "..."` (`--help` gives the rest); a group is only a label, not an order, and `--plan -` takes the ticket's Plan from a heredoc, so no `put` follows.
 - **A plan from elsewhere**: plan text → Plan; facts later tickets rely on → Carry forward; open questions and blockers → decisions; dated notes → one log line each, with a link to the detail; measurement files → `attach`.

@@ -12,11 +12,13 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import (HOME, SAFE_NAME, STAGES, all_trackers, append_log, archived_at, read_json, branch_entry,
-    commits_text, die, load_record, locked, put_entry, resolution, short, stage_of, state_key, tracker_at, whose_move,
-    write_json, Record, Tracker)
-from .system import alive
-from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree, worktree_key
+from .system import alive, die
+from .store import HOME, locked, read_json, write_json
+from .schema import STAGES, stage_of
+from .model import (SAFE_NAME, all_trackers, append_log, archived_at, branch_entry, commits_text, load_record,
+    put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
+from .moves import whose_move
+from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
 
 def named_in(branch: str, t: Record) -> bool:
@@ -54,7 +56,7 @@ class Match:
 
     def summary(self) -> str:
         """`SS-2 in-progress; also SS-1 done`: every ticket on the branch in one line, the focus first. More than
-        SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 merged`."""
+        SUMMARY_CLOSED_NAMED closed ones as a count per stage: `also 9 done, 2 dropped`."""
         rest = [t for t in self.tickets if t not in self.focus]
         closed = [t for t in rest if t.closed]
         also = [f"{t.id} {t.stage}" for t in rest if t not in closed or len(closed) <= SUMMARY_CLOSED_NAMED]
@@ -69,8 +71,8 @@ class Match:
 # `tracker start <name>` ties a tracker to one agent session; the branch still names the ticket. A session with no
 # tracker (and no TRACKER) gets no tracker context from the hooks, only the offer to link one (`branch_matches`), or
 # at its start a link it is sure of (`hooks.sure_link`, `take_over`).
-# Claude's scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a command
-# prefix (hooks.command_context), else session_id() reads the host's own variable. Hooks get it in their input.
+# On Claude Code, scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a
+# command prefix (`hooks.command_context`), else `session_id` reads the host's variable. Hooks get it in their input.
 # Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
@@ -104,18 +106,18 @@ def load_session(sid: str) -> dict:
 
 
 def save_session(sid: str, **fields) -> None:
-    """Update one session's file; a None value removes that field. Keeps the newest SESSIONS_MAX sessions."""
+    """Update one session's file; a None value removes that field. A new session's file removes all but the newest
+    SESSIONS_MAX."""
     path = session_path(sid)
     if not path:
         return
     with locked():
+        new = not path.exists()
         entry = {**load_session(sid), **fields}
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         write_json(path, {k: v for k, v in entry.items() if v is not None})
-        old = sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-SESSIONS_MAX]
-        for f in old:
+        for f in sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime)[:-SESSIONS_MAX] if new else ():
             f.unlink(missing_ok=True)
-            f.with_suffix(".edits").unlink(missing_ok=True)  # an older version's edit count
 
 
 def drop_session(sid: str) -> None:
@@ -124,7 +126,7 @@ def drop_session(sid: str) -> None:
         path.unlink(missing_ok=True)
 
 
-# "Not now" to the offer to link a session to a tracker, per repo and branch: no offer there for DECLINE_S.
+# "Not now" to the offer to link a session to a tracker, per repo and branch: no link or offer there for DECLINE_S.
 DECLINED_FILE = HOME / ".declined.json"
 DECLINE_S = 86400
 
@@ -188,7 +190,7 @@ def take_over(sid: str, cwd: str | Path) -> str:
 
 
 def session_tracker(sid: str) -> Tracker | None:
-    """The tracker `tracker start` chose for this session."""
+    """The tracker linked to this session: by `tracker start`, or at the session's start (see "sessions" above)."""
     return tracker_at(load_session(sid).get("tracker", ""))
 
 
@@ -199,8 +201,8 @@ def session_focus(tr: Tracker, sid: str) -> list[str]:
 
 
 def context_tracker(sid: str | None = None) -> Tracker | None:
-    """The tracker context: the tracker `tracker start` chose for this session (`sid`, default `session_id()`), or
-    the one TRACKER names."""
+    """The tracker context: the session's tracker (`session_tracker`; `sid`, default `session_id()`), or the one
+    TRACKER names."""
     own = session_tracker(session_id() if sid is None else sid)
     return own or tracker_at(os.environ.get("TRACKER", ""))
 
@@ -263,9 +265,9 @@ def trackers_for_repo(cwd: str | Path) -> list[Tracker]:
 
 
 def find_tracker(args) -> Tracker | None:
-    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`tracker start`) or the repo (the
+    """The tracker named by --tracker or TRACKER, or the one the cwd, the session (`session_tracker`) or the repo (the
     only tracker that lists it) points to."""
-    slug = getattr(args, "tracker", None) or os.environ.get("TRACKER")
+    slug = args.tracker or os.environ.get("TRACKER")
     if slug:
         return tracker_at(slug) or die(no_tracker(slug))
     cwd = Path.cwd()
@@ -310,7 +312,7 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
     rec = tr and (tr.lookup(ident) or tr.by_pr_or_branch(ident))
     if rec:
         return tr, rec
-    if getattr(args, "tracker", None) or os.environ.get("TRACKER"):
+    if args.tracker or os.environ.get("TRACKER"):
         tr.find(ident)  # dies: no such record in the named tracker
     for group in (trackers_for_repo(work_dir()), all_trackers()):
         hits = [(t, r) for t in group if (r := t.lookup(ident)) and r.kind == "ticket"]
@@ -326,10 +328,7 @@ def locate(args, ident: str) -> tuple[Tracker, Record]:
 # new_commits which commits count.
 
 def get_mark(tr: Tracker, cwd: str | Path, branch: str) -> dict | None:
-    mark = branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)
-    if isinstance(mark, str):  # older versions kept only the HEAD
-        return {"head": mark, "at": int(git(cwd, "show", "-s", "--format=%ct", mark) or 0)}
-    return mark
+    return branch_entry(tr.state().get("synced", {}), cwd_repo(cwd), branch)
 
 
 def set_mark(tr: Tracker, cwd: str | Path, branch: str, passed: tuple[int, str] | None = (0, "")) -> str:
@@ -342,8 +341,8 @@ def set_mark(tr: Tracker, cwd: str | Path, branch: str, passed: tuple[int, str] 
         state = tr.state()
         marks = state.setdefault("synced", {})
         if passed is None:
-            old = branch_entry(marks, cwd_repo(cwd), branch)
-            passed = (old.get("behind", 0), old.get("next", "")) if isinstance(old, dict) else (0, "")
+            old = branch_entry(marks, cwd_repo(cwd), branch) or {}
+            passed = (old.get("behind", 0), old.get("next", ""))
         # `at` to the ms: a file written after it is work the tracker may not show (`lag`).
         entry = {"head": head, "at": round(time.time(), 3)}
         if passed[0]:
@@ -392,7 +391,7 @@ def handoff_where(h: dict) -> str:
 
 
 def handoff_line(h: dict, label: str = "handoff") -> str:
-    return f"{label} ({handoff_where(h)}; the next `step` or `synced` clears it): {h.get('text', '')}"
+    return f"{label} ({handoff_where(h)}; the next `step` clears it): {h.get('text', '')}"
 
 
 def ago(ts: float) -> str:
@@ -464,7 +463,7 @@ def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:
 
 def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
                     refs: list[str] | None = None) -> list[str]:
-    """`synced`, `pause` and `step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
+    """`step`: log the commits the hooks have not against `refs` (default: `Match.focus`), move
     the mark to HEAD, and set or clear the handoff. Returns what it did."""
     tr, done = m.tracker, []
     mark = get_mark(tr, cwd, m.branch)
@@ -485,9 +484,14 @@ def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
     return [f"{m.branch} up to date at {head[:9]}" if head else f"{m.branch} not marked: git did not run", *done]
 
 
-def on_branch(args) -> tuple[Match, Path]:
+def matched(args) -> tuple[Match | None, Path]:
+    """What the command's tracker and this session's branch work on, and the work dir."""
     cwd = work_dir()
-    m = match_cwd(cwd, tracker=find_tracker(args))
+    return match_cwd(cwd, tracker=find_tracker(args)), cwd
+
+
+def on_branch(args) -> tuple[Match, Path]:
+    m, cwd = matched(args)
     if not m:
         die(f"this session and branch '{branch_of(cwd) or '?'}' are on no tracker: `tracker start <name>`")
     if not m.branch:
@@ -532,7 +536,7 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
     out = []
     for ident, now in new.items():
         was = old.get(ident)
-        if was == now or was is not None and not isinstance(was, dict):  # an older version's is no baseline
+        if was == now:
             continue
         role = now["role"]
         if role == "decision":
@@ -559,8 +563,8 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
 @dataclass
 class Lag:
     """The work the tracker may not show yet, from git: the commits since the branch's mark (not logged yet), the
-    uncommitted files written since, and the commits logged since the tickets' `next` last changed. Edits by any
-    tool, subagent or session in the worktree count."""
+    uncommitted files written since (`changed_files`), and the commits logged since the tickets' `next` last
+    changed."""
     commits: list[tuple[str, str]]
     files: list[str]
     since: float  # when the mark was set; 0 without one
@@ -584,7 +588,7 @@ def lag(m: Match, cwd: str | Path) -> Lag:
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch else None
     if not mark:
         return Lag([], [], 0)
-    commits = [] if mark["head"] == head_of(cwd) else new_commits(cwd, mark)  # at the mark: one git call, not five
+    commits = [] if mark["head"] == head_of(cwd) else new_commits(cwd, mark)  # at the mark: one git call, not several
     return Lag(commits, changed_files(cwd, mark.get("at") or 0), mark.get("at") or 0, behind(m, mark))
 
 
@@ -626,15 +630,21 @@ def count_own(sid: str, m: Match, picked) -> None:
 
 
 # ---------------------------------------------------------------- live sessions
-# Claude Code keeps one file per running `claude` process: <config dir>/sessions/<pid>.json, with its pid, sessionId,
-# cwd, name, status ("busy" while the model works, "idle" while it waits for the user) and when the status last
-# changed (statusUpdatedAt, epoch ms). Other hosts use the activity recorded by their hooks. An ended session or
-# one with no hook activity for a day does not count. A session with a process file is judged by that file alone,
-# and once its hooks saw one (`native`), so is the session after the file is gone: a session that ended with no
-# SessionEnd hook (its terminal closed; the hook cut short) leaves its last activity behind.
+# A session's status comes from its hooks, on any host: `busy` from a prompt or a tool after a wait, `waiting` while one
+# of its agents asks the user for a permission or an answer, `idle` from a stop. Claude Code also keeps one file per
+# running `claude` process: <config dir>/sessions/<pid>.json, with its pid, sessionId, cwd, name, status and when the
+# status last changed (statusUpdatedAt, epoch ms). That file says whether a session runs, once its hooks saw one
+# (`native`) also after the file is gone: a session that ended with no SessionEnd hook (its terminal closed; the hook
+# cut short) leaves its last activity behind. It settles a status only where hooks cannot (`hook_status`): a session
+# with no hook status yet, and a turn the user interrupted, which runs no Stop hook. A prompt that the user ends with
+# Esc runs no hook either, so `waiting` then holds until the next event: the process file says `idle` for a prompt
+# too, so it cannot tell. An ended session, or a host's with no hook activity for ACTIVITY_MAX_AGE_S, does not count.
 
 CLAUDE_SESSIONS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "sessions"
 ACTIVITY_MAX_AGE_S = 86400
+
+
+LIVE_STATUSES = ("busy", "idle", "waiting")
 
 
 def claude_sessions() -> list[dict]:
@@ -642,24 +652,49 @@ def claude_sessions() -> list[dict]:
     return [c for c in map(read_json, CLAUDE_SESSIONS.glob("*.json")) if c]
 
 
-def session_activity(sid: str, status: str) -> None:
-    """Keep a tracked session's status from its hooks, and when the status last changed; and whether Claude Code
-    keeps a process file for it (`native`), until it is seen to."""
+def attached_tracker(pid: int, cwd: str = "") -> str:
+    """The slug of the tracker linked to the agent in a process, "" with none. Claude Code's process file names its
+    session. Another host has no such file: the live sessions its hooks report in that folder, when they agree on one
+    tracker."""
+    sid = read_json(CLAUDE_SESSIONS / f"{pid}.json").get("sessionId")
+    if sid:
+        tr = session_tracker(str(sid))
+        return tr.slug if tr else ""
+    native = {str(c.get("sessionId")) for c in claude_sessions()}
+    slugs = {slug for slug, live in live_by_tracker().items() for x in live if x.cwd == cwd and x.sid not in native}
+    return slugs.pop() if len(slugs) == 1 else ""
+
+
+def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None) -> None:
+    """Keep a tracked session's status from its hooks, and when the status last changed; whether Claude Code keeps a
+    process file for it (`native`), until it is seen to; and `where` it runs, for `tracker agents`: `transcript`, its
+    transcript's file (an empty one keeps the last), and `terminal`, its Herdr terminal (none: it left Herdr).
+    `asker`: for a wait that starts or ends, the agent it concerns ("" for the session's own). The session stays
+    `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait."""
     entry = load_session(sid)
     if not entry.get("tracker"):
         return
+    asking = set(entry.get("asking", [])) if asker is not None else set()
+    if asker is not None:
+        (asking.add if status == "waiting" else asking.discard)(asker)
+        status = "waiting" if asking else status
     now = time.time()
     old = entry.get("activity", {})
     since = old.get("since", now) if old.get("status") == status else now
     native = entry.get("native") or None
     if not native and status != "ended":
         native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
-    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native)
+    where = where or {}
+    places = {"transcript": where["transcript"]} if where.get("transcript") else {}
+    if "terminal" in where:
+        places["terminal"] = where["terminal"] or None
+    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native,
+                 asking=sorted(asking) or None, **places)
 
 
 @dataclass
 class Live:
-    """An agent session with a running process or recent hook activity, tied to a tracker by `tracker start`."""
+    """An agent session linked to a tracker (`session_tracker`), with a running process or recent hook activity."""
     sid: str
     name: str
     status: str
@@ -667,6 +702,18 @@ class Live:
     branch: str
     focus: list[str]  # the tickets `tracker start --on` chose
     since: float  # when the status last changed (epoch s); 0 when not known
+    transcript: str  # its transcript's file, as its hooks last gave it; "" when not known
+    claude: str  # its name in Claude Code, which lists it by that name; "" on another host
+    terminal: str  # its Herdr terminal, as its hooks last saw it; "" outside Herdr
+
+
+def hook_status(activity: dict, file_status: str, file_changed: float) -> tuple[str, float]:
+    """A running Claude Code session's status and since when: its hooks', but for what only its process file knows (see
+    above)."""
+    status, since, at = activity.get("status"), activity.get("since", 0), activity.get("at", 0)
+    if status not in LIVE_STATUSES or (status == "busy" and file_status == "idle" and file_changed > at):
+        return file_status, file_changed
+    return status, since
 
 
 def live_sessions(slug: str) -> list[Live]:
@@ -677,28 +724,29 @@ def live_sessions(slug: str) -> list[Live]:
 def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
     """`live_sessions` of these trackers (None: of every tracker), by slug: one pass over the session files, however
     many trackers ask."""
-    worktree.cache_clear()  # the viewer runs for hours: read each worktree's branch again
     out: dict[str, dict[str, Live]] = {}
     native = set()
 
     def wanted(entry: dict) -> bool:
         return bool(entry.get("tracker")) and (slugs is None or entry["tracker"] in slugs)
 
-    def add(sid: str, entry: dict, name: str, status: str, since: float, cwd: str = "") -> None:
+    def add(sid: str, entry: dict, status: str, since: float, claude: str = "", cwd: str = "") -> None:
         cwd = entry.get("cwd") or cwd
         out.setdefault(entry["tracker"], {})[sid] = Live(
-            sid, name, status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "", entry.get("focus", []), since)
+            sid, claude or sid[:8], status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "",
+            entry.get("focus", []), since, entry.get("transcript", ""), claude, entry.get("terminal", ""))
 
     for c in claude_sessions():
         try:
-            sid, pid, since = str(c["sessionId"]), int(c["pid"]), float(c.get("statusUpdatedAt") or 0) / 1000
+            sid, pid, changed = str(c["sessionId"]), int(c["pid"]), float(c.get("statusUpdatedAt") or 0) / 1000
         except (ValueError, KeyError, TypeError):
             continue
         native.add(sid)
         entry = load_session(sid)
         if not wanted(entry) or not alive(pid):
             continue
-        add(sid, entry, str(c.get("name") or sid[:8]), str(c.get("status") or ""), since, str(c.get("cwd") or ""))
+        status, since = hook_status(entry.get("activity", {}), str(c.get("status") or ""), changed)
+        add(sid, entry, status, since, str(c.get("name") or ""), str(c.get("cwd") or ""))
     now = time.time()
     for f in SESSIONS_DIR.glob("*.json"):
         if f.stem in native:
@@ -711,6 +759,6 @@ def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
             status, since, at = activity["status"], float(activity["since"]), float(activity["at"])
         except (KeyError, ValueError, TypeError):
             continue
-        if wanted(entry) and status in ("busy", "idle") and now - at < ACTIVITY_MAX_AGE_S:
-            add(f.stem, entry, f.stem[:8], status, since)
+        if wanted(entry) and status in LIVE_STATUSES and now - at < ACTIVITY_MAX_AGE_S:
+            add(f.stem, entry, status, since)
     return {slug: sorted(live.values(), key=lambda s: (s.name, s.sid)) for slug, live in out.items()}

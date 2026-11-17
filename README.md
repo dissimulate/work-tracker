@@ -7,7 +7,7 @@ A Claude Code and Codex plugin that keeps the plan and progress of a piece of wo
 - Tickets with dependencies, direction decisions and a dated log.
 - Actions: tasks for you that the agent cannot or should not do, such as a follow-up with a coworker.
 - Hooks log your commits and pull PR state from GitHub.
-- A live page in the browser shows the work under way and whose move each ticket waits on.
+- A live native view shows the work under way and whose move each ticket waits on: a tab in [Herdr](https://herdr.dev), or its own window.
 
 <img width="2424" height="3246" alt="demo-notification-prefs" src="https://github.com/user-attachments/assets/14519bf1-8e15-4c64-b19e-d05916b81ebe" />
 
@@ -22,8 +22,8 @@ Talk to the agent. It runs the `tracker` CLI for you.
    - Anywhere else on a branch with an open ticket (a default branch such as `main`, a branch whose name only holds a ticket id, a branch of tickets in more than one tracker), the session asks at your first message whether to link it. Answer yes, or "Not now" (no offer on that branch for a day).
    - After `/clear`, the new session stays on the tracker (and the `--on` ticket) of the session it replaces.
 3. **Work as usual.** The agent records steps, decisions and pauses as they happen. The hooks log each commit and keep PR state current. You write nothing yourself.
-4. **See it.** Ask the agent to open the tracker, or run `tracker open`. The page updates live.
-5. **Oversee many sessions (optional).** In a separate session, type `/work-tracker:watch payments` in Claude Code or `$work-tracker:watch payments` in Codex. It notifies you when something needs you: a review came back, checks fail, an agent waits on you. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
+4. **See it.** Ask the agent to open the tracker, or run `tracker open`. The view updates live.
+5. **Watch the work (optional).** In a session, type `/work-tracker:watch payments <what to do>` in Claude Code or `$work-tracker:watch payments <what to do>` in Codex, such as "tell me when a review comes back". The session gets each change to the tracker as it happens, and does that task. A skill or instruction of yours can start it too. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
 
 `/work-tracker:tracker <command>` runs any `tracker` command, for example `/work-tracker:tracker index --active`.
 
@@ -32,17 +32,19 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | Command | Does |
 |---|---|
 | `tracker list` | all trackers (`--archived`: the archived ones too) |
-| `tracker index --active` | the tickets under way, whose move each waits on, the open decisions; under the headline, the wait and cycle time lines |
+| `tracker index --active` | the tickets under way, whose move each waits on, the open decisions, the wait and cycle times |
 | `tracker ready` | what can start now, the most urgent first, and from which branch |
 | `tracker context <id>` | one ticket or decision in full, with what it builds on |
 | `tracker decisions --all` | the decisions, open and settled |
 | `tracker actions` | your open actions (`--all`: the closed ones too) |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
 | `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
-| `tracker open [id]` | the live page |
-| `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the viewer; `tracker unarchive <slug>` brings it back |
+| `tracker open [id]` | the live view: a tab in Herdr when Herdr is open, else its own window; `--window` for the window also when Herdr is open |
+| `tracker install-window` | download what the view's own window needs, once |
+| `tracker install-mod` | install the view as a Herdr mod, once: each later plugin version updates it |
+| `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the view; `tracker unarchive <slug>` brings it back |
 | `tracker delete <slug>` | move a tracker's folder, archived or not, to the system's trash (only in a terminal; refused while a session or a watch is on it) |
-| `tracker issue` | the tickets whose issue fields (priority, size, due day, when the issue was created) are to read, with their issue links and how to record them; with issue updates on, also the updates to write to each issue |
+| `tracker issue` | the issue fields to read and, with issue updates on, the updates to write, with how to record them |
 | `tracker check` | problems in the tracker's files |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
 | `tracker <command> --help` | the syntax of a command |
@@ -59,18 +61,19 @@ Add this folder to a [personal or repo marketplace](https://developers.openai.co
 - Python 3.9 or later, standard library only: `python3`, or on Windows `python` or `py`. The macOS system Python works.
 - `git`.
 - Optional: the GitHub CLI `gh`, logged in. Without it there is no PR state (in review, merged, reviews, checks) and no "whose move".
+- Optional, for the live view: [Herdr](https://herdr.dev) with the view's mod (`tracker install-mod`), or the view's own window (`tracker install-window`: macOS, x86-64 Linux or x86-64 Windows). Without either, `tracker index` and `tracker context <id>` show the same facts.
 
 ## How it works
 
 ### Data
 
-Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes the root). The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other. For history, run `git init` in the folder.
+Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes the root). The folder is outside every repo, so all worktrees and sessions share one copy. Writes take a lock, so sessions that run at the same time do not overwrite each other. For history, run `git init` in the folder. On macOS and Linux, Python keeps its compiled code in `$TRACKER_HOME/.pycache/`; you can delete that folder at any time.
 
 | File | Holds |
 |---|---|
 | `README.md` | the work: Context, Goal, Scope; optionally Instructions, this work's standing rules for the agent, which every brief prints |
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
-| `decisions/D-<n>.md` | one direction decision: Question, Options, Resolution |
+| `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
 | `log.md` | dated one-line history |
 | `evidence/` | files the records cite: runs, measurements |
@@ -81,14 +84,14 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - **Actions** are tasks for you that the agent cannot or should not do: talk to a person, get an access or a sign-off. The agent asks before it adds one, and closes it when you say it is done or no longer needed. An action can have a due day, and can block tickets as an open decision does. The agent asks you about one past its due day, or with none, open longer than a week.
 - **Priority** is a number from 0 (most urgent) to 4 (least), shown as P0 to P4. **Size** is a number from 1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a week, XL more. The scales are the same for every issue tracker, so values compare, sort and add up across them.
 - **Issue fields.** A ticket with an `Issue:` link takes its issue's priority, estimate (as its size), due day and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to), maps each value by what it means on that issue tracker's scale (High is 1; 5 Fibonacci points are L), and records it with `tracker issue`. With no such tool, the fields stay empty.
-- **Issue updates.** Off until you turn them on for a tracker: `tracker set tracker issue_updates=on`. Then, when a linked ticket's stage changes (it starts, goes to review, merges, closes, is dropped or reopened), its summary changes once closed, or a decision that touches it is settled or settled again, the agent writes that to the ticket's issue with the same tool: it moves the issue to the matching state in the issue tracker's own workflow and comments the ticket's summary and each settled decision. It writes in its own words and never names the tracker. The agent is asked right after the change, in each session's brief, and at your next message when a new update is due. When you first turn them on, each linked ticket already started or closed is due once for its status; decisions settled before then are not written. `issue_updates=off` stops it; on again, what changed while off is due. The record of what was written is in `.state.json`, on this machine only: a second machine on the same tracker writes the same updates again, and with no record (`check` warns) nothing is due until `tracker set tracker issue_updates=on` starts a new one.
+- **Issue updates.** Off until you run `tracker set tracker issue_updates=on`. Then the agent writes each linked ticket's changes to its issue with the same tool: a new stage (started, in review, merged, closed, dropped, reopened) moves the issue to the matching state of its workflow, and a closed ticket's summary and each decision settled on it become comments. It writes in its own words and never names the tracker. It is asked right after the change, in each brief, and at your next message. When you turn them on, each ticket already started or closed is due once for its status; decisions settled before then are not written. `issue_updates=off` stops them; on again, what changed while off is due. The record of what was written is in `.state.json`, on this machine only: a second machine on the same tracker writes the same updates again.
 - **The agent's own values.** On a ticket with no issue value, the agent sets priority and size as its best estimate, or leaves them empty when it cannot estimate them reliably. A due day (`YYYY-MM-DD`, on any ticket, decision or action) is only a day that you or the issue tracker gave.
 - **Times**: a key that ends `_at` holds a time in UTC to the second, such as `started_at` or `merged_at`. The views show each as its day.
-- Nothing leaves your machine except the `gh` calls to GitHub and, with issue updates on, what the agent writes to issues with its own tool. The viewer listens on 127.0.0.1 only.
+- Nothing leaves your machine except the `gh` calls to GitHub and, with issue updates on, what the agent writes to issues with its own tool. Nothing listens on a port.
 
 ### Tickets, branches and sessions
 
-- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review` and `merged`.
+- A ticket's status is `todo`, `in-progress`, `done` or `dropped`. Its PR adds `in-review`, and once merged makes it `done`.
 - `depends_on` sets the order and the blockers. What is ready or blocked, and the branch a ticket can start from (stacked on work under way), are computed.
 - The branch names the session's tickets: each ticket whose `branch` it is, a `tracker use <id>` choice, a ticket id or Issue id in the branch name, or the branch's PR.
 - Many sessions can share one tracker. `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.
@@ -97,46 +100,54 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 ### Hooks
 
-Each hook runs `scripts/hook.sh`, which filters the event in shell first. In a session with no tracker a hook exits in about 6 ms; Python (about 40 ms) starts only when it can add something. A hook never blocks the session.
+Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python starts only when the hook can add something. A hook never blocks the session.
 
 | Event | Does |
 |---|---|
-| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits, syncs PR state (at most every 10 min) and injects the brief, with the issue fields to read and the issue updates to write. With none: links the session, or has the agent offer the link, as [Usage](#usage) step 2 says. |
-| UserPromptSubmit | Reports what other sessions or GitHub changed since the brief: a move on its tickets that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. Once each: an issue update newly due, the issue fields a viewer Refresh asked for. On the first message and every 5th: one state line, with work the tracker may not show (unlogged commits, uncommitted files). Starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
-| PostToolUse (Bash) | After a commit: logs it, and once per next action asks whether a step ended. After `git push` or `gh pr …`: records the branch on its ticket and syncs PR state. |
-| PostToolUse (Edit, Write, MultiEdit, apply_patch) | Counts a hand edit of a tracker file as this session's own. |
-| PostToolUse (AskUserQuestion, request_user_input) | Asks the agent to record the answer when it settles a direction decision. |
+| SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits and injects the brief, with the issue fields to read and the issue updates to write, then syncs PR state in the background (at most every 10 min): the next message reports what changed. With none: links the session, or has the agent offer the link ([Usage](#usage) step 2). |
+| UserPromptSubmit | Reports what other sessions or GitHub changed on the session's tickets since the brief: a move that became yours, a ticket that ended, a dependency's state or Carry forward, a decision; a watching session has these from its watch. Once each: an issue update newly due, the issue fields the view's Refresh asked for. A state line with the work the tracker may not show (unlogged commits, uncommitted files): with a ticket under way, on the first message and every 5th; with none, only when there is such work. With a ticket under way, starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
+| PostToolUse | One hook for every tool, which starts Python only when one of these applies. Bash: after a commit, logs it, and once per next action asks whether a step ended; after `git push` or `gh pr …`, records the branch on its ticket and syncs PR state. Edit, Write, MultiEdit, apply_patch: counts a hand edit of a tracker file as this session's own. AskUserQuestion, request_user_input: asks the agent to record the answer when it settles a direction decision. Any tool: ends that agent's "needs you" mark. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
+| PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
+| PostToolUseFailure, SubagentStop | Ends that agent's mark, in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
 | Stop | Logs the commits no other hook saw. |
-| SessionEnd | Logs remaining commits and ends the session's activity in the viewer. On `/clear`, leaves the session's tracker for the next session in the same directory. |
+| StopFailure | Marks the session idle after a failed turn. |
+| SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
 
-### Viewer
+### View
 
-`tracker open [id]` opens the live page. It polls every 3 s and updates in place.
+`tracker open [id]` shows the tracker, and opens the record `id` names. The view has no server: it runs the `tracker` CLI for all it reads and changes (`tracker data`, `tracker list --json`), when the tracker or its sessions change and at least every 15 s. Herdr watches the folder; in its own window, `tracker await-change` waits for that. While it shows, the view syncs PR state when its data is older than `TRACKER_SYNC`, also when it opens.
 
-- **Server**: Python's `http.server` on 127.0.0.1, port 7316 (`TRACKER_VIEWER_PORT`; a free port when another program has it), so a bookmark or a page left open works again when a server runs: `http://127.0.0.1:7316/` lists the trackers. A tracked agent session's hooks start it. It stops about 3 min after no page polls it and no agent session is on a tracker. A page that saw it stop reloads itself when a server answers again. While a page is open, the server syncs PR state every 2 min.
-- **Tracker menu** (top left) lists every tracker, the archived ones in a closed section at the bottom. A tracker's ⋯ menu has Archive (Unarchive) and Delete, both off while an agent session or a watch is on the tracker.
-  - Archive moves the tracker to `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it. Its page still opens, read-only. `tracker init` refuses its slug.
-  - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the dialog shows why.
+- **Hosts**:
+  - **Herdr**: a tab that the `work-tracker` mod draws; `tracker open` shows the tab if it is there. `tracker install-mod` installs the mod; only you run it, as the mod runs programs. Each new plugin version updates it at its first session on a tracker or `tracker open`. To put the view in a layout, use a block with `{ "mod": "work-tracker" }`; a layout that reads a mod's `panel` field (`ui/mod.json`), such as Bettr, shows it as a panel with its own button.
+  - **Follow**: a view with no tracker asked for follows the focused agent: it shows the tracker that agent's session is linked to, or says that there is none, with the switcher still there. A tracker you pick stays until the agent or its tracker changes; the tab of `tracker open` stays on its tracker.
+  - **Another Herdr machine**: an agent there has its tracker there. The view runs that machine's CLI through Herdr, its switcher lists that machine's trackers, and its bar names the machine. That machine needs the same plugin version and a session that has used a tracker there, which records the CLI. Its tracker updates every 15 s, not at once, and an evidence link opens on that machine's screen.
+  - **Own window**: with no Herdr window open, no mod installed, or `--window`, `tracker open` runs `gpui-shell run --dir <plugin>/ui`, a new window each time, and says why if `gpui-shell` refuses at once. It uses the [`gpui-shell`](https://github.com/longbridge/gpui-kit/releases) that `tracker install-window` downloads to `$TRACKER_HOME/.gpui-shell/` and checks by hash, else the one on your PATH, which must be the version `ui/gpui-shell.json` names: `gpui-shell` is third-party and not yet stable.
+- **Tracker menu** (top left) lists every tracker, the archived ones in a closed section at the bottom. A tracker's ⋯ has Archive (Unarchive) and Delete, both off while an agent session or a watch is on the tracker.
+  - Archive moves the tracker to `$TRACKER_HOME/.archive/`: no list, lookup, hook or GitHub sync reads it. It still opens, read-only. `tracker init` refuses its slug.
+  - Delete moves the tracker's folder to the system's trash after you confirm; restore it from there. If the trash refuses the folder, the folder stays and the view shows why, until you press that line or make another change.
 - **Refresh** (top right) pulls PR state from GitHub at once, and has the agent read the issue fields again at your next message in a session on the tracker. The live line beside it says when they were last read.
-- **Your actions**: your open actions, soonest due first, with Done and Drop. A due day is red once past. A row opens to what the action blocks and touches, its dates and its notes.
-- **Current**: the tickets under way (your move first), each branch's handoff, and the agent sessions on the tracker (a ring spins while one works). A session is busy from your message to its turn's end; an interrupted turn can show busy until the next event.
+- **Your actions**: your open actions, soonest due first, with Done and Drop. A due day is red once past.
+- **Current**: the tickets under way (your move first), each branch's handoff, and the agent sessions on the tracker. Each row's dot says what its sessions do: red when one needs you, green while one works, yellow while they are idle, a grey ring with none. A session is busy from your message to its turn's end. An interrupted turn can show busy until the next event, and a prompt you end with Esc can show "needs you" until then.
 - **Sequence**: the tickets in dependency order, depth first so a chain stays together, dropped tickets last. The Step column draws the dependency graph:
-  - a dot per ticket: blue when ready, amber when under way or it can stack on work under way, red when blocked, a green ring when closed, a grey ring when dropped. The ticket's id takes the same colour.
-  - a line from each ticket to each ticket that waits on it: red while it blocks, amber while under way, green once closed.
-  - Hover or focus a row to see only what its ticket waits on and unblocks.
-  - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. The address keeps the sort (`?sort=-group`). A narrow window leaves out Group, then Priority, Size and Deps.
-- **Wait time** runs from when a ticket's issue was created (`issue_created_at`) to when the ticket started (`started_at`, which its first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`). Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days. An opened ticket gives its own. A ticket has none when it was dropped, lacks either exact time (one started before 0.29), or ends before it starts (its issue was created after the work started).
-- **Reference** (bottom): the closed decisions and actions.
+  - a dot per ticket: blue when ready, green in progress, yellow in review or when it can stack on work under way, red when blocked, a grey ring when closed or dropped. The ticket's id takes the same colour.
+  - a line from each ticket to each ticket that waits on it: red while it blocks, green while in progress, yellow while in review, grey once closed.
+  - Hover a row to see only what its ticket waits on and unblocks.
+  - A column heading sorts by that column, and a second press reverses it. Step puts the dependency order back. The columns are Status, Priority, Size, Group, Waits on and Unblocks; a narrow view leaves them out from the right as they stop fitting, and keeps Status.
+- **A record** (a ticket, decision or action) opens in a modal over the page when you click it, and a press outside it or Escape closes it: what it waits on and unblocks, its facts and links, its body. An open decision lists its options: click one to answer with it, or write your own answer in the box below them and press Answer. The answer closes the decision, as `tracker decide D-<n> --resolve` does, and the agents see it with the next change. A link to `evidence/` opens the file in the system's app when that kind of file runs no code, and otherwise shows it in its folder. Only `http` and `https` links leave the view.
+- **Wait time** runs from when a ticket's issue was created (`issue_created_at`) to when the ticket started (`started_at`, which its first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`). Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days. An opened ticket gives its own. A ticket has none when it was dropped, lacks either exact time, or ends before it starts (its issue was created after the work started).
+- **Reference** (bottom): the closed decisions and actions, the rest of the README, the log.
 
 ### Watch
 
-- `tracker watch [name]` prints each change as one line; `!` marks what needs you. One watcher per tracker.
-- Only you start it: in a terminal, or with the watch skill ([Usage](#usage) step 5), which makes that session a read-only overseer. The CLI refuses `watch` in an agent session without that grant, and every write in a session with it.
+- `tracker watch [name]` prints each change as one line; `!` marks what needs you, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. Several sessions can watch one tracker: one watch per session.
+- `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
+- `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
+- In an agent session, the watch skill starts it ([Usage](#usage) step 5): when you invoke it, or when a skill or instruction of yours tells the agent to watch. The agent never starts it on its own. The watching session writes to the tracker, and can be on one, as any session. `tracker watch --stop`, or the skill with `stop`, ends it.
 
 ### Upgrading a tracker
 
-The `schema` key in a tracker's README names its format. When `tracker check` says the format is old, run `tracker migrate --dry-run`, then `tracker migrate` (it backs up to `$TRACKER_HOME/.backups/` first).
+The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/`, all but its `evidence/` folder (no migration changes it), and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. A session that still runs the older plugin version does not read the new format: start it again.
 
 ### Settings
 
@@ -147,9 +158,7 @@ Environment variables. All are optional.
 | `TRACKER_HOME` | `~/.claude/trackers` | where the trackers are |
 | `TRACKER` | none | a tracker slug: commands use it first, the hooks when `tracker start` chose none |
 | `TRACKER_NUDGE_EVERY` | 5 | messages between state lines |
-| `TRACKER_VIEWER_IDLE` | 180 | seconds before an unused viewer stops |
-| `TRACKER_VIEWER_PORT` | 7316 | the viewer's port; 0: a free port each start, and the hooks start no viewer |
-| `TRACKER_SYNC` | 120 | seconds (at least 30) between GitHub syncs while a page or a watch is open (a session's hooks sync at most every 10 min) |
+| `TRACKER_SYNC` | 120 | seconds (at least 30) between GitHub syncs while the view or a watch is open (a session's hooks sync at most every 10 min) |
 | `TRACKER_WATCH_IDLE` | 600 | seconds before an idle agent that waits on you is reported |
 | `TRACKER_WATCH_BUSY` | 2700 | seconds a busy agent can record nothing before it is reported |
 
@@ -157,37 +166,42 @@ Environment variables. All are optional.
 
 - The rules for a change (tests, lint, changelog, release, the format's contract, the agent's texts) are in [CLAUDE.md](CLAUDE.md).
 - Run from a checkout in Claude Code: `claude --plugin-dir <path to this folder>`, then `/reload-plugins` after an edit. In Codex, install through the marketplace. Codex caches an installed copy by version: to try a change, raise the manifest version in your checkout, run `codex plugin add work-tracker@<marketplace-name>` again, and put the version back before you commit.
-- An open viewer restarts itself when `scripts/tracker/` changes, and an open page reloads when `viewer/` changes.
+- The UI: `herdr-app check ui` needs `ui/gpui-shell.json` out of the way (Herdr refuses it), so run `HERDR_APP_HOME=<an empty folder> bin/tracker install-mod`, then `herdr-app check <that folder>/mods/work-tracker`. `bin/tracker install-mod` with no `HERDR_APP_HOME` puts the checkout's view in your Herdr; after that, a session that runs the checkout brings each edit of the mod's files to it, at the next session start or prompt on a tracker. A session of another plugin copy (an installed version) puts its own back at its first hook. A mod file that is a link stays as it is. For the window: `gpui-shell check --dir ui`. A check draws only the first frame, so look at the view too. `ui/model.js` holds what can be tested without a UI: `node --test ui/`.
 
 ### Code
 
 `scripts/tracker/`: stdlib only, run by `bin/tracker` and `scripts/hook.sh`. One module per concern; each imports only the modules before it:
 
-1. `system`: this Python and the CLI as processes, whether a process runs, the system's trash
+1. `system`: this Python and the CLI as processes, the plugin's folder, whether a process runs, the system's trash
 2. `markdown`: the file format as text (frontmatter, sections, link lines)
-3. `model`: contract constants, records, dependencies, body edits, the lock. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
-4. `git`
-5. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
-6. `contract`: `check`, `rules`, `migrate`
-7. `views`: text views and the brief
-8. `github`: the GitHub adapter. `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`); `model.apply_prs` writes them, and `whose_move` reads only those. Another forge is another adapter
-9. `watcher`: `tracker watch` and the user's grant; archiving and deleting a tracker
-10. `viewer`: the page and its server (look: `viewer/page.html`, `style.css`, `app.js`). Markup is `Html`, which escapes the text put into it; the sequence's columns are its `Column` table
-11. `hooks`
-12. `cli`
+3. `store`: writing the tracker's files: atomic writes, JSON files, the lock
+4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
+5. `model`: records, the `Tracker`, dependencies, the log, body edits
+6. `moves`: whose move a ticket under way waits on
+7. `git`
+8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
+9. `contract`: `check`, `rules`, `migrate`
+10. `views`: text views and the brief
+11. `github`: the GitHub adapter: `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). Another forge is another adapter
+12. `watcher`: `tracker watch` and the watching sessions' grants; `tracker agents`; `tracker await-change`
+13. `lifecycle`: archiving and deleting a tracker
+14. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
+15. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`, `tracker install-mod`, and an installed mod kept at this version
+16. `hooks`
+17. `commands`: one function per command
+18. `cli`: the parser, and what runs around each write command
+
+`ui/`: the view, one codebase (`view.js`, with `model.js` and `style.js`). `main.js` runs it as a Herdr mod, `app.js` in gpui-shell.
 
 ### Evals
 
-`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hook texts lead the model to record work through the CLI and to answer from the tracker's views; each case's `prompt.md` says what it checks. Each run is a full Claude session, billed to your plan: run them after a significant change to those texts, not as a routine check. `evals/run.sh` runs them (its header explains the fixed options):
+`evals/` holds [`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) cases. They check that the skill, the brief and the hook texts lead the model to record work through the CLI and to answer from the tracker's views; each case's `prompt.md` says what it checks. Each run is a full Claude session, billed to your plan: [CLAUDE.md](CLAUDE.md) says when to run them. `evals/run.sh` runs them (its header explains the options):
 
 ```
 evals/run.sh quick <tag>...   # the cases with any of the tags, once each, on Sonnet
 evals/run.sh quick all        # every case, once each, on Sonnet
 evals/run.sh release          # every case, 3 runs each (1 when its prompt.md sets `runs: 1`), on Opus: before a release
 ```
-
-Options after the mode's words go to `claude plugin eval` as they are, such as `--case <name>` or `--keep-temp`.
-
 
 - Tags name the area a case tests. Pick the tags of the text you changed:
   - `write`: the write commands and their output, the skill's Write table

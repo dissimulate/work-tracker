@@ -1,1129 +1,30 @@
 """The plan and progress of a piece of work: tickets, decisions, actions and a log, in Markdown files. `tracker rules`
 gives the format, and `tracker <command> --help` a command's syntax.
 
-The `tracker` command line: one function per command, and the parser."""
+The `tracker` command line: the parser, the repair of its arguments, and what runs around each write command. The
+commands are in `commands`."""
 
 from __future__ import annotations
 
-import datetime as dt
 import re
-import shutil
 import sys
-import time
 from pathlib import Path
 
-from .markdown import (BULLET, bullets, format_value, headings, parse_links, render_frontmatter, section_block,
-    split_frontmatter)
-from .model import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, HOME, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LOG,
-    NO_STAGE, OPEN_STAGES, OWNER_HINT, ROOT, SAFE_NAME, SCALES, SCHEMA, STAGES, STATUSES, VIEWER_PORT, a_kind,
-    all_trackers, append_log, append_notes, append_to_section, archived_at, archived_trackers, atomic_file,
-    atomic_write, blocker_link, close_action, create, csv, dated, day_text, days_since, die, drop_from_section, fit,
-    id_kind, id_list, kind_names, link_url, load_record, locked, names, put_section, read_value, relabel,
-    replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, stage_of, today, unblocked,
-    unknown_dep, utc_now, Busy, Record, Tracker)
-from .system import spawn
-from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, branch_matches, decline, drop_session, find_tracker, in_repos, locate,
-    mark_up_to_date, match_cwd, no_tracker, on_branch, own_change, record_commits, remember, resolve, save_session,
-    session_id, session_tracker, tracker_at, trackers_for_repo, watch, work_dir)
-from .contract import check, migrate, rules_lines
-from .views import (CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief,
-    context_lines, dep_lines, history_lines, index_lines, issue_update_request, levels_text, order_lines, span_lines,
-    start_text, updates_told)
-from .github import NAME as FORGE, match_pr, sync
-from .watcher import (REFUSED, Refused, Watcher, agent_session, archive_tracker, delete_tracker, granted, session_name,
-    unarchive_tracker, watching)
-
-# ---------------------------------------------------------------- templates
-
-TEMPLATES = ROOT / "templates"
-
-
-def from_template(name: str, meta: dict, labels: list[str]) -> str:
-    """A new file from templates/<name>.md; `{{labels}}` in its comments becomes the tracker's link labels."""
-    text = (TEMPLATES / f"{name}.md").read_text()
-    lines, body = split_frontmatter(text)
-    lines = render_frontmatter(lines, meta)
-    return "---\n" + "\n".join(lines) + "\n---\n" + body.replace("{{labels}}", ", ".join(labels))
-
-
-def new_record(tr: Tracker, kind: str, ident: str, title: str, **meta) -> Record:
-    """Write a new record of the kind from its template: its id, title, first status and `meta`, then `created_at`
-    and `updated_at` now. It joins the tracker's records."""
-    now = utc_now()
-    path = tr.root / KINDS[kind].folder / f"{ident}.md"
-    path.parent.mkdir(exist_ok=True)
-    create(path, from_template(kind, {"id": ident, "title": title, "status": STATUSES[kind][0], **meta,
-                                      "created_at": now, "updated_at": now}, tr.labels))
-    rec = load_record(path, kind)
-    tr.records_of(kind).append(rec)
-    return rec
-
-
-# ---------------------------------------------------------------- commands
-
-def cmd_list(args):
-    trackers = all_trackers()
-    if not trackers:
-        print(NO_TRACKERS)
-    for t in trackers:
-        active = sum(1 for x in t.tickets if not x.closed)
-        print(f"{t.slug:<36} {t.headline()} · {len(t.tickets)} tickets, {active} active · "
-              f"{len(t.open_decisions())} open decisions")
-    archived = archived_trackers()
-    if args.archived:
-        print("\n".join(["archived:", *(f"  {t.slug:<34} {t.headline()}" for t in archived)] if archived
-                        else ["no archived trackers"]))
-    elif archived:
-        print(f"{len(archived)} archived (`tracker list --archived`)")
-
-
-def cmd_init(args):
-    if not SAFE_NAME.fullmatch(args.slug):
-        die(f"'{args.slug}' is not a slug: use letters, digits, `.`, `_` and `-`, starting with a letter or digit")
-    root = HOME / args.slug
-    if (root / "README.md").exists():
-        die(f"{root} already exists")
-    if archived_at(args.slug):
-        die(f"{no_tracker(args.slug)}, or pick another slug")
-    (root / "tickets").mkdir(parents=True, exist_ok=True)
-    (root / "decisions").mkdir(exist_ok=True)
-    repos = csv(args.repo)
-    meta = {"title": args.title, "repo": repos if len(repos) > 1 else "".join(repos), "status": "planning",
-            "owner": args.owner, "created_at": utc_now(), "schema": SCHEMA}
-    create(root / "README.md", from_template("README", meta, DEFAULT_LABELS))
-    create(root / "log.md", f"# Log — {args.title}\n\nAppend-only. Newest at the bottom.\n\n")
-    create(root / ".gitignore", ".state.json\n*.tmp\n")
-    print(f"created {root}. Next: `tracker start {args.slug}` ties this session to it (in a terminal, pass "
-          f"`--tracker {args.slug}` to each command), then `tracker new <ID> --title \"...\"` adds tickets")
-
-
-def cmd_index(args):
-    tr = resolve(args)
-    stages = set(csv(args.status)) or None
-    if stages and stages - set(STAGES):
-        die(f"--status takes {'|'.join(STAGES)}")
-    if args.active:
-        stages = OPEN_STAGES
-    lines = index_lines(tr, stages, args.group)
-    print("\n".join(lines[:1] + span_lines(tr) + lines[1:]))
-
-
-def cmd_here(args):
-    cwd = work_dir()
-    m = match_cwd(cwd, tracker=find_tracker(args))
-    if not m:
-        repo = trackers_for_repo(cwd)
-        print(f"this session and branch '{branch_of(cwd) or '?'}' are on no ticket"
-              + (f". Trackers for this repo: {', '.join(t.slug for t in repo)}" if repo else " in any tracker")
-              + ". `tracker start <name>` ties this session to a tracker.")
-        return
-    print(brief(m, cwd, full=args.full, with_protocol=False))
-
-
-def cmd_context(args):
-    here = find_tracker(args)
-    whole = None if here and here.lookup(args.id) else tracker_at(args.id)
-    if whole:  # a tracker's name, where a ticket or decision id belongs: its open work, and how to read one record
-        print("\n".join([f"{whole.slug} is a tracker; `tracker context <id>` takes one of its ticket or decision ids. "
-                         "Its open work:", "", *index_lines(whole, OPEN_STAGES)]))
-        return
-    tr, rec = locate(args, args.id)
-    print("\n".join(context_lines(tr, rec, full=not args.brief, deep=args.deep, log=args.log)))
-
-
-def cmd_decisions(args):
-    tr = resolve(args)
-    status = args.status or ("" if args.all else "open")
-    rows = [d for d in tr.decisions if not status or d.get("status", "open") == status]
-    for d in rows:
-        state = d.get("status", "open")
-        touched = ", ".join(tr.touched_by(d))
-        tail = f" → {resolution(d)}" if d.closed else (f" · owner {d.get('owner')}" if d.get("owner") else "")
-        print(f"{d.id}  {state:<6}  {d.get('title')}" + (f"  ({touched})" if touched else "") + tail)
-    if not rows:
-        print("no decisions" if args.all or args.status else "no open decisions")
-    settled = sum(d.closed for d in tr.decisions)
-    if not (args.all or args.status) and settled:
-        print(f"{settled} settled (`tracker decisions --all` lists them too; `tracker context D-<n>` gives one)")
-
-
-def cmd_find(args):
-    trackers = all_trackers() if args.all else [resolve(args)]
-    pat = re.compile(re.escape(args.text), re.I)
-    hits = 0
-    for tr in trackers:
-        files = [r.path for r in tr.records] + [tr.root / "README.md", tr.root / "log.md"]
-        for p in files:
-            if not p.exists():
-                continue
-            for n, line in enumerate(p.read_text().splitlines(), 1):
-                if pat.search(line):
-                    where = p.relative_to(HOME if args.all else tr.root)
-                    print(f"{where}:{n}: {line.strip()[:160]}")
-                    hits += 1
-    if not hits:
-        print("no matches")
-
-
-def named_or_own(args) -> tuple[Tracker, Record]:
-    """The record `args.id` names; with no id, this session's one ticket: its `tracker start --on` choice, else the
-    one ticket under way (or else unfinished) on its branch."""
-    if args.id:
-        return locate(args, args.id)
-    m = match_cwd(work_dir(), tracker=find_tracker(args))
-    if not m or len(m.focus) != 1:
-        ids = ", ".join(t.id for t in m.focus) if m else ""
-        die("name the ticket: " + (f"this session works on {ids}" if ids else "this session is on no ticket"))
-    return m.tracker, m.focus[0]
-
-
-def cmd_set(args):
-    tr, rec = record_for(args, args.id) if args.id else named_or_own(args)
-    schema = KEYS[rec.kind]
-    updates = {}
-    for pair in args.pairs:
-        if "=" not in pair:
-            die(f"'{pair}' is not key=value")
-        k, v = (x.strip() for x in pair.split("=", 1))
-        if k not in schema:
-            die(f"a {rec.kind} has no key '{k}' (keys: {', '.join(schema)}; `tracker rules` explains each)")
-        if schema[k][0] != "set":
-            die(f"{k}: {OWNER_HINT[schema[k][0]]}, not `set`")
-        if k == "status":
-            allowed = STATUSES[rec.kind]
-            if v not in allowed:
-                hint = "; in-review and merged come from the ticket's PR" if v in STAGES else ""
-                die(f"status must be one of {'|'.join(allowed)}{hint}")
-        if k in ("next", "summary") and rec.kind == "ticket":
-            fit(k, v)
-        v = read_value(k, v)
-        if k == "repo" and rec.kind == "ticket" and v and v not in tr.repos:
-            die(f"repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
-        updates[k] = v
-    notes = []
-    to = stage_of("ticket", updates.get("status")) if rec.kind == "ticket" else NO_STAGE
-    if to.closed and not (updates.get("summary") or rec.get("summary")):
-        notes.append(f"set its summary: `tracker set {rec.id} summary=\"<what it delivered, or why dropped>\"`")
-    if to.in_flight and "branch" not in updates:
-        notes += start_here(tr, rec, updates)
-    moved = "status" in updates and updates["status"] != rec.get("status")
-    starts = rec.todo and to.in_flight
-    if "status" in updates:
-        updates.update(rec.status_update(updates["status"]))
-    rec.change(updates)
-    if updates.get("issue_updates") == "on":
-        tr.start_issue_updates()
-    if moved:
-        append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
-    print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
-                                    for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
-    if starts:
-        notes += base_notes(tr, rec)
-    if notes:
-        print("\n".join(notes))
-
-
-def status_line(rec: Record) -> str:
-    """The log line of a status change: a ticket's start, close or reopening (a closed one with what its summary
-    says), or the work's status."""
-    status = str(rec.get("status"))
-    if rec.kind == "tracker":
-        return f"The work is {status} now"
-    where = f" on {rec.get('branch')}" if rec.in_flight and rec.get("branch") else ""
-    what = rec.get("summary") if rec.closed and rec.get("summary") else rec.get("title")
-    return f"{rec.id} {status}{where}: {short(str(what))}"
-
-
-def start_here(tr: Tracker, t: Record, updates: dict) -> list[str]:
-    """A ticket set in progress from a branch of this tracker's repo, with no branch of its own: record where its work
-    happens. On its own branch, the ticket's `branch` (the branch may hold other tickets too); on a shared branch such
-    as main, a `use` choice for this worktree."""
-    cwd = work_dir()
-    branch = branch_of(cwd)
-    if t.get("branch") or not branch or not in_repos(tr, cwd):
-        return []
-    if branch not in default_branches(cwd):
-        updates["branch"] = branch
-        return []
-    key = worktree_key(cwd, branch)
-    state = tr.state()
-    chosen = state.get("use", {}).get(key, [])  # state() keeps only unfinished tickets
-    if t.id not in chosen:
-        state.setdefault("use", {})[key] = chosen + [t.id]
-        tr.save_state(state)
-    return [f"{t.id} is worked on in this worktree on {branch} (`tracker use --clear` undoes it)"]
-
-
-def base_notes(tr: Tracker, t: Record) -> list[str]:
-    """A ticket started on the current branch: name the branches of the tickets under way it waits on that this
-    branch does not contain (START_RULE). Git is only read."""
-    cwd = work_dir()
-    under = [d.rec for d in tr.blockers(t) if d.rec and d.rec.in_flight and d.rec.get("branch")
-             and same_repo(tr.repo_of(d.rec), tr.repo_of(t))]
-    if not under or t.get("branch") != branch_of(cwd) or not in_repos(tr, cwd):  # git runs only past here
-        return []
-    missing = [b for b in under if contains(cwd, str(b.get("branch"))) is False]
-    if not missing:
-        return []
-    where = ", ".join(f"{b.get('branch')} ({b.id}" + (f", #{b.get('pr')}" if b.get("pr") else "") + ")"
-                      for b in missing)
-    return [f"{t.id} waits on work under way that branch {t.get('branch')} does not contain: {where}. Start the branch "
-            f"from it, unless the user chose otherwise (`tracker ready` names the branch to start from)."]
-
-
-def cmd_log(args):
-    fit("log", args.message)
-    tr = resolve(args)
-    refs = [tr.find(r).id for r in id_list(args.ref)]
-    append_log(tr, args.message, refs)
-    print("logged" + (f" [{' '.join(refs)}]" if refs else ""))
-
-
-def cmd_history(args):
-    tr = resolve(args)
-    if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
-        die("--since takes a date: YYYY-MM-DD")
-    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last)
-    print("\n".join(lines) if lines else "no log lines")
-
-
-def cmd_new(args):
-    fit("next", args.next)
-    tr = resolve(args)
-    if not SAFE_NAME.fullmatch(args.id):
-        die(f"'{args.id}' is not a ticket id: use letters, digits, `.`, `_` and `-`, starting with a letter or digit")
-    if (tr.root / "tickets" / f"{args.id}.md").exists() or tr.lookup(args.id):
-        die(f"{args.id} already exists")
-    if kind := id_kind(args.id):
-        die(f"{KINDS[kind].prefix}-<n> ids are {kind}s: `tracker {KINDS[kind].command} \"<title>\"` adds one")
-    deps = []
-    for x in id_list(args.depends):
-        rec = tr.lookup(x) or die(f"--depends {x}: {unknown_dep(tr, x)}; for an external blocker, `tracker wait "
-                                  f"{args.id} on {x} --link \"<url> — <why>\"` after creating the ticket")
-        deps.append(rec.id)
-    if args.repo and args.repo not in tr.repos:
-        die(f"--repo must be one of the tracker's repos ({', '.join(tr.repos) or 'none'})")
-    if args.branch and len(tr.repos) > 1 and not args.repo:
-        die(f"the tracker spans {len(tr.repos)} repos: pass --repo ({', '.join(tr.repos)})")
-    meta = {"group": args.group or "", "branch": args.branch or "", "depends_on": [], "next": args.next or ""}
-    for key in [*SCALES, "due"]:
-        if getattr(args, key):
-            meta[key] = read_value(key, getattr(args, key))
-    if args.repo:
-        meta["repo"] = args.repo
-    t = new_record(tr, "ticket", args.id, args.title, **meta)
-    add_waits(tr, t, deps)
-    append_log(tr, f"Added {args.id} {args.title}" + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
-    print(f"created {args.id}: {t.path}")
-
-
-def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
-    who = f" ({by})" if by else ""
-    rec.change(rec.status_update("closed"))
-    append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_log(tr, LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who, answer=short(answer)),
-               [rec.id, *tr.touched_by(rec)])
-    return f"{rec.id} closed"
-
-
-def add_waits(tr: Tracker, t: Record, idents: list[str]) -> list[str]:
-    """Add items to a ticket's depends_on, refusing one that would close a cycle. Returns the items added."""
-    before = t.list("depends_on")
-    have = {x.lower() for x in before}
-    added = [x for x in dict.fromkeys(idents) if x.lower() not in have]
-    if not added:
-        return []
-    t.change({"depends_on": before + added})
-    cycle = next((c for c in sequence(tr).cycles if t.id in c), None)
-    if cycle:
-        t.save({"depends_on": before})
-        die(f"that would make a dependency cycle: {' → '.join(cycle)}")
-    return added
-
-
-def cmd_wait(args):
-    args.items = id_list(args.items)
-    tr, t = locate(args, args.id)
-    if t.kind != "ticket":
-        die(f"{t.id} is {a_kind(t.kind)}; a ticket waits on it: `tracker wait <ticket> on {t.id}`")
-    if args.mode == "off":
-        drop = {tr.canonical(x).lower() for x in args.items}
-        keep = [x for x in t.list("depends_on") if tr.canonical(x).lower() not in drop]
-        if len(keep) == len(t.list("depends_on")):
-            stacked = [o.id for o in tr.stacked_on(t) if o.id.lower() in drop]
-            die(f"{t.id} waits on {', '.join(stacked)} because its PR is based on their branch "
-                f"{t.get('base')}; that ends when the PR is retargeted" if stacked else
-                f"{t.id} does not wait on {', '.join(args.items)}")
-        t.change({"depends_on": keep})
-        for x in args.items:  # a Blocker line for something no longer waited on becomes a plain link
-            link = None if tr.lookup(x) else blocker_link(t, x)
-            if link:
-                relabel(t, link, "Related")
-        append_log(tr, f"{t.id} no longer waits on {', '.join(args.items)}", [t.id])
-    else:
-        items = []
-        external = [x for x in args.items if not tr.lookup(x) and not blocker_link(t, x)]
-        for x in args.items:
-            rec = tr.lookup(x)
-            if rec and rec.id == t.id:
-                die("a ticket cannot wait on itself")
-            if not rec and not blocker_link(t, x):
-                named = next((link for link in t.links if names(link, x)), None)
-                if named and not args.link:
-                    relabel(t, named, BLOCKER)  # an existing link line already says where it is
-                elif not args.link or len(external) > 1:
-                    die(f"{unknown_dep(tr, x)}. For an external blocker, say where it is and why it blocks, one "
-                        f"blocker per command: `--link \"<url> — <why>\"` (adds a `- {BLOCKER}:` line to ## Links)")
-                else:
-                    url, _, why = args.link.partition(" ")
-                    text = (f"[{x}]({url})" + (f" — {why.strip().lstrip('—-').strip()}" if why.strip() else "")
-                            if url.startswith("http") else f"{x} — {args.link}")
-                    append_to_section(t, "Links", f"- {BLOCKER}: {text}")
-            items.append(rec.id if rec else x)
-        added = add_waits(tr, t, items)
-        if not added:
-            die(f"{t.id} already waits on {', '.join(items)}")
-        for d in (tr.lookup(x) for x in added):
-            if d and t.id in d.list("refs"):  # a decision's or action's: depends_on now says so
-                d.change({"refs": [r for r in d.list("refs") if r != t.id]})
-        append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
-    print("\n".join(dep_lines(tr, t)) or f"{t.id} waits on nothing")
-
-
-def cmd_seq(args):
-    tr = resolve(args)
-    seq = sequence(tr)
-    rows = sorted((t for t in tr.tickets if not t.dropped and not (args.active and t.closed)),
-                  key=lambda t: (seq.step.get(t.id, 0), sort_key(t.id)))
-    w = max([len(t.id) for t in rows] + [2])
-    wg = max([len(str(t.get("group") or "—")) for t in rows] + [1])
-    for t in rows:
-        waits = " ".join(d.ident + ("✓" if d.done else "") for d in tr.deps(t))
-        later = ", ".join(x.id for x in tr.waiting_on(t.id))
-        mark = "◆" if t.id in seq.critical else " "
-        title = str(t.get("title"))
-        print(f"{mark}{seq.step.get(t.id, ''):>2}  {t.id:<{w}}  {str(t.get('group') or '—'):<{wg}}  "
-              f"{t.stage:<11} {title[:40]:<40}" + (f"  waits {waits}" if waits else "")
-              + (f"  → {later}" if later else ""))
-    print("\nStep: 1 + the longest chain of tickets it waits on. ✓ = satisfied. ◆ = critical path.")
-    print("\n".join(order_lines(tr)))
-
-
-def cmd_ready(args):
-    """The todo tickets that can start now, the most urgent first: from the default branch, or stacked on work under
-    way (START_RULE), with their levels and what each unblocks."""
-    tr = resolve(args)
-    starts = tr.startable()
-    for t, s in starts:
-        later = ", ".join(o.id for o in tr.waiting_on(t.id))
-        print(" · ".join(x for x in (f"{t.id}  {t.get('group') or '—'}  {t.get('title')}"
-                                     + (f" — {start_text(tr, s)}" if s.stacked else ""), levels_text(t),
-                                     f"unblocks {later}" if later else "") if x))
-    if not starts:
-        print("nothing can start now")
-
-
-# ---------------------------------------------------------------- body edits
-# `add` and `drop` change one line of a section of a ticket, a decision or the README, and `put` the whole section, so
-# a fact goes in without a hand edit of the file. A list section takes one bullet per `add`; link lines are checked as
-# `check` would. The edits themselves are in `model`.
-
-LIST_SECTIONS = {"Carry forward", "Links", "Context"}
-LINK_SECTIONS = {"Links", "Context"}
-OWNED_SECTIONS = {"Resolution": "`tracker decide D-<n> --resolve`"}
-
-
-def record_for(args, ident: str) -> tuple[Tracker, Record]:
-    """A record of any kind, or the README for `tracker` / `readme`."""
-    if ident.lower() in ("readme", "tracker"):
-        tr = resolve(args)
-        return tr, tr.readme
-    return locate(args, ident)
-
-
-def section_named(rec: Record, word: str, new: bool = False) -> str:
-    """The section a word names: a case-free prefix of one of the record's sections (`carry` → Carry forward), else a
-    part of one (`order` → Why this order). `new`: a README section that none matches is a new one, by that name (any
-    sections may follow the required ones)."""
-    known = (KINDS[rec.kind].sections if rec.kind in KINDS else ()) or headings(rec.body)
-    w = " ".join(word.lower().split())
-    hits = [h for h in known if h.lower().startswith(w)] or [h for h in known if w in h.lower()]
-    if not hits and new and rec.kind == "tracker" and w:
-        name = " ".join(word.split())
-        return name[0].upper() + name[1:]
-    if len(hits) != 1:
-        die(f"'{word}' names {'none' if not hits else 'more than one'} of {rec.id}'s sections: {', '.join(known)}"
-            + ("; `put tracker \"<new section>\" -` adds a README section" if rec.kind == "tracker" else ""))
-    if hits[0] in OWNED_SECTIONS:
-        die(f"## {hits[0]}: use {OWNED_SECTIONS[hits[0]]}")
-    return hits[0]
-
-
-def require_links(tr: Tracker, text: str) -> None:
-    items, bad = parse_links(text)
-    if bad or not items:
-        die("a link line is `- Label: [title](url) — why it matters`" + (f", not: {short(bad[0], 80)}" if bad else ""))
-    for x in items:
-        if x.label not in tr.labels:
-            die(f"label '{x.label}' is not one of {', '.join(tr.labels)} (`tracker set tracker labels=...` adds one)")
-
-
-def section_edit(args, new: bool = True) -> tuple[Tracker, Record, str]:
-    """The record and section an `add`, `put` or `drop` changes. A started ticket's Plan is the agreed plan: it
-    changes only with a reason (--why), which the log keeps."""
-    tr, rec = record_for(args, args.id)
-    heading = section_named(rec, args.section, new=new)
-    if heading == "Plan" and rec.kind == "ticket" and not rec.todo and not args.why:
-        die(f"{rec.id} has started, so its Plan is the agreed plan: pass why it changes, for the log: "
-            f"--why \"<why the plan changes>\"")
-    fit("log", args.why)
-    return tr, rec, heading
-
-
-def section_done(tr: Tracker, rec: Record, heading: str, why: str | None, did: str) -> None:
-    rec.change()
-    if why:
-        readme = rec.kind == "tracker"
-        append_log(tr, f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id])
-    print(f"{rec.id} {heading}: {did}")
-
-
-def cmd_add(args):
-    tr, rec, heading = section_edit(args)
-    text = args.text.strip()
-    if heading == "Carry forward":
-        fit("carry", text)
-    if args.replace:
-        replace_in_section(rec, heading, args.replace, text)
-        section_done(tr, rec, heading, args.why, "replaced")
-        return
-    if heading in LIST_SECTIONS and not BULLET.match(text):
-        text = "- " + text
-    if heading in LINK_SECTIONS:
-        require_links(tr, text)
-    append_to_section(rec, heading, text)
-    section_done(tr, rec, heading, args.why, "added")
-
-
-def cmd_put(args):
-    """Replace a whole section: a rewritten Plan, a Carry forward kept short, a new set of Links."""
-    tr, rec, heading = section_edit(args)
-    text = args.text.strip("\n")
-    if not text.strip():
-        die("put takes the section's whole new text: pass it, or `-` and pipe it (a heredoc: <<'EOF')")
-    if heading in LINK_SECTIONS:
-        require_links(tr, text)
-    if heading == "Carry forward":
-        for b in bullets(text):
-            fit("carry", b)
-    put_section(rec, heading, text)
-    section_done(tr, rec, heading, args.why, "replaced")
-
-
-def cmd_drop(args):
-    tr, rec, heading = section_edit(args, new=False)
-    n = drop_from_section(rec, heading, args.text)
-    section_done(tr, rec, heading, args.why, f"dropped {n} line(s)")
-
-
-def cmd_show(args):
-    """Records' own text, whole or by section, found as any command finds them: what `cat` of their files gives,
-    without the template's comments."""
-    words = csv(args.section)
-    out = []
-    for ident in id_list(args.ids):
-        if ident.lower() == "log":  # the log holds no sections: its last lines, as `history` gives them
-            out += ["== log (`tracker history` filters it)", *history_lines(resolve(args), [], "", HISTORY_LAST), ""]
-            continue
-        rec = record_for(args, ident)[1]
-        state = rec.stage if rec.kind == "ticket" else rec.get("status")
-        out.append("== " + " · ".join(str(x) for x in (rec.id, rec.get("title"), state) if x))
-        if not words:
-            text = re.sub(r"[ \t]*<!--.*?-->", "", rec.path.read_text(), flags=re.S)
-            out.append(re.sub(r"\n{3,}", "\n\n", text).strip())
-        parts = []
-        for word in words:
-            hits = [h for h in headings(rec.body) if h.lower().startswith(word.lower().strip())]
-            parts += [section_block(rec.body, h).strip() for h in hits] or [f"(no section '{word}')"]
-        out += ["\n\n".join(parts), ""] if parts else [""]
-    print("\n".join(out).rstrip())
-
-
-def append_evidence(folder: Path, file: str, text: str) -> str:
-    """`attach --append`: add text at the end of a file the evidence/ folder holds, named by its path or its name
-    there. Returns its name there."""
-    path = Path(file).expanduser().resolve()
-    name = str(path.relative_to(folder)) if path.is_relative_to(folder) else file
-    dest = folder / name
-    if not SAFE_NAME.fullmatch(dest.name) or not dest.resolve().is_relative_to(folder) or not dest.is_file():
-        die(f"no file {EVIDENCE_DIR}/{name} to append to: `tracker attach <file>` keeps a new one")
-    old = dest.read_text()
-    gap = "" if not old or old.endswith("\n\n") else "\n" if old.endswith("\n") else "\n\n"
-    atomic_write(dest, f"{old}{gap}{text.strip(chr(10))}\n")
-    return name
-
-
-def cmd_attach(args):
-    """Keep a file in the tracker's evidence/ folder and link it from the records it supports."""
-    tr = resolve(args)
-    folder = (tr.root / EVIDENCE_DIR).resolve()
-    if not folder.is_relative_to(tr.root.resolve()):
-        die(f"{EVIDENCE_DIR}/ must stay inside the tracker directory")
-    recs = [tr.find(ident) for ident in ids_of(tr, args.ref, {"ticket", "decision"}, "--ref")]
-    if args.append is not None:
-        if args.name or args.force:
-            die("--append adds to the file named: no --name or --force with it")
-        name = append_evidence(folder, args.file, args.append)
-        attached = "Appended to"
-    else:
-        name, attached = keep_evidence(args, folder), "Attached"
-    link = f"[{name}]({EVIDENCE_DIR}/{name})" + (f" — {args.note.strip()}" if args.note else "")
-    refs = []
-    for rec in recs:
-        if rec.kind == "ticket":
-            if not any(f"({EVIDENCE_DIR}/{name})" in x.text for x in rec.links):
-                append_to_section(rec, "Links", f"- {EVIDENCE}: {link}")
-        elif not (args.append is not None and f"({EVIDENCE_DIR}/{name})" in rec.body):
-            append_to_section(rec, "Options", f"- {today()}: {EVIDENCE}: {link}")
-        rec.change()
-        refs.append(rec.id)
-    append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
-    print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
-
-
-def keep_evidence(args, folder: Path) -> str:
-    """Copy the file into the evidence/ folder, unless it is there; its name there."""
-    src = Path(args.file).expanduser().resolve()
-    if not src.is_file():
-        die(f"no file {args.file}")
-    if src.is_relative_to(folder):
-        name = str(src.relative_to(folder))
-    else:
-        name = args.name or re.sub(r"[^A-Za-z0-9._-]+", "-", src.name)
-        if not SAFE_NAME.fullmatch(name):
-            die(f"'{name}' is not a file name: use letters, digits, `.`, `_` and `-`")
-        dest = folder / name
-        if dest.is_symlink() or not dest.resolve().is_relative_to(folder):
-            die(f"refusing to write {EVIDENCE_DIR}/{name}: destination is a symlink or outside {EVIDENCE_DIR}/")
-        if dest.exists() and dest.read_bytes() != src.read_bytes() and not args.force:
-            die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, --force to replace it, or `--append -` "
-                "to add text to it")
-        folder.mkdir(exist_ok=True)
-        with src.open("rb") as source, atomic_file(dest) as target:
-            shutil.copyfileobj(source, target)
-    return name
-
-
-def similar(a: str, b: str) -> float:
-    wa, wb = ({w for w in re.findall(r"[a-z0-9]{4,}", x.lower())} for x in (a, b))
-    return len(wa & wb) / max(1, len(wa | wb))
-
-
-def ids_of(tr: Tracker, raw: list[str] | None, kinds, flag: str) -> list[str]:
-    """The ids a flag names, each a record of one of `kinds`."""
-    out = []
-    for r in id_list(raw):
-        rec = tr.find(r)
-        if rec.kind not in kinds:
-            die(f"{flag} takes {kind_names(kinds)} ids; {r} is {a_kind(rec.kind)}")
-        out.append(rec.id)
-    return out
-
-
-def link_args(tr: Tracker, kind: str, args) -> tuple[list[str], set[str], list[str]]:
-    """A decision's or action's --refs, --unref and --blocks: the ids of the records it touches (KINDS refs) and of
-    the tickets it blocks."""
-    blocks = ids_of(tr, args.blocks, {"ticket"}, "--blocks")
-    refs = [r for r in ids_of(tr, args.refs, KINDS[kind].refs, "--refs") if r not in blocks]
-    return refs, set(ids_of(tr, args.unref, KINDS[kind].refs, "--unref")), blocks
-
-
-def existing(tr: Tracker, kind: str, target: str) -> Record | None:
-    """The record a command's target names by its numbered id (`D-3`); None for a new one's title."""
-    if id_kind(target) != kind:
-        return None
-    return tr.one_of(kind, target) or die(f"no {kind} {target}; to add one, pass its title instead")
-
-
-def refuse_similar(tr: Tracker, kind: str, title: str, force: bool) -> None:
-    """A new record titled like an open one of its kind is likely that one: name it, and exit 3 unless --force."""
-    clash = [r for r in tr.records_of(kind) if not r.closed and similar(str(r.get("title")), title) >= 0.5]
-    if clash and not force:
-        print("\n".join(f"similar open {kind}: {r.id} {r.get('title')}" for r in clash))
-        k = KINDS[kind]
-        die(f"add to that one with `tracker {k.command} {k.prefix}-<n> --note ...`, or pass --force if this is a "
-            f"different {kind}", 3)
-
-
-def block_tickets(tr: Tracker, ident: str, blocks: list[str]) -> list[str]:
-    """Record that each ticket in `blocks` waits on this decision or action. Returns the tickets newly blocked."""
-    return [t for t in blocks if add_waits(tr, tr.find(t), [ident])]
-
-
-def blocks_line(tr: Tracker, rec: Record, blocks: list[str]) -> str:
-    """`--blocks` on an existing decision or action: record and log the tickets newly blocked; the line, or ""."""
-    newly = block_tickets(tr, rec.id, blocks)
-    if not newly:
-        return ""
-    msg = f"{', '.join(newly)} now {'waits' if len(newly) == 1 else 'wait'} on {rec.id}"
-    append_log(tr, msg, [rec.id, *newly])
-    return msg
-
-
-def refs_after(tr: Tracker, rec: Record, refs: list[str], unrefs: set[str], blocks: list[str]) -> list[str]:
-    """A decision's or action's refs after `--refs`, `--unref` and `--blocks`: what it touches but does not block. A
-    ticket that waits on it leaves refs: depends_on says so."""
-    waiting = {t.id for t in tr.waiting_on(rec.id)} | set(blocks)
-    return sorted((set(rec.list("refs")) | set(refs)) - unrefs - waiting, key=sort_key)
-
-
-def cmd_decide(args):
-    tr = resolve(args)
-    refs, unrefs, blocks = link_args(tr, "decision", args)
-    if blocks and args.resolve:
-        die("--blocks with --resolve: a settled decision blocks nothing")
-    d = existing(tr, "decision", args.target)
-    if d:
-        if not (args.note or args.resolve or refs or unrefs or blocks or args.owner or args.question):
-            die("nothing to change: pass --note, --resolve, --refs, --unref, --blocks, --owner or --question")
-        upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
-        d.change({**upd, **({"owner": args.owner} if args.owner else {})})
-        if args.question:
-            append_to_section(d, "Question", dated(args.question))
-        if args.note:
-            append_to_section(d, "Options", f"- {dated(args.note)}")
-            append_log(tr, f"Updated {d.id}: {short(args.note)}", [d.id, *tr.touched_by(d)])
-        if msg := blocks_line(tr, d, blocks):
-            print(msg)
-        print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
-        return
-    if unrefs:
-        die("--unref changes an existing decision; pass its D-id")
-    refuse_similar(tr, "decision", args.target, args.force)
-    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
-    append_to_section(d, "Question", args.question or args.target)
-    if args.note:
-        append_to_section(d, "Options", f"- {args.note}")
-    if args.resolve:
-        resolve_decision(tr, d, args.resolve, args.by)
-        print(f"{d.id} recorded as settled: {d.path}")
-    else:
-        newly = block_tickets(tr, d.id, blocks)
-        append_log(tr, LOG["opened"].text(id=d.id, title=args.target)
-                   + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly])
-        print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
-
-
-def cmd_act(args):
-    tr = resolve(args)
-    refs, unrefs, blocks = link_args(tr, "action", args)
-    if args.done and args.drop:
-        die("--done or --drop, not both")
-    if blocks and (args.done or args.drop):
-        die("--blocks with --done or --drop: a closed action blocks nothing")
-    notes = args.note or []
-    for n in notes:
-        fit("note", n)
-    due = None if args.due is None else read_value("due", args.due)
-    a = existing(tr, "action", args.target)
-    if a:
-        if not (args.done or args.drop or args.note or refs or unrefs or blocks or due is not None or args.title):
-            die("nothing to change: pass --done, --drop, --note, --refs, --unref, --blocks, --due or --title")
-        if args.title:
-            fit("action", args.title)
-            old = a.get("title")
-            a.change({"title": " ".join(args.title.split())})
-            append_log(tr, f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")])
-        if refs or unrefs or blocks:
-            a.change({"refs": refs_after(tr, a, refs, unrefs, blocks)})
-        if msg := blocks_line(tr, a, blocks):
-            print(msg)
-        if due is not None:
-            a.change({"due": due})
-            append_log(tr, f"{a.id} due {due}" if due else f"{a.id} has no due date now", [a.id, *a.list("refs")])
-        if args.done or args.drop:
-            print(close_action(tr, a, "done" if args.done else "dropped", notes))
-            return
-        if notes:
-            append_notes(a, notes)
-            a.change()
-            append_log(tr, f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")])
-        print(f"{a.id} updated")
-        return
-    if args.done or args.drop or args.title or unrefs:
-        die("--done, --drop, --title and --unref change an action: pass its A-id")
-    fit("action", args.target)
-    refuse_similar(tr, "action", args.target, args.force)
-    a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
-    append_notes(a, notes)
-    newly = block_tickets(tr, a.id, blocks)
-    append_log(tr, LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
-               + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly])
-    print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
-
-
-def cmd_actions(args):
-    tr = resolve(args)
-    rows = tr.actions if args.all else tr.open_actions()
-    for a in rows:
-        state = a.get("status", "open")
-        refs = ", ".join(a.list("refs"))
-        age = days_since(a.get("created_at"))
-        when = day_text(a.get("closed_at")) if a.closed else \
-            f"due {a.get('due')}" if a.get("due") else f"open {age} d" if age else "added today"
-        print(f"{a.id}  {state:<7}  {a.get('title')}" + (f"  ({refs})" if refs else "") + f" · {when}")
-    if not rows:
-        print("no actions" if args.all else "no open actions")
-    closed = len(tr.actions) - len(tr.open_actions())
-    if not args.all and closed:
-        print(f"{closed} closed (`tracker actions --all` lists them too)")
-    if tr.actions:
-        print("`tracker show A-<n>` prints one with its notes")
-
-
-def cmd_rules(args):
-    print("\n".join(rules_lines(find_tracker(args))))
-
-
-def cmd_migrate(args):
-    tr = resolve(args)
-    plan = migrate(tr, apply=False)
-    if not plan:
-        print("nothing to migrate")
-        return
-    print("\n".join(plan))
-    if args.dry_run:
-        return
-    backup = HOME / ".backups" / f"{tr.slug}-{dt.datetime.now():%Y%m%d-%H%M%S}"
-    shutil.copytree(tr.root, backup, ignore=shutil.ignore_patterns(".DS_Store", "*.tmp"))  # Finder's, half-writes
-    migrate(Tracker(tr.root), apply=True)
-    append_log(tr, f"Migrated to the current tracker rules ({len(plan)} changes; backup {backup})", [])
-    print(f"\nmigrated · backup: {backup}")
-    errors, warnings = check(Tracker(tr.root))
-    print(f"check: {len(errors)} errors, {len(warnings)} warnings" + (" — run `tracker check`" if errors else ""))
-
-
-def problem_lines(tr: Tracker) -> list[str]:
-    errors, warnings = check(tr)
-    return [f"✗ {x}" for x in errors] + [f"⚠ {x}" for x in warnings]
-
-
-def cmd_check(args):
-    tr = resolve(args)
-    lines = problem_lines(tr)
-    print("\n".join(lines) or " · ".join(["ok", *(f"{len(tr.records_of(k))} {KINDS[k].folder}" for k in KINDS)]))
-    sys.exit(1 if any(x.startswith("✗") for x in lines) else 0)
-
-
-def cmd_sync(args):
-    tr = resolve(args)
-    changes = sync(tr, force=True)
-    print("\n".join(changes) if changes else "no changes")
-
-
-def cmd_issue(args):
-    """Record what the model read from a ticket's issue tracker, or with `--written` that it wrote the updates the
-    listing gave; with no id, list the tickets whose issue fields are to read and the issue updates to write, and
-    remember that listing for `--written` (STATE_RULES["issues"])."""
-    if not args.id:
-        tr = resolve(args)
-        due = tr.issues_to_read()
-        print("\n".join([*(f"{t.id}  " + issue_urls(t) for t in due),
-                         "", ISSUE_HOW]) if due else "no ticket's issue fields are to read")
-        updates = tr.issue_updates_due()
-        if updates:
-            tr.list_issue_updates(updates)  # what `--written` records
-            print("\n".join(["", f"Issue updates to write for {len(updates)} ticket(s):",
-                             *(f"{t.id}  {issue_urls(t)}\n" + "\n".join(f"  - {x}" for x in items)
-                               for t, items in updates), "", ISSUE_WRITE_HOW]))
-        return
-    tr, t = locate(args, args.id)
-    if t.kind != "ticket" or not t.aliases:
-        die(f"{t.id} has no Issue link: add one first (`tracker add {t.id} link \"Issue: [ID Title](url)\"`)")
-    updates = {}
-    for flag, key in ISSUE_FIELDS.items():
-        given = getattr(args, flag)
-        if given is not None:
-            updates[key] = read_value(key, given) or None  # empty: the issue has none now
-    if args.written:
-        if not tr.mark_issue_written(t):
-            die(f"{t.id}: `tracker issue` listed no update for it to write; run `tracker issue` first")
-        left = next((items for x, items in tr.issue_updates_due() if x.id == t.id), None)
-        print(f"{t.id}: written as listed" + (f"; due since the listing: {'; '.join(left)}" if left else ""))
-        if not updates:
-            return  # no fields given: the issue was written, not read
-    if updates:
-        t.save(updates)  # not `updated_at`: reading the issue is no change to the work
-    state = tr.raw_state()
-    state.setdefault("issues", {}).setdefault("read", {})[t.id] = time.time()
-    tr.save_state(state)
-    print(f"{t.id}: " + (", ".join(f"{k}={v or '(none)'}" for k, v in updates.items()) or "read; nothing to record"))
-
-
-def issue_urls(t: Record) -> str:
-    return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
-
-
-def cmd_synced(args):
-    m, cwd = on_branch(args)
-    print("; ".join(mark_up_to_date(m, cwd)))
-
-
-def cmd_pause(args):
-    m, cwd = on_branch(args)
-    print("; ".join(mark_up_to_date(m, cwd, args.text)))
-
-
-def cmd_step(args):
-    """A step in one command: the ticket's next action (or its close), Carry forward and a log line; then, when the
-    ticket is on the current branch, the branch's commits that the hooks have not logged are logged, its mark moves
-    and its handoff goes (with --pause, one is left). A step on another branch's ticket leaves this branch's mark and
-    handoff to its own tickets."""
-    for kind, text in [("log", args.message), ("next", args.next), ("summary", args.done),
-                       *(("carry", c) for c in args.carry or [])]:
-        fit(kind, text)
-    tr, t = named_or_own(args)
-    if t.kind != "ticket":
-        die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")
-    if args.done and (args.next or args.pause):
-        die("--done closes the ticket: a closed ticket has no next action, and its branch keeps no handoff. Pass "
-            "--next or --pause without --done")
-    cwd = work_dir()
-    m = match_cwd(cwd, tracker=tr) if branch_of(cwd) else None
-    here = m if m and t.id in {x.id for x in m.tickets} else None
-    if args.pause and not here:
-        die(f"--pause leaves a handoff on {t.id}'s branch: run it there (here: {m.branch if m else 'no git branch'})")
-    updates, done = {}, []
-    if args.next:
-        updates["next"] = args.next
-        done.append("next set")
-    if args.done:
-        updates.update(t.status_update("done"), summary=args.done)
-        done.append("done")
-    for fact in args.carry or []:
-        append_to_section(t, "Carry forward", fact if BULLET.match(fact) else f"- {fact}")
-    if args.carry:
-        done.append(f"{len(args.carry)} carry forward")
-    if updates or args.carry:
-        t.change(updates)
-    if args.message:
-        append_log(tr, args.message, [t.id])
-        done.append("logged")
-    if args.done:
-        append_log(tr, status_line(t), [t.id])
-    parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
-    if here:
-        parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
-    elif m:
-        parts.append(f"{m.branch} not marked: {t.id} is not on it")
-    print("; ".join(parts))
-
-
-def tracker_matches(words: list[str]) -> tuple[list[Tracker], bool]:
-    """The trackers a name names, and whether the match is sure: an exact slug, or the trackers whose slug and title
-    hold every word; else, as options only, the trackers that hold any word."""
-    trackers = all_trackers()
-    want = [w.lower() for w in words]
-    exact = [t for t in trackers if t.slug.lower() == "-".join(want)]
-    if exact:
-        return exact, True
-
-    def text(t: Tracker) -> str:
-        return f"{t.slug} {t.title}".lower().replace("-", " ")
-
-    every = [t for t in trackers if all(w.replace("-", " ") in text(t) for w in want)]
-    return (every, True) if every else ([t for t in trackers if any(w.replace("-", " ") in text(t) for w in want)],
-                                        False)
-
-
-def named_trackers(words: list[str]) -> tuple[list[Tracker], bool, str]:
-    """`tracker_matches`, and the head `one_tracker` prints when they are not one sure tracker."""
-    hits, sure = tracker_matches(words)
-    head = f"'{' '.join(words)}' " + ("matches more than one tracker:" if hits and sure else
-                                      "names no tracker for sure; the closest:" if hits else
-                                      "matches no tracker; trackers:")
-    return hits, sure, head
-
-
-def one_tracker(hits: list[Tracker], sure: bool, head: str, cmd: str) -> Tracker:
-    """The one tracker a name matched for sure; else `head`, the options and exit 3, so the model asks the user."""
-    if len(hits) == 1 and sure:
-        return hits[0]
-    options = hits or all_trackers() or die(NO_TRACKERS)
-    print("\n".join([head, *(f"  {t.slug} — {t.headline()}" for t in options),
-                     f"Pass the slug: `tracker {cmd} <slug>`"]))
-    sys.exit(3)
-
-
-def cmd_start(args):
-    """Tie a tracker to this agent session: its commands and hooks then use it; `--on` puts the session on some of
-    its tickets alone. With no name: the tracker that holds the `--on` tickets, else the tracker with an open ticket
-    on this branch; in a session that has a tracker, its brief. Never changes git; writes the tracker only to record a
-    branch that its PR ties to one ticket, and to log the branch's new commits, as the hooks do."""
-    sid, cwd = session_id(), work_dir()
-    if args.clear:
-        drop_session(sid)
-        print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
-        return
-    if args.decline:
-        branch = branch_of(cwd) or die("not on a git branch")
-        decline(cwd)
-        own = session_tracker(sid)
-        if own:  # any link goes; most often one the session start made (AUTO_LINKED)
-            drop_session(sid)
-        print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
-              f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
-        return
-    focus = id_list(args.on)
-    if not args.name and not focus and session_tracker(sid):
-        m = match_cwd(cwd, sid)
-        print(brief(m, cwd, with_protocol=False))
-        tell_updates(m.tracker)
-        return
-    if focus and not args.name:
-        hits, sure, head = [locate(args, focus[0])[0]], True, ""
-    elif args.name:
-        hits, sure, head = named_trackers(args.name)
-    else:
-        found = branch_matches(cwd)
-        hits, sure = [m.tracker for m in found], True
-        head = (f"branch '{found[0].branch}' has open tickets in more than one tracker:" if found else
-                f"branch '{branch_of(cwd) or '?'}' is on no open ticket in any tracker; trackers:")
-    tr = one_tracker(hits, sure, head, "start")
-    picks = [tr.find(i) for i in focus]
-    closed = [f"{r.id} is {r.stage if r.kind == 'ticket' else a_kind(r.kind)}" for r in picks
-              if r.kind != "ticket" or r.closed]
-    if closed:
-        die(f"--on takes open tickets: {'; '.join(closed)}")
-    if not sid:
-        die("no agent session id: set TRACKER_SESSION, or pass --tracker "
-            f"{tr.slug} to each command, or set TRACKER={tr.slug}")
-    drop_session(sid)  # a new start: nothing seen yet
-    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)
-    record_commits(m, cwd)  # as the hooks do: the commits since the branch's mark, or its baseline
-    remember(sid, m, cwd)
-    print(brief(m, cwd, note=found))
-    tell_updates(m.tracker)
-
-
-def cmd_watch(args):
-    """The user's watch: in a terminal, or in the agent session their watch command gave it (the prompt hook's
-    grant). The model never starts one: the command refuses a session without the grant."""
-    inside, sid = agent_session()
-    if inside and not granted(sid):
-        die("`tracker watch` starts only when the user asks: they run it in a terminal, or invoke the watch skill "
-            "in an agent session. Do not start it yourself.", REFUSED)
-    if args.name:
-        hits, sure, head = named_trackers(args.name)
-    else:
-        found = find_tracker(args)
-        hits, sure, head = ([found], True, "") if found else ([], False, "which tracker? trackers:")
-    tr = one_tracker(hits, sure, head, "watch")
-    Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal").run(args.once)
-
-
-def cmd_archive(args):
-    tr = tracker_at(args.slug) or die(no_tracker(args.slug))
-    try:
-        print(archive_tracker(tr, session_id()))
-    except Refused as exc:
-        die(str(exc), REFUSED)
-    except OSError as exc:
-        die(f"not archived: {exc}")
-
-
-def cmd_unarchive(args):
-    tr = archived_at(args.slug) or die(f"no archived tracker '{args.slug}' (`tracker list --archived` lists them)")
-    try:
-        print(unarchive_tracker(tr))
-    except Refused as exc:
-        die(str(exc), REFUSED)
-    except OSError as exc:
-        die(f"not brought back: {exc}")
-
-
-def cmd_delete(args):
-    """The user's: in a terminal, or from the viewer's tracker menu. The model never deletes a tracker: the command
-    refuses an agent session."""
-    if agent_session()[0]:
-        die("only the user deletes a tracker: in a terminal (`tracker delete <slug>`) or from the viewer's tracker "
-            "menu. Do not delete one yourself.", REFUSED)
-    tr = tracker_at(args.slug) or archived_at(args.slug) or \
-        die(f"no tracker '{args.slug}' (`tracker list --archived` lists them)")
-    if not args.yes:
-        if sys.stdin is None or not sys.stdin.isatty():
-            die("pass --yes to delete without the prompt")
-        answer = input(f"Delete {tr.slug} ({tr.title}): move {tr.root} to the system's trash? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            die("not deleted", 1)
-    try:
-        print(delete_tracker(tr))
-    except Refused as exc:
-        die(str(exc), REFUSED)
-    except OSError as exc:
-        die(f"not deleted: {exc}")
-
-
-def cmd_use(args):
-    cwd = work_dir()
-    branch = branch_of(cwd) or die("not on a git branch")
-    key = worktree_key(cwd, branch)
-    if args.clear:
-        for t in all_trackers():
-            state = t.state()
-            if state.get("use", {}).pop(key, None) is not None:
-                t.save_state(state)
-                print(f"{branch}: cleared the choice in {t.slug}")
-        return
-    ids = id_list(args.ids)
-    if not ids:
-        die("name the ticket(s) this branch works on, or pass --clear")
-    tr, first = locate(args, ids[0])
-    recs = [first, *(tr.find(i) for i in ids[1:])]
-    if any(r.kind != "ticket" for r in recs):
-        die("`use` takes ticket ids")
-    if branch not in default_branches(cwd):
-        # Recorded on each ticket (set_branch); the branch keeps its other tickets.
-        for t in recs:
-            if t.get("branch") != branch:
-                set_branch(tr, t, branch, f"was {t.get('branch')}" if t.get("branch") else "")
-        print(f"{branch}: {', '.join(t.id for t in tr.tickets_on(branch))}")
-        return
-    state = tr.state()
-    state.setdefault("use", {})[key] = [r.id for r in recs]
-    tr.save_state(state)
-    print(f"{key}: works on {', '.join(r.id for r in recs)} (this worktree and branch only; `tracker use --clear` "
-          f"undoes it)")
-
-
-def cmd_open(args):
-    from .viewer import viewer_ping, viewer_port
-    here = find_tracker(args) if args.id else None
-    whole = args.id and not (here and here.lookup(args.id)) and (tracker_at(args.id) or archived_at(args.id))
-    tr, rec = (whole, None) if whole else locate(args, args.id) if args.id else (resolve(args), None)
-    old = viewer_ping()  # a viewer on other code is replaced on its port, so its open pages carry on
-    port = viewer_port()
-    if not port:
-        spawn("serve", "--port", str(old[0] if old else VIEWER_PORT))
-        for _ in range(50):
-            time.sleep(0.1)
-            if port := viewer_port():
-                break
-        else:
-            die("viewer did not start")
-    url = f"http://127.0.0.1:{port}/t/{tr.slug}/" + (f"#{rec.id}" if rec else "")
-    if not args.no_browser:
-        import webbrowser
-        webbrowser.open(url)
-    print(url)
-
-
-def cmd_serve(args):
-    from .viewer import serve
-    serve(args.port)
-
+from .system import die
+from .store import first_writes, locked, Busy
+from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .model import unblocked, Tracker
+from .session import match_cwd, own_change, session_id, watch, work_dir
+from .contract import upgrade_trackers
+from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
+from .github import NAME as FORGE
+from .watcher import EVENT_KINDS, URGENT
+from .ui import GPUI_SHELL_VERSION
+from .commands import (cmd_act, cmd_actions, cmd_add, cmd_agents, cmd_archive, cmd_attach, cmd_attached,
+    cmd_await_change, cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence,
+    cmd_find, cmd_here, cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list,
+    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start,
+    cmd_step, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
 
 # ---------------------------------------------------------------- main
 
@@ -1139,14 +40,16 @@ def build_parser():
                                      "session's from `tracker start`, or the repo's only tracker)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name, fn, help_):
-        sp = sub.add_parser(name, help=help_, description=help_)
+    def add(name, fn, help_, listed=True):
+        """A command; `listed=False`: one a UI runs, which `tracker --help` leaves out."""
+        sp = sub.add_parser(name, **({"help": help_} if listed else {}), description=help_)
         sp.add_argument("--tracker", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         sp.set_defaults(fn=fn)
         return sp
 
     sp = add("list", cmd_list, "list all trackers, and how many are archived")
     sp.add_argument("--archived", action="store_true", help="list the archived trackers too")
+    sp.add_argument("--json", action="store_true", help="every tracker, archived too, as JSON for a UI")
     sp = add("init", cmd_init, "create a tracker")
     sp.add_argument("slug")
     sp.add_argument("--title", required=True)
@@ -1159,7 +62,7 @@ def build_parser():
                                  "links, the user's open actions, one line per ticket, whose move each ticket under "
                                  "way waits on, what can start and the critical path, then open decisions")
     sp.add_argument("--status", help=f"comma list of stages ({'|'.join(STAGES)})")
-    sp.add_argument("--active", action="store_true", help="hide closed tickets (merged, done, dropped)")
+    sp.add_argument("--active", action="store_true", help="hide closed tickets (done, dropped)")
     sp.add_argument("--group")
     sp = add("here", cmd_here, "the brief for this branch: its handoff, work the tracker may not show yet, its "
                                "tickets under way with what they build on, or what can start")
@@ -1195,15 +98,18 @@ def build_parser():
                              "add T-8 plan \"...\" --replace \"old text\"")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
-                                    "options, context, goal, scope; a README section it names none of is new")
-    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context)")
+                                    "options, notes, context, goal, scope; a README section it names none of is new")
+    sp.add_argument("text", help="the line; a bullet in a list section (Carry forward, Links, Context, Options, "
+                                 "Notes). A link "
+                                 f"line's label is one of {', '.join(DEFAULT_LABELS)}, or one of the tracker's own "
+                                 "(`rules` lists them)")
     sp.add_argument("--replace", metavar="OLD", help="replace this text, which occurs once in the section, instead")
     sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("put", cmd_put, "replace a whole section of a ticket, a decision or the README (`tracker`) with new "
                              "text, given or from stdin: put T-8 carry - <<'EOF' … EOF")
     sp.add_argument("id", help="ticket or decision id, or `tracker` for the README")
     sp.add_argument("section", help="a section, by a prefix or a part of its name: plan, carry, links, question, "
-                                    "options, context, goal, scope; a README section it names none of is new")
+                                    "options, notes, context, goal, scope; a README section it names none of is new")
     sp.add_argument("text", nargs="?", default="-", help="the section's whole new text; `-` or left out: from stdin")
     sp.add_argument("--why", help="why it changes: a log line; needed for the Plan of a started ticket")
     sp = add("drop", cmd_drop, "remove the one line of a section that holds this text (a bullet goes with its "
@@ -1217,7 +123,7 @@ def build_parser():
     sp.add_argument("ids", nargs="+", metavar="ID", help="ticket, decision or action ids (a comma list works "
                                                           "too), `tracker` for the README, or `log` for its last lines")
     sp.add_argument("--section", help="comma list of sections, by a prefix of the name: plan, carry, links, question, "
-                                      "options, resolution, context, goal, scope")
+                                      "options, notes, resolution, context, goal, scope")
     sp = add("history", cmd_history, "read the log: its last lines, oldest first, or those about some tickets or "
                                      "decisions, or since a date: history --ref T-8 D-2 --since 2026-10-01")
     sp.add_argument("--ref", **IDS, help="only the lines about these ids")
@@ -1241,6 +147,8 @@ def build_parser():
     sp.add_argument("--repo", help="the ticket's repo, when the tracker spans several")
     sp.add_argument("--depends", **IDS, help="ticket, decision or action ids it waits on")
     sp.add_argument("--next")
+    sp.add_argument("--plan", metavar="TEXT", help="the ticket's Plan as agreed: goal, scope, acceptance criteria "
+                                                   "(`-`: from stdin)")
     for key, scale in SCALES.items():
         sp.add_argument(f"--{key}", help=f"{scale.span} ({scale.ends}); with an Issue link, the issue's own")
     sp.add_argument("--due", metavar="YYYY-MM-DD", help="the day it should be done by, only one the user or its "
@@ -1248,7 +156,10 @@ def build_parser():
     sp = add("decide", cmd_decide, "open a direction decision (by title), or update / resolve one (by D-id)")
     sp.add_argument("target", nargs="?", help="a new decision's title, or an existing D-id")
     sp.add_argument("--question", help="what must be decided and why it matters (new: defaults to the title)")
-    sp.add_argument("--note", help="an option, proposal or new fact; added to ## Options")
+    sp.add_argument("--option", action="append", metavar="CHOICE", help="a choice to decide between, `<choice>` or "
+                                                                        "`<choice> — <what it costs>`; one per choice")
+    sp.add_argument("--recommend", metavar="CHOICE", help="the choice you recommend; added when it is new")
+    sp.add_argument("--note", help="a fact, proposal or finding; a dated line in ## Notes")
     sp.add_argument("--resolve", help="the answer; closes the decision")
     sp.add_argument("--by", help="who decided")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")
@@ -1286,11 +197,9 @@ def build_parser():
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
     add("check", cmd_check, "validate the tracker; exit 1 on errors")
-    sp = add("migrate", cmd_migrate, "bring a tracker made by an older version to the current rules "
-                                     "(backs it up to $TRACKER_HOME/.backups first)")
-    sp.add_argument("--dry-run", action="store_true", help="only list the changes")
-    add("sync", cmd_sync, f"pull each ticket's PR (number, state, base, merge time) from {FORGE}, and the open PRs' "
-                          "reviews, checks and merge state, from which each ticket's move is computed")
+    sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
+                               "base, reviews, checks and merge state, from which each ticket's move is computed")
+    sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with --written that its issue now shows "
                                  "the tracker's changes; with no id, list the tickets whose fields are to read and, "
@@ -1303,14 +212,11 @@ def build_parser():
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
     sp.add_argument("--written", action="store_true", help="every update `tracker issue` last listed for the "
                                                            "ticket is written to its issue; a change since stays due")
-    add("synced", cmd_synced, "log the current branch's commits that the hooks have not logged (they log each "
-                              "commit on a branch with a ticket under way), mark it at HEAD, and clear its handoff")
-    sp = add("pause", cmd_pause, "stopping mid-work: leave the state of the branch's unfinished work for the next "
-                                 "session (shown first in its brief), and mark the branch at HEAD")
-    sp.add_argument("text", help="what is done, what is half-done and uncommitted, and the next step")
     sp = add("step", cmd_step, "record a step in one command: the next action (or --done), Carry forward and a log "
-                               "line; then, for a ticket on this branch, log the commits the hooks have not and clear "
-                               "its handoff, as `synced` does (with --pause, leave one, as `pause`)")
+                               "line; then, for a ticket on this branch, log the commits the hooks have not (they log "
+                               "each commit on a branch with a ticket under way), mark it at HEAD and clear its "
+                               "handoff (with --pause, leave one for the next session, which its brief shows first). "
+                               "With no arguments, only that last part, for the current branch")
     sp.add_argument("id", nargs="?", help="the ticket; left out: this session's one ticket")
     sp.add_argument("message", nargs="?", help="what changed and why that the commit subjects do not say (the hooks "
                                               "log those): a log line")
@@ -1336,14 +242,27 @@ def build_parser():
                              "only")
     sp.add_argument("ids", nargs="*", help="ticket ids")
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
-    sp = add("watch", cmd_watch, "for the user: print each change that may need them, one line per ticket or agent "
-                                 "(`!` marks what does), until Ctrl-C: a move that becomes theirs, a step, a decision, "
-                                 "a PR event, an agent idle and waiting on them, a `check` error. One watcher per "
-                                 "tracker. In an agent session it runs only after the user invokes the watch skill")
+    sp = add("watch", cmd_watch, "print each change to a tracker, one line per ticket or agent (`!` marks what needs "
+                                 "the user), until stopped: a move, a step, a decision, a PR event, an agent that ends "
+                                 "its turn or waits on the user, a `check` error. One watch per session and tracker. "
+                                 "In an agent session, run it only when the user, or a skill or instruction from "
+                                 "them, tells you to watch: never on your own")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
-    sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the viewer. "
+    sp.add_argument("--only", metavar="KINDS", help="print only these kinds of event, comma-separated: "
+                    + "; ".join(f"{k} ({what})" for k, what in EVENT_KINDS.items())
+                    + f"; {URGENT} (any marked `!`)")
+    sp.add_argument("--stop", action="store_true", help="end this session's watch: a running `tracker watch` of it "
+                                                        "stops within seconds")
+    sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
+                    help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
+                         "marked `!` prints at once, with those held")
+    sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
+                                   "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
+                                   "transcript file")
+    sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
+    sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the UI. "
                                      "Refuses while another agent session or a watch is on it")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp = add("unarchive", cmd_unarchive, "bring an archived tracker back")
@@ -1352,55 +271,66 @@ def build_parser():
                                    "Refuses while an agent session or a watch is on it, and in an agent session")
     sp.add_argument("slug", help="the tracker's exact slug")
     sp.add_argument("--yes", action="store_true", help="delete without the prompt")
-    sp = add("open", cmd_open, "open the live viewer in the browser (starts it if needed; it stops itself when no "
-                                "page or tracked agent session needs it)")
-    sp.add_argument("id", nargs="?", help="ticket or decision to open, or another tracker by its slug (an "
-                                             "archived one too)")
-    sp.add_argument("--no-browser", action="store_true", help="only start the viewer and print its URL")
-    sp = sub.add_parser("serve")
-    sp.add_argument("--port", type=int, default=0)
-    sp.set_defaults(fn=cmd_serve)
+    sp = add("data", cmd_data, "all a UI shows of a tracker, as JSON", listed=False)
+    sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
+    sp = add("await-change", cmd_await_change, "wait until what a UI shows of a tracker may have changed", listed=False)
+    sp.add_argument("slug", nargs="?", help="tracker slug (an archived one too)")
+    sp = add("attached", cmd_attached, "the tracker linked to the agent in a process, as JSON, for a UI", listed=False)
+    sp.add_argument("--pid", type=int, required=True, help="the agent's process id")
+    sp.add_argument("--cwd", default="", help="its folder: finds a host that keeps no process file")
+    sp = add("open", cmd_open, "show the tracker in its UI: a tab in Herdr when Herdr is open with the mod, else its "
+                                  "own window")
+    sp.add_argument("id", nargs="?", help="ticket, decision or action to open, or another tracker by its slug "
+                                             "(an archived one too)")
+    sp.add_argument("--window", action="store_true", help="its own window, also when Herdr is open")
+    add("install-window", cmd_install_window, f"download gpui-shell {GPUI_SHELL_VERSION} for this system, which the "
+                                              "UI's own window needs")
+    add("install-mod", cmd_install_mod, "install the UI as a Herdr mod, which runs this CLI; later plugin versions "
+                                        "update it")
+    add("refresh", cmd_refresh, "pull PR state now, and have the next session prompt read the issue fields again: a "
+                                "UI's Refresh", listed=False)
+    sp = add("evidence", cmd_evidence, "open a file of the tracker's evidence/ on the user's screen: a UI's link",
+             listed=False)
+    sp.add_argument("file", help="its path under evidence/")
     return p, sub
 
 
-WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "migrate", "synced", "pause", "step", "use",
+WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "step", "use",
                   "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
 
 
 def with_check(run, args) -> None:
     """Run a write command, then print the tickets it left unblocked, the request for an issue update it made due,
     and the `check` problems it added to the tracker, and end with whether `check` found new problems: no
-    `tracker check` needs to follow a write. Each write logs what the history needs, so no `tracker log` follows one
-    either. `migrate` checks for itself; `init` is not checked."""
-    tr = find_tracker(args) if args.cmd not in ("init", "migrate") else None
-    before = set(problem_lines(tr)) if tr else set()
-    blocked = {t.id for t in tr.tickets if tr.blockers(t)} if tr else set()
-    due = issue_update_items(tr) if tr else set()
-    run()
-    if not tr:
+    `tracker check` needs to follow a write. Each tracker the command writes is compared with itself as it was before
+    its first write (`first_writes`), so a write to another tracker (`slug:ID`, an id found in any tracker) reports on
+    that one."""
+    if args.cmd == "init":
+        run()
         return
-    tr = Tracker(tr.root)
-    added = [x for x in problem_lines(tr) if x not in before]
-    lines = unblocked(tr, blocked)
-    if issue_update_items(tr) - due:  # this write made an issue update due: ask for it now
-        lines.append(issue_update_request(tr))
-        tell_updates(tr)
-    if added:
-        lines += ["This change added `tracker check` problems:", *added]
-    print("\n".join([*lines, "`check`: " + ("fix the problems above" if added else "no new problems")]))
+    before = {}
+
+    def snapshot(root: Path) -> None:
+        tr = Tracker(root)
+        before[root] = (set(problem_lines(tr)), {t.id for t in tr.tickets if tr.blockers(t)}, issue_update_items(tr))
+
+    with first_writes(snapshot):
+        run()
+    for root, (problems, blocked, due) in before.items():
+        tr = Tracker(root)
+        added = [x for x in problem_lines(tr) if x not in problems]
+        lines = unblocked(tr, blocked)
+        if issue_update_items(tr) - due:  # this write made an issue update due: ask for it now
+            lines.append(issue_update_request(tr))
+            tell_updates(tr)
+        if added:
+            lines += ["This change added `tracker check` problems:", *added]
+        lines.append("`check`: " + ("fix the problems above" if added else "no new problems"))
+        print("\n".join(lines))
 
 
 def issue_update_items(tr: Tracker) -> set[tuple[str, str]]:
     return {(t.id, x) for t, items in tr.issue_updates_due() for x in items}
-
-
-def tell_updates(tr: Tracker) -> None:
-    """This session was just told tr's issue updates due (a brief, a write's request): its prompt hook does not
-    repeat them."""
-    sid = session_id()
-    own = session_tracker(sid) if sid else None
-    if own and own.slug == tr.slug:
-        save_session(sid, told_updates=updates_told(tr))
 
 
 def own_changes(run) -> None:
@@ -1422,8 +352,8 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
-TEXT_DESTS = ("message", "text", "next", "done", "pause", "carry", "question", "note", "resolve", "replace", "append",
-              "why", "pairs")
+TEXT_DESTS = ("message", "text", "next", "plan", "done", "pause", "carry", "question", "note", "resolve", "replace",
+              "append", "why", "pairs")
 
 
 def no_id(args) -> None:
@@ -1495,9 +425,7 @@ def main(argv=None):
     reclaim(args, argv, parser)
     no_id(args)
     stdin_text(args)
-    if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive")) and watching():
-        die("this session watches trackers for the user (/work-tracker:watch): it writes nothing to them, and works "
-            "on no tracker", REFUSED)
+    upgrade_trackers()
     try:
         if args.cmd in WRITE_COMMANDS:
             with locked():

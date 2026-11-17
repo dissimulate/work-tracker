@@ -1,7 +1,6 @@
 #!/bin/sh
-# On the Bash tool's PATH while the plugin is enabled. Runs the scripts/tracker package; Python reuses its compiled
-# bytecode.
+# On the Bash tool's PATH while the plugin is enabled. Runs the scripts/tracker package.
 scripts="$(dirname "$0")/../scripts"
 . "$scripts/python.sh"
-exec "$python" -I -X utf8 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()' \
+exec "$python" -I -X utf8 ${pycache:+-X} ${pycache:+"pycache_prefix=$pycache"} -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from tracker.cli import main; main()' \
   "$scripts" "$@"

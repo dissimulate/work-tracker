@@ -31,7 +31,7 @@ def contains(cwd: str | Path, branch: str) -> bool | None:
     return None
 
 
-@cache  # a worktree's branch does not change during one command; the viewer, which runs for hours, clears it
+@cache  # a worktree's branch does not change during one command, or one look of `tracker watch` (`forget`)
 def worktree(cwd: str | Path) -> tuple[Path | None, str]:
     """The worktree root that holds `cwd`, and its branch ("" when detached), read from git's files rather than by
     running git: a linked worktree's or a submodule's `.git` is a file that names its git directory."""
@@ -59,6 +59,13 @@ def head_of(cwd: str | Path) -> str:
 @cache
 def remote_of(cwd: str | Path) -> str:
     return git(cwd, "config", "--get", "remote.origin.url")
+
+
+def forget() -> None:
+    """Drop what `worktree` and `remote_of` keep: a command that runs on (`tracker watch`) calls this at each look, as
+    an agent can change its branch or remote between looks."""
+    worktree.cache_clear()
+    remote_of.cache_clear()
 
 
 STATUS_FIELDS = {"1": 8, "u": 10, "?": 1}  # `git status --porcelain=v2`: the fields before an entry's path
@@ -102,5 +109,5 @@ def repo_slug(remote: str) -> str:
 
 
 def cwd_repo(cwd: str | Path) -> str:
-    """`owner/name` of the repo that holds `cwd`, from its remote; "" without one."""
+    """The slug (`repo_slug`) of the repo that holds `cwd`, from its `origin` remote; "" without one."""
     return repo_slug(remote_of(cwd))

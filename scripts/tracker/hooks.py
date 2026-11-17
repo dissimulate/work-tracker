@@ -1,4 +1,5 @@
-"""Agent hooks: scripts/hook.sh runs `run_hook(<event>)` with the hook JSON on stdin, after its shell filters."""
+"""Agent hooks: scripts/hook.sh runs `run_hook` with the handlers its shell filters let through, and the hook JSON on
+stdin."""
 
 from __future__ import annotations
 
@@ -10,13 +11,15 @@ import sys
 import time
 from pathlib import Path
 
-from .model import (DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S, VIEWER_FILE, VIEWER_PORT,
-    locked, plugin_version, read_json, set_branch, short, Tracker)
-from .system import env_int, spawn
+from .system import env_int, spawn, warn
+from .store import locked, record_cli
+from .schema import DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
+from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
+from .contract import prune_backups, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -27,20 +30,14 @@ PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's 
 # A hook adds context only when it changes what the model does next, and says each thing once.
 
 
-def keep_viewer() -> None:
-    """Start the viewer when none runs, or when the one that runs is an older release of the plugin (after an update,
-    the old copy's viewer would serve its old code while sessions run), so the user's pages and bookmarks work while
-    they work with an agent. A connect only, with no HTTP and no viewer code: the hook stays fast."""
-    import socket
-    if not VIEWER_PORT:
-        return
-    try:
-        info = read_json(VIEWER_FILE)
-        if list(info.get("version") or []) < plugin_version():
-            raise ValueError("an older release's viewer")  # `serve` stops it and takes its port
-        socket.create_connection(("127.0.0.1", int(info["port"])), timeout=0.5).close()
-    except (OSError, ValueError, KeyError, TypeError):
-        spawn("serve", "--port", str(VIEWER_PORT))
+def record_version() -> None:
+    """Record how a UI outside any session starts the CLI (`record_cli`). On a new plugin version, or a change to the
+    mod's files, also bring the Herdr mod the user installed to it (`update_mod`) and remove old backups
+    (`prune_backups`). `ui` loads only then."""
+    if record_cli():
+        from .ui import update_mod
+        update_mod()
+        prune_backups()
 
 
 def hook_input() -> dict:
@@ -82,8 +79,8 @@ def offer(found: list[Match]) -> tuple[str, str]:
                for m in found[:3]]
     ask = (f"[work-tracker] This session is on no tracker. Branch `{found[0].branch}` has open tickets in {names}.\n"
            "In your first reply, before other work, use the host's question tool to ask whether to link this session "
-           f"to it. Options: {', '.join(options)}, and \"Not now\" (run `tracker start --decline`: no offer on this "
-           "branch for a day). Skip the question when the user's message already answers it.")
+           f"to it. Options: {', '.join(options)}, and \"Not now\" (run `tracker start --decline`: no link or offer "
+           "on this branch for a day). Skip the question when the user's message already answers it.")
     return ask, (f"[work-tracker] Branch `{found[0].branch}` has open tickets in {names}. The agent asks at your first "
                  "message whether to link this session.")
 
@@ -91,9 +88,8 @@ def offer(found: list[Match]) -> tuple[str, str]:
 def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
     """The match a session with no tracker links at its start without asking the user: one tracker only, and a
     ticket's `branch` names this branch, which is not a default branch (where many works share a branch, the user
-    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos).
-    Never a session with the watch: it stays on no tracker."""
-    if len(found) != 1 or found[0].how != "branch" or not sid or granted(sid):
+    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos)."""
+    if len(found) != 1 or found[0].how != "branch" or not sid:
         return None
     m, slug = found[0], cwd_repo(cwd)
     if not slug or any(m.tracker.repo_of(t).lower() != slug for t in m.tickets):
@@ -124,20 +120,23 @@ def hook_session_start(data: dict) -> None:
                 emit_context("SessionStart", "")
             return
         drop_session(sid)
-        save_session(sid, tracker=sure.tracker.slug, auto=True)  # `auto`: the user's watch may undo it
+        save_session(sid, tracker=sure.tracker.slug)
         m = match_cwd(cwd, sid)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    keep_viewer()
-    changes = sync(m.tracker, force=False)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)  # reload after sync
-    record_commits(m, cwd)  # made since the last session, as in the terminal; or the branch's baseline
+    record_version()
+    m, found = match_pr(m, cwd)
+    record_commits(m, cwd)  # made since the last session, as in the terminal
     remember(sid, m, cwd)
-    if sid:
-        save_session(sid, told_updates=updates_told(m.tracker))  # the brief lists them: no prompt repeats it
     note = "\n\n".join(x for x in (note, found) if x)
-    emit_context("SessionStart", brief(m, cwd, changes, note, compact=source == "compact"), notice)
+    text = brief(m, cwd, note, compact=source == "compact")
+    fields = {"told_updates": updates_told(m.tracker)}  # the brief lists them: no prompt repeats them
+    # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
+    sync_later(m.tracker, load_session(sid), fields)
+    if sid:
+        save_session(sid, **fields)
+    emit_context("SessionStart", text, notice)
 
 
 def hook_session_end(data: dict) -> None:
@@ -152,8 +151,8 @@ def hook_session_end(data: dict) -> None:
 def adopt_branch(m: Match, cwd: str | Path) -> None:
     """A branch that holds one ticket's id in its name (made when the user asked): record it on the ticket
     (`set_branch`)."""
-    if m.how != "name" or len(m.tickets) != 1 or m.branch in default_branches(cwd):
-        return
+    if m.how != "name" or len(m.tickets) != 1 or m.tickets[0].get("branch") or m.branch in default_branches(cwd):
+        return  # the ticket's branch read first: it costs no git run and no lock
     with locked():
         tr = Tracker(m.tracker.root)
         t = tr.lookup(m.tickets[0].id)
@@ -208,7 +207,7 @@ def hook_post_bash(data: dict) -> None:
     out = []
     if pr:
         adopt_branch(m, cwd)
-        changes = sync(m.tracker, force=True)
+        changes = sync(m.tracker, every=0)
         if changes and not subagent:
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
     if commit:
@@ -249,62 +248,49 @@ def state_line(m: Match, work: Lag) -> str:
             + ".")
 
 
-def refresh(m: Match, entry: dict, fields: dict) -> None:
-    """With tickets under way, pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at
-    most that often per session): a later message then reports what it changed, such as a review that makes a move
-    yours. This message does not wait for it."""
+def sync_later(tr: Tracker, entry: dict, fields: dict) -> None:
+    """Pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at most that often per
+    session, by `fields`' sync_asked): a later message reports what it changed (`changes_since`), such as a review
+    that makes a move yours. The hook does not wait for it."""
     now = time.time()
-    last = max(m.tracker.state().get("last_sync", 0), entry.get("sync_asked", 0))
-    if not m.active or not m.tracker.repos or now - last < SYNC_MIN_INTERVAL_S:
+    last = max(tr.state().get("last_sync", 0), entry.get("sync_asked", 0))
+    if not tr.repos or now - last < SYNC_MIN_INTERVAL_S:
         return
     fields["sync_asked"] = int(now)
     try:
-        spawn("--tracker", m.tracker.slug, "sync")
-    except OSError:  # the message's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
+        spawn("--tracker", tr.slug, "sync")
+    except OSError:  # the hook's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
         pass
 
 
-WATCH_PROMPT = re.compile(r"[/$](?:work-tracker:)?watch\b(.*)", re.S)
+WATCH_PROMPT = re.compile(r"[/$]work-tracker:watch\b(.*)", re.S)  # not a bare /watch: another plugin's
 
 
 def watch_request(data: dict) -> bool:
-    """The user typed /work-tracker:watch: give this session the watch (`tracker watch` then runs in it), or end it
-    (`stop`). A session the user put on a tracker does the work, so it does not watch; one the session start linked
-    (`auto`) leaves its tracker and watches."""
+    """The user typed /work-tracker:watch: give this session the watch, which its skill then starts, or end it (`stop`)
+    at once, also while the model is busy: a running watch stops at its next look."""
     m = WATCH_PROMPT.fullmatch(str(data.get("prompt") or "").strip())
     sid = where(data)[1]
     if not m or not sid:
         return False
-    stop = m[1].split() == ["stop"]
-    entry = load_session(sid)
-    own = entry.get("tracker")
-    if own and entry.get("auto") and not stop:  # linked by the session start, not by the user: the watch wins
-        drop_session(sid)
-        set_grant(sid, True)
-        emit_context("UserPromptSubmit", f"[work-tracker] This session is off {own} now: it watches. The brief at its "
-                     "start no longer applies.")
-    elif own and not stop:
-        emit_context("UserPromptSubmit", f"[work-tracker] This session works on tracker {own}, so it cannot watch: "
-                     "tell the user to type /work-tracker:watch in a new session.")
-    else:
-        set_grant(sid, not stop)
+    set_grant(sid, m[1].split() != ["stop"])
     return True
 
 
 def hook_prompt(data: dict) -> None:
     """On tracked work, each user message gets what other sessions or GitHub changed since its last message (or its
     brief), `next_request` when commits (a subagent's too) passed `next`, the issue fields a Refresh asked for and an
-    issue update newly due (updates_told), each once; the first message and every
-    NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. Work since the branch's mark with
-    no ticket in progress brings the state line at once, once per mark. A stale GitHub sync starts in the background
-    (`refresh`)."""
+    issue update newly due (updates_told), each once. With a ticket under way, the first message and
+    every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
+    branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
+    way, a stale GitHub sync starts in the background (`sync_later`)."""
     if watch_request(data):
         return
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
-    keep_viewer()
+    record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]
@@ -313,14 +299,14 @@ def hook_prompt(data: dict) -> None:
     news = changes_since(m.tracker, entry["seen"], now) if entry.get("seen_for") == ids and ids else []
     fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | ({} if inside_home(cwd) else {"cwd": str(cwd)})
     lines = []
-    if news:
-        lines.append(f"[work-tracker] Changed since your brief on {', '.join(ids)} (by another session or "
-                     f"a PR sync): " + "; ".join(news) + ".")
+    if news and not granted(sid):  # a watching session has them from its watch
+        lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
+                     "another session or a PR sync): " + "; ".join(news) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say
     asked = m.tracker.issue_reads()[1]
-    if asked and asked != entry.get("told_issues"):  # the viewer's Refresh: passed on once
+    if asked and asked != entry.get("told_issues"):  # a UI's Refresh: passed on once
         fields["told_issues"] = asked
         lines += [x for x in [issue_request(m.tracker, m.focus)] if x]
     updates = updates_told(m.tracker)
@@ -332,11 +318,14 @@ def hook_prompt(data: dict) -> None:
     told = bool(mark) and entry.get("idle_told") == (mark.get("at") or 0)  # said for this mark: no git until the next
     work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle and not told) else None
     new = work is not None and bool(work.commits or work.files)
-    if work is not None and (n % NUDGE_EVERY == 0 or (new and entry.get("idle_told") != work.since)):
+    # With no ticket under way, the brief named what can start: the line comes back only for work since the mark.
+    due = n % NUDGE_EVERY == 0 and (m.active or new)
+    if work is not None and (due or new and entry.get("idle_told") != work.since):
         lines.append(state_line(m, work))
         if idle and new:
-            fields["idle_told"] = work.since  # said once per mark
-    refresh(m, entry, fields)
+            fields["idle_told"] = work.since
+    if m.active:  # a session with no ticket under way learns of GitHub at its next start
+        sync_later(m.tracker, entry, fields)
     if sid:
         save_session(sid, **fields)
     if lines:
@@ -356,8 +345,8 @@ def approval_only(tool_input: dict) -> bool:
 
 
 def hook_answered(data: dict) -> None:
-    """The user answered a question the AI asked: an answer that settles direction is a decision made. A yes or no to
-    go ahead settles none."""
+    """The user answered a question the agent asked: an answer that settles direction is a decision made. A yes or no
+    to go ahead settles none."""
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
     if match_cwd(*where(data)):
@@ -375,31 +364,45 @@ def hook_subagent_start(data: dict) -> None:
                      + (f", ticket {ids}" if ids else "") + ". Read it when you need to (`tracker index` for the "
                      "whole work; `tracker context <id>` and `tracker show <id> --section <name>` for one ticket or "
                      "decision, by its id, not the tracker's name), but do not write it: run no `tracker` command that "
-                     "changes it, and edit no tracker file. The hooks log your commits; put what else it should "
-                     "record (a finished step, a fact a later ticket needs, a decision, a blocker) in your final "
-                     f"answer: the session records it. {ISOLATION_RULE}")
+                     "changes it, and edit no tracker file. The hooks log your commits; put what else the session "
+                     "should record (a finished step, a fact a later ticket needs, a decision, a blocker) in your "
+                     f"final answer. {ISOLATION_RULE}")
 
 
 HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": hook_session_end,
          "post-bash": hook_post_bash, "edit": hook_edit,
-         "prompt": hook_prompt, "answered": hook_answered, "subagent-start": hook_subagent_start}
+         "prompt": hook_prompt, "answered": hook_answered, "subagent-start": hook_subagent_start,
+         "waiting": lambda data: None, "resumed": lambda data: None, "stop-failure": lambda data: None}
 
 
 HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks that call gh 15 s
 
 
-def run_hook(event: str) -> None:
+STATUS_OF = {"session-start": "idle", "prompt": "busy", "stop": "idle", "stop-failure": "idle", "session-end": "ended",
+             "waiting": "waiting", "resumed": "busy"}  # the session's status after each event
+
+
+def run_hook(*events: str) -> None:
+    """Run each handler that scripts/hook.sh chose for one hook event, in order (after a tool: its own, then
+    `resumed`)."""
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
+    event = events[0] if events else ""
     try:
+        upgrade_trackers()
         sid = where(data)[1]
         os.environ["TRACKER_SESSION"] = sid  # command_context, session_id() and spawned commands read it
-        status = {"session-start": "idle", "prompt": "busy", "stop": "idle", "session-end": "ended"}.get(event)
-        if event == "session-end" and not data.get("agent_id"):
-            session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
-        HOOKS[event](data)
-        if status and event != "session-end" and not data.get("agent_id"):
-            session_activity(sid, status)
+        for event in events:
+            status = STATUS_OF.get(event)
+            if event == "session-end" and not data.get("agent_id"):
+                session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
+            HOOKS[event](data)
+            # A subagent's turn is not the session's, but its wait on the user is.
+            asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
+            if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
+                places = {} if data.get("agent_id") else {  # a subagent's transcript is not the session's
+                    "transcript": str(data.get("transcript_path") or ""), "terminal": os.environ.get("HC_TERMINAL_ID")}
+                session_activity(sid, status, asker, places)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
-        print(f"work-tracker hook {event} failed: {exc}", file=sys.stderr)
+        warn(f"hook {event} failed: {exc}")
         sys.exit(0)
