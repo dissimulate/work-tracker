@@ -237,6 +237,18 @@ export function fitWidth(texts, size) {
   return Math.ceil(Math.max(0, ...[...texts].map(x => String(x ?? "").length)) * size * 0.55);
 }
 
+// How many of a row's columns fit in `room` px, each `gap` before it: they come in the order they leave as the row
+// narrows, last first, so that a column shows only with all those before it. The first always shows.
+export function columnsThatFit(widths, room, gap) {
+  let n = 0, used = 0;
+  for (const w of widths) {
+    used += gap + w;
+    if (n && used > room) break;
+    n++;
+  }
+  return n;
+}
+
 export const hhmm = date => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 
 // What the live line says: when the data was read, when GitHub was, and the issue fields' state.

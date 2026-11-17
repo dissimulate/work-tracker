@@ -22,12 +22,12 @@
 //                       view follows that agent's tracker, unless it was opened on a tracker
 import { PathBuilder, View, div } from "gpui-kit";
 import { Popover, Popup, TextView, h_flex, v_flex } from "gpui-base";
-import { agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
+import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, followNotice, idWidth, isLoading, GRAPH, graphLayout, liveLine, linkTarget, meaningOf, moveStatus, nextSort, parseOpen,
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
 const SCHEMA = 6; // viewmodel.VIEW_SCHEMA
-const GROUP_MIN = 560, LEVELS_MIN = 800; // the sequence's width from which those columns show
+const TITLE_MIN = 120; // the least width a ticket's title keeps in the sequence before a column leaves
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 // The longest the view waits for a change: a session that ends with no hook, and another machine's tracker, change
 // nothing a host watches. `tracker await-change` ends by itself at about this long too (CHANGE_WAIT_S).
@@ -436,17 +436,21 @@ export function trackerView(host) {
     }
 
     // The columns that fit the sequence's width, each [key, label, width, the cell's text and colour]: each as wide as
-    // its heading or its longest cell among these rows, and the ticket's title takes what is left.
-    columns(view, rows, width, t) {
-      const cols = [["status", "Status", r => [rowWord(r), tone(rowStatus(r), t)]]];
-      if (width >= GROUP_MIN) cols.push(["group", "Group", r => [r.group, t.muted]]);
-      if (width >= LEVELS_MIN) {
-        view.scales.forEach(key => cols.push([key, key[0].toUpperCase() + key.slice(1), r => [r.levels[key], t.muted]]));
-        cols.push(["waits", "← Waits on", r => [r.waits.map(d => d.id + (d.done ? " ✓" : "")).join(", "), t.muted]]);
-        cols.push(["unblocks", "→ Unblocks", r => [r.unblocks.join(", "), t.muted]]);
-      }
+    // its heading or its longest cell among these rows. They leave from the right as the width narrows, so that the
+    // ticket's title keeps TITLE_MIN; it takes what is left.
+    columns(view, rows, width, graphW, t) {
+      const cols = [
+        ["status", "Status", r => [rowWord(r), tone(rowStatus(r), t)]],
+        ...view.scales.map(key => [key, key[0].toUpperCase() + key.slice(1), r => [r.levels[key], t.muted]]),
+        ["group", "Group", r => [r.group, t.muted]],
+        ["waits", "← Waits on", r => [r.waits.map(d => d.id + (d.done ? " ✓" : "")).join(", "), t.muted]],
+        ["unblocks", "→ Unblocks", r => [r.unblocks.join(", "), t.muted]],
+      ];
       const sized = (label, cell) => Math.max(fitWidth(rows.map(r => cell(r)[0]), TEXT.small), fitWidth([`${label} ↓`], TEXT.tiny));
-      return cols.map(([key, label, cell]) => [key, label, sized(label, cell), cell]);
+      const all = cols.map(([key, label, cell]) => [key, label, sized(label, cell), cell]);
+      // A row (`row`): its padding, then the graph, the id and the title, a gap after each, then the columns.
+      const room = width - 2 * SPACE.lg - (graphW + SPACE.lg) - (this.idColumn + SPACE.lg) - TITLE_MIN;
+      return all.slice(0, columnsThatFit(all.map(([, , w]) => w), room, SPACE.lg));
     }
 
     heading(key, label, t, size) {
@@ -501,8 +505,8 @@ export function trackerView(host) {
       const filters = filterCounts(view.tickets, view.stages);
       const rows = sortRows(filterRows(view.tickets, filters.map(([key]) => key).filter(key => this.filters.has(key))), this.sort);
       const layout = graphLayout(rows, SIZE.row, this.focusId);
-      const cols = this.columns(view, rows, width, t);
       const graphW = Math.max(layout.width, 28);
+      const cols = this.columns(view, rows, width, graphW, t);
       return v_flex().w_full()
         .children(view.spans.map(line => div().text_size(TEXT.tiny).text_color(t.dim).child(line)))
         .child(h_flex().flex_wrap().pb(SPACE.md).gap(SPACE.xs).children(filters.map(([key, count]) =>

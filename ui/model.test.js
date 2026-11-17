@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
+import { GRAPH, MEANINGS, agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filterRows, findCli, fitWidth, idWidth, followNotice, graphLayout, hhmm, linkTarget, liveLine, meaningOf, moveStatus,
   naturalCompare, nextSort, parseOpen, plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue, isLoading } from "./model.js";
 
 const row = (id, step, links = [], extra = {}) => ({
@@ -220,6 +220,17 @@ test("an id column fits the longest id, within limits", () => {
   assert.ok(idWidth(["T-100"], 10) > idWidth(["T-10"], 10));
   assert.equal(idWidth([], 10), idWidth(["T"], 10));
   assert.equal(idWidth(["x".repeat(40)], 10), idWidth(["x".repeat(16)], 10));
+});
+
+test("columns leave from the right as the row narrows; the first stays", () => {
+  const widths = [70, 60, 40, 80];
+  assert.equal(columnsThatFit(widths, 1000, 10), 4);
+  assert.equal(columnsThatFit(widths, 80 + 70 + 50 + 90, 10), 4);
+  assert.equal(columnsThatFit(widths, 80 + 70 + 50 + 89, 10), 3);
+  assert.equal(columnsThatFit(widths, 80 + 70, 10), 2);
+  assert.equal(columnsThatFit(widths, 79, 10), 1);
+  assert.equal(columnsThatFit(widths, -50, 10), 1);
+  assert.equal(columnsThatFit([], 100, 10), 0);
 });
 
 test("a status has one meaning, and an unknown one is quiet", () => {
