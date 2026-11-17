@@ -88,8 +88,9 @@ test("a sync is due at once when the data is old, then only once per round, also
 test("a change in the folder: this tracker's files or watch, the session files, or what cannot be told", () => {
   const says = (...paths) => changesOf(paths, "/t", "mine");
   assert.deepEqual(says("/t/mine/tickets/T-1.md"), { tracker: true, sessions: [] });
-  assert.deepEqual(says("/t/.watch/mine.json"), { tracker: true, sessions: [] });
-  assert.deepEqual(says("/t/.watch/other.json", "/t/other/log.md", "/t/mine2/log.md"), { tracker: false, sessions: [] });
+  assert.deepEqual(says("/t/.watch/mine/terminal.json"), { tracker: true, sessions: [] });
+  assert.deepEqual(says("/t/.watch/other/s1.json", "/t/.watch/mine2/s1.json", "/t/other/log.md", "/t/mine2/log.md"),
+    { tracker: false, sessions: [] });
   assert.deepEqual(says("/t/.lock", "/t/.backups/x/README.md"), { tracker: false, sessions: [] });
   assert.deepEqual(says("/t/.sessions/abc.json", "/t/.sessions/.abc.json.1.x.tmp"), { tracker: false, sessions: ["/t/.sessions/abc.json"] });
   assert.equal(says("/t"), null); // a batch that holds the root means everything

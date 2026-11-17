@@ -18,7 +18,7 @@ from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
-from .watcher import EVENT_KINDS, REFUSED, URGENT, watching
+from .watcher import EVENT_KINDS, URGENT
 from .ui import GPUI_SHELL_VERSION
 from .commands import (cmd_act, cmd_actions, cmd_add, cmd_agents, cmd_archive, cmd_attach, cmd_attached,
     cmd_await_change, cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence,
@@ -238,17 +238,19 @@ def build_parser():
                              "only")
     sp.add_argument("ids", nargs="*", help="ticket ids")
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
-    sp = add("watch", cmd_watch, "for the user: print each change that may need them, one line per ticket or agent "
-                                 "(`!` marks what does), until Ctrl-C: a move that becomes theirs, a step, a decision, "
-                                 "a PR event, an agent that ends its turn or waits on them, a `check` error. One "
-                                 "watcher per tracker. In an agent session it runs only after the user invokes the "
-                                 "watch skill")
+    sp = add("watch", cmd_watch, "print each change to a tracker, one line per ticket or agent (`!` marks what needs "
+                                 "the user), until stopped: a move, a step, a decision, a PR event, an agent that ends "
+                                 "its turn or waits on the user, a `check` error. One watch per session and tracker. "
+                                 "In an agent session, run it only when the user, or a skill or instruction from "
+                                 "them, tells you to watch: never on your own")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
     sp.add_argument("--only", metavar="KINDS", help="print only these kinds of event, comma-separated: "
                     + "; ".join(f"{k} ({what})" for k, what in EVENT_KINDS.items())
                     + f"; {URGENT} (any marked `!`)")
+    sp.add_argument("--stop", action="store_true", help="end this session's watch: a running `tracker watch` of it "
+                                                        "stops within seconds")
     sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
                     help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
                          "marked `!` prints at once, with those held")
@@ -420,9 +422,6 @@ def main(argv=None):
     no_id(args)
     stdin_text(args)
     upgrade_trackers()
-    if (args.cmd in WRITE_COMMANDS or args.cmd in ("start", "archive", "unarchive", "refresh")) and watching():
-        die("this session watches trackers for the user (/work-tracker:watch): it writes nothing to them, and works "
-            "on no tracker", REFUSED)
     try:
         if args.cmd in WRITE_COMMANDS:
             with locked():

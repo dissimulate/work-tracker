@@ -88,9 +88,8 @@ def offer(found: list[Match]) -> tuple[str, str]:
 def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
     """The match a session with no tracker links at its start without asking the user: one tracker only, and a
     ticket's `branch` names this branch, which is not a default branch (where many works share a branch, the user
-    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos).
-    Never a session with the watch: it stays on no tracker."""
-    if len(found) != 1 or found[0].how != "branch" or not sid or granted(sid):
+    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos)."""
+    if len(found) != 1 or found[0].how != "branch" or not sid:
         return None
     m, slug = found[0], cwd_repo(cwd)
     if not slug or any(m.tracker.repo_of(t).lower() != slug for t in m.tickets):
@@ -121,7 +120,7 @@ def hook_session_start(data: dict) -> None:
                 emit_context("SessionStart", "")
             return
         drop_session(sid)
-        save_session(sid, tracker=sure.tracker.slug, auto=True)  # `auto`: the user's watch may undo it
+        save_session(sid, tracker=sure.tracker.slug)
         m = match_cwd(cwd, sid)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
@@ -268,26 +267,13 @@ WATCH_PROMPT = re.compile(r"[/$]work-tracker:watch\b(.*)", re.S)  # not a bare /
 
 
 def watch_request(data: dict) -> bool:
-    """The user typed /work-tracker:watch: give this session the watch (`tracker watch` then runs in it), or end it
-    (`stop`). A session the user put on a tracker does the work, so it does not watch; one the session start linked
-    (`auto`) leaves its tracker and watches."""
+    """The user typed /work-tracker:watch: give this session the watch, which its skill then starts, or end it (`stop`)
+    at once, also while the model is busy: a running watch stops at its next look."""
     m = WATCH_PROMPT.fullmatch(str(data.get("prompt") or "").strip())
     sid = where(data)[1]
     if not m or not sid:
         return False
-    stop = m[1].split() == ["stop"]
-    entry = load_session(sid)
-    own = entry.get("tracker")
-    if own and entry.get("auto") and not stop:
-        drop_session(sid)
-        set_grant(sid, True)
-        emit_context("UserPromptSubmit", f"[work-tracker] This session is off {own} now: it watches. The brief at its "
-                     "start no longer applies.")
-    elif own and not stop:
-        emit_context("UserPromptSubmit", f"[work-tracker] This session works on tracker {own}, so it cannot watch: "
-                     "tell the user to start the watch in a new session.")
-    else:
-        set_grant(sid, not stop)
+    set_grant(sid, m[1].split() != ["stop"])
     return True
 
 
@@ -313,7 +299,7 @@ def hook_prompt(data: dict) -> None:
     news = changes_since(m.tracker, entry["seen"], now) if entry.get("seen_for") == ids and ids else []
     fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | ({} if inside_home(cwd) else {"cwd": str(cwd)})
     lines = []
-    if news:
+    if news and not granted(sid):  # a watching session has them from its watch
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
                      "another session or a PR sync): " + "; ".join(news) + ".")
     ask = next_request(m, cwd, sid)

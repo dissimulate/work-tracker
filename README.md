@@ -23,7 +23,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
    - After `/clear`, the new session stays on the tracker (and the `--on` ticket) of the session it replaces.
 3. **Work as usual.** The agent records steps, decisions and pauses as they happen. The hooks log each commit and keep PR state current. You write nothing yourself.
 4. **See it.** Ask the agent to open the tracker, or run `tracker open`. The view updates live.
-5. **Oversee many sessions (optional).** In a separate session, type `/work-tracker:watch payments` in Claude Code or `$work-tracker:watch payments` in Codex. It notifies you when something needs you: a review came back, checks fail, an agent waits on you. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
+5. **Watch the work (optional).** In a session, type `/work-tracker:watch payments <what to do>` in Claude Code or `$work-tracker:watch payments <what to do>` in Codex, such as "tell me when a review comes back". The session gets each change to the tracker as it happens, and does that task. A skill or instruction of yours can start it too. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
 
 `/work-tracker:tracker <command>` runs any `tracker` command, for example `/work-tracker:tracker index --active`.
 
@@ -105,7 +105,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 | Event | Does |
 |---|---|
 | SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits and injects the brief, with the issue fields to read and the issue updates to write, then syncs PR state in the background (at most every 10 min): the next message reports what changed. With none: links the session, or has the agent offer the link ([Usage](#usage) step 2). |
-| UserPromptSubmit | Reports what other sessions or GitHub changed on the session's tickets since the brief: a move that became yours, a ticket that ended, a dependency's state or Carry forward, a decision. Once each: an issue update newly due, the issue fields the view's Refresh asked for. A state line with the work the tracker may not show (unlogged commits, uncommitted files): with a ticket under way, on the first message and every 5th; with none, only when there is such work. With a ticket under way, starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
+| UserPromptSubmit | Reports what other sessions or GitHub changed on the session's tickets since the brief: a move that became yours, a ticket that ended, a dependency's state or Carry forward, a decision; a watching session has these from its watch. Once each: an issue update newly due, the issue fields the view's Refresh asked for. A state line with the work the tracker may not show (unlogged commits, uncommitted files): with a ticket under way, on the first message and every 5th; with none, only when there is such work. With a ticket under way, starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
 | PostToolUse | One hook for every tool, which starts Python only when one of these applies. Bash: after a commit, logs it, and once per next action asks whether a step ended; after `git push` or `gh pr …`, records the branch on its ticket and syncs PR state. Edit, Write, MultiEdit, apply_patch: counts a hand edit of a tracker file as this session's own. AskUserQuestion, request_user_input: asks the agent to record the answer when it settles a direction decision. Any tool: ends that agent's "needs you" mark. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
 | PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
@@ -140,10 +140,10 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 ### Watch
 
-- `tracker watch [name]` prints each change as one line; `!` marks what needs you, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. One watcher per tracker.
+- `tracker watch [name]` prints each change as one line; `!` marks what needs you, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. Several sessions can watch one tracker: one watch per session.
 - `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
 - `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
-- Only you start it: in a terminal, or with the watch skill ([Usage](#usage) step 5), which makes that session a read-only overseer. The CLI refuses `watch` in an agent session without that grant, and every write in a session with it.
+- In an agent session, the watch skill starts it ([Usage](#usage) step 5): when you invoke it, or when a skill or instruction of yours tells the agent to watch. The agent never starts it on its own. The watching session writes to the tracker, and can be on one, as any session. `tracker watch --stop`, or the skill with `stop`, ends it.
 
 ### Upgrading a tracker
 
@@ -183,7 +183,7 @@ Environment variables. All are optional.
 9. `contract`: `check`, `rules`, `migrate`
 10. `views`: text views and the brief
 11. `github`: the GitHub adapter: `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). Another forge is another adapter
-12. `watcher`: `tracker watch` and the user's grant; `tracker agents`; `tracker await-change`
+12. `watcher`: `tracker watch` and the watching sessions' grants; `tracker agents`; `tracker await-change`
 13. `lifecycle`: archiving and deleting a tracker
 14. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
 15. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`, `tracker install-mod`, and an installed mod kept at this version

@@ -1,7 +1,7 @@
-"""`tracker watch`: one watcher per tracker reports each change that may need the user, one line per ticket, agent or
-check: the new log lines, the facts no log line holds (`snapshot`), the agent sessions on the tracker, and GitHub
-(`sync`). Only the user starts it: in a terminal, or in an agent session they gave the watch with its skill command (a
-grant the prompt hook writes)."""
+"""`tracker watch`: a watch reports each change to a tracker, one line per ticket, agent or check: the new log lines,
+the facts no log line holds (`snapshot`), the agent sessions on the tracker, and GitHub (`sync`). It runs in a terminal,
+or in an agent session that the user, or a skill or instruction from them, told to watch; one per session and
+tracker."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
 
-WATCH_DIR = HOME / ".watch"  # <slug>.json: a tracker's watcher and what it reported; grants/<session id>
-GRANTS = WATCH_DIR / "grants"
+WATCH_DIR = HOME / ".watch"  # <slug>/<session id or "terminal">.json: a watch and what it reported
+GRANTS = WATCH_DIR / ".grants"  # <session id>: the sessions that watch; no slug starts with a dot
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
@@ -33,7 +33,7 @@ BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing reco
 CHANGE_POLL_S = 1  # `await_change`: how often it looks at the files
 CHANGE_WAIT_S = 15  # when it ends with no change (ui/view.js AT_LEAST_MS): a UI that has gone leaves no process
 CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what changed while it was stopped
-REARM_S = 600  # a session's watch runs `--once` again and again: between two runs it still watches
+REARM_S = 600  # a session's watch starts again and again (`--once`, a monitor's timeout): between runs it watches
 # A move of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested, an open
 # action, unresolved review threads, an approval); a draft, a PR with no review asked for, a closed PR or none yet is
 # the agent's to move on.
@@ -42,9 +42,9 @@ LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
 REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run the command, or not now (a tracker in use)
 
-# ---------------------------------------------------------------- the user's grant
-# Only a prompt the user types fires the UserPromptSubmit hook, so the grant it writes is the user's: no command the
-# model runs gives one. In an agent session `tracker watch` runs only with it; in a terminal it needs none.
+# ---------------------------------------------------------------- the grant
+# A session that watches holds a grant: `tracker watch` gives it, and so does the user's /work-tracker:watch (the prompt
+# hook). Ending it (`tracker watch --stop`, the skill's `stop`) stops the session's running watches at their next look.
 
 
 def agent_session() -> tuple[bool, str]:
@@ -78,12 +78,6 @@ def set_grant(sid: str, on: bool) -> None:
                 old.unlink()
         except OSError:
             pass
-
-
-def watching() -> bool:
-    """This command runs in a session the user gave the watch: it watches only, and writes nothing to trackers."""
-    inside, sid = agent_session()
-    return inside and granted(sid)
 
 
 def session_name(sid: str) -> str:
@@ -250,12 +244,19 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
 
 # ---------------------------------------------------------------- the watcher
 
-def state_path(slug: str) -> Path:
-    return WATCH_DIR / f"{slug}.json"
+def state_path(slug: str, sid: str = "") -> Path:
+    """Where one watch of the tracker keeps its state: the session's, or the terminal's."""
+    return WATCH_DIR / slug / f"{sid or 'terminal'}.json"
 
 
-def load_state(slug: str) -> dict:
-    return read_json(state_path(slug))
+def load_state(slug: str, sid: str = "") -> dict:
+    return read_json(state_path(slug, sid))
+
+
+def drop_watches(slug: str) -> None:
+    """Forget the tracker's watches: it leaves HOME."""
+    for f in (WATCH_DIR / slug).glob("*.json"):
+        f.unlink(missing_ok=True)
 
 
 def await_change(tr: Tracker) -> None:
@@ -264,24 +265,28 @@ def await_change(tr: Tracker) -> None:
     tracker count: one that leaves it changes the set."""
     def now() -> str:
         sessions = [f for f in SESSIONS_DIR.glob("*.json") if read_json(f).get("tracker") == tr.slug]
-        return files_hash([*tr.data_files(), *sessions, state_path(tr.slug)])  # each file's name counts
+        watches = sorted((WATCH_DIR / tr.slug).glob("*.json"))
+        return files_hash([*tr.data_files(), *sessions, *watches])  # each file's name counts
 
     was, end = now(), time.monotonic() + CHANGE_WAIT_S
     while time.monotonic() < end and now() == was:
         time.sleep(CHANGE_POLL_S)
 
 
-def watcher_of(tr: Tracker) -> dict:
-    """Who watches the tracker, for a UI: `who`, `running` (REARM_S), `since` and `ended`; {} when no watch
-    ran in a day."""
-    st = load_state(tr.slug)
-    if not st.get("who"):
-        return {}
-    ended, sid = st.get("ended", 0), str(st.get("sid") or "")
-    running = alive(int(st.get("pid") or 0)) or granted(sid) and time.time() - ended < REARM_S
-    if not running and time.time() - ended > 86400:
-        return {}
-    return {"who": st["who"], "running": running, "since": st.get("started", 0), "ended": 0 if running else ended}
+def watches_of(tr: Tracker) -> list[dict]:
+    """Who watches the tracker, for a UI, the oldest first: each watch's `who`, `running` (REARM_S), `since` and
+    `ended`; none that ended over a day ago."""
+    out = []
+    for f in (WATCH_DIR / tr.slug).glob("*.json"):
+        st = read_json(f)
+        if not st.get("who"):
+            continue
+        ended, sid = st.get("ended", 0), str(st.get("sid") or "")
+        running = alive(int(st.get("pid") or 0)) or granted(sid) and time.time() - ended < REARM_S
+        if running or time.time() - ended <= 86400:
+            out.append({"who": st["who"], "running": running, "since": st.get("started", 0),
+                        "ended": 0 if running else ended})
+    return sorted(out, key=lambda w: w["since"])
 
 
 class SyncJob(threading.Thread):
@@ -323,21 +328,20 @@ class Watcher:
         return Tracker(self.root)
 
     def save(self, now: float) -> None:
-        WATCH_DIR.mkdir(parents=True, exist_ok=True)
-        write_json(state_path(self.slug), {**self.st, "at": now})
+        write_json(state_path(self.slug, self.sid), {**self.st, "at": now})
 
     def claim(self, now: float) -> list[str]:
-        """Take the tracker's watch. Soon after this watcher stopped (same session, or the terminal): what changed
-        since. Else: the state now, as the baseline."""
+        """Take this session's (or the terminal's) watch of the tracker. Soon after its last run stopped: what
+        changed since. Else: the state now, as the baseline."""
         with locked():  # the test and the claim are one step; the rest runs outside the lock (sync asks GitHub)
-            st = load_state(self.slug)
+            st = load_state(self.slug, self.sid)
             pid = int(st.get("pid") or 0)
             if pid and pid != os.getpid() and alive(pid):
-                die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watcher per tracker",
-                    REFUSED)
-            WATCH_DIR.mkdir(parents=True, exist_ok=True)
-            write_json(state_path(self.slug), {**st, "pid": os.getpid()})
-        again = st.get("sid", "") == self.sid and now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
+                die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
+                    "tracker", REFUSED)
+            (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
+            write_json(state_path(self.slug, self.sid), {**st, "pid": os.getpid()})
+        again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
         if again:
             self.st = st
             lines = self.report(self.batch(now, force=True), now, flush=True)
@@ -346,7 +350,7 @@ class Watcher:
             self.sig = files_hash(tr.data_files())
             self.st = {"snapshot": snapshot(tr), "offset": read_log(tr, 0)[1]}
             self.agents(tr, now)  # known from now on: the summary says what each one does
-            lines = summary(tr, live_sessions(self.slug), now)
+            lines = summary(tr, self.others(), now)
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who,
                        started=st.get("started", now) if again and self.sid else now)
         self.st.pop("ended", None)
@@ -426,13 +430,17 @@ class Watcher:
             return [Event("github", "github", False, "sync works again")]
         return []
 
+    def others(self) -> list[Live]:
+        """The agent sessions on the tracker but this watch's own: its own turns would wake it again and again."""
+        return [x for x in live_sessions(self.slug) if x.sid != self.sid]
+
     def agents(self, tr: Tracker, now: float) -> list[Event]:
         """The agent sessions on the tracker: each that starts, ends its turn or ends; each that waits on the user
         (`waits`), or is busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})
         agents, out = {}, []
-        for x in live_sessions(self.slug):
+        for x in self.others():
             on = agent_tickets(tr, x)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
@@ -486,7 +494,8 @@ class Watcher:
                     print("\n".join(lines), flush=True)
                 time.sleep(POLL_S)
                 if self.sid and not granted(self.sid):
-                    print("The user ended the watch (/work-tracker:watch stop): do not start it again.", flush=True)
+                    print("The watch has ended (`tracker watch --stop`): do not start it again unless told to.",
+                          flush=True)
                     sys.exit(REFUSED)
                 lines = self.poll(time.time())
             print("\n".join(lines))

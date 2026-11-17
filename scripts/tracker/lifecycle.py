@@ -8,7 +8,7 @@ from .system import die, to_trash
 from .store import HOME, locked
 from .model import ARCHIVE, Tracker
 from .session import SESSIONS_DIR, drop_session, live_sessions, load_session, Live
-from .watcher import REFUSED, state_path, watcher_of
+from .watcher import REFUSED, drop_watches, watches_of
 
 # ---------------------------------------------------------------- archive and delete
 # A tracker leaves HOME only while no agent session or watch is on it: it would go from under them mid-work. Anyone
@@ -23,9 +23,9 @@ def in_use(tr: Tracker, own_sid: str = "", live: dict[str, list[Live]] | None = 
         return ""
     sessions = live_sessions(tr.slug) if live is None else live.get(tr.slug, [])
     names = [x.name for x in sessions if x.sid != own_sid]
-    w = watcher_of(tr)
+    watchers = [w["who"] for w in watches_of(tr) if w["running"]]
     using = ([f"agent session{'s' * (len(names) > 1)} {', '.join(names)}"] if names else []) + \
-        ([f"the watch by {w['who']}"] if w.get("running") else [])
+        ([f"the watch by {', '.join(watchers)}"] if watchers else [])
     return " and ".join(using)
 
 
@@ -38,7 +38,7 @@ def refuse_in_use(tr: Tracker, verb: str, own_sid: str = "") -> None:
 
 def forget(slug: str) -> None:
     """Drop the tracker's watch state and the sessions' ties to it: nothing points at it once it leaves HOME."""
-    state_path(slug).unlink(missing_ok=True)
+    drop_watches(slug)
     for f in SESSIONS_DIR.glob("*.json"):
         if load_session(f.stem).get("tracker") == slug:
             drop_session(f.stem)

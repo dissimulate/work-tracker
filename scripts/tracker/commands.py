@@ -29,8 +29,8 @@ from .contract import check, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
-from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, granted,
-                      session_name, Watcher)
+from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, grant_path,
+                      session_name, set_grant, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
@@ -987,18 +987,26 @@ def cmd_start(args):
 
 
 def cmd_watch(args):
-    """The user's watch: in a terminal, or in the agent session their watch command gave it (the prompt hook's
-    grant). The model never starts one: the command refuses a session without the grant."""
+    """A watch, in a terminal or in an agent session, which it gives the grant (the hooks and the UIs know a watching
+    session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
+    skill say so."""
     inside, sid = agent_session()
-    if inside and not granted(sid):
-        die("`tracker watch` starts only when the user asks: they run it in a terminal, or invoke the watch skill "
-            "in an agent session. Do not start it yourself.", REFUSED)
+    if inside and not grant_path(sid):
+        die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
+    if args.stop:
+        if not inside:
+            die("a terminal's watch ends with Ctrl-C")
+        set_grant(sid, False)
+        print("The watch has ended: a `tracker watch` of this session still running stops within seconds.")
+        return
     only = frozenset(k.strip() for k in (args.only or "").split(",") if k.strip())
     if only - {*EVENT_KINDS, URGENT}:
         die(f"--only takes {', '.join([*EVENT_KINDS, URGENT])}")
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
     tr = named_tracker(args, "watch")
+    if inside:
+        set_grant(sid, True)
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
             args.hold).run(args.once)
 

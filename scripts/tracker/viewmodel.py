@@ -15,7 +15,7 @@ from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
-from .watcher import watcher_of
+from .watcher import watches_of
 from .lifecycle import in_use
 
 VIEW_SCHEMA = 6  # a UI that reads another number says which side is older
@@ -224,11 +224,12 @@ def now_view(tr: Tracker) -> dict:
     idle = None
     if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":
         idle = {"ready": [t.id for t in tr.ready()]}
-    w = watcher_of(tr)  # `tracker watch`: who watches the tracker for the user, or when the watch ended
-    watch = None
-    if w:
-        watch = {"running": w["running"], "text": f"Watched by {w['who']} since {clock(w['since'])}" if w["running"]
-                 else f"Watch by {w['who']} ended {clock(w['ended'])}"}
+    watches = watches_of(tr)  # `tracker watch`: who watches the tracker, or when the last watch ended
+    running = [w for w in watches if w["running"]]
+    last = max(watches, key=lambda w: w["ended"], default=None)
+    watch = {"running": True, "text": "Watched by " + ", ".join(f"{w['who']} since {clock(w['since'])}"
+                                                                 for w in running)} if running else \
+        {"running": False, "text": f"Watch by {last['who']} ended {clock(last['ended'])}"} if last else None
     return {"items": items, "idle": idle, "watch": watch}
 
 

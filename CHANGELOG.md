@@ -35,13 +35,14 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - One hook runs after every tool, in place of four, and starts Python only when the tool needs it. A Bash command whose output, not the command, names `git commit` or `gh pr` no longer starts it.
 - In Herdr, the view runs the `tracker` CLI only when its tracker, or a session on it, changes: another tracker's sessions no longer make it read again. Its own window waits the same way.
 - The `blocked` filter's count is the number of tickets it shows.
-- Only `/work-tracker:watch` (`$work-tracker:watch` in Codex) starts or ends a watch: a bare `/watch` may be another plugin's.
+- The watch skill's command is `/work-tracker:watch` (`$work-tracker:watch` in Codex): a bare `/watch` may be another plugin's.
 - Only a ticket's `next` has a length limit (400 characters): every brief prints it whole. A log line (`tracker log`, a `step` message, `--why`), a summary, a Carry forward bullet, an action and an action's note take a text of any length.
 - A session on a tracker starts without waiting for GitHub: the PR state sync runs in the background, and your next message reports what it changed on the session's tickets. The brief no longer has a `Synced PR state` line.
 - A session with no ticket under way gets the state line ("No ticket in progress…") only when there is work since the branch's mark, not on every 5th message.
 - A migration's backup leaves out the tracker's `evidence/` folder, which no migration changes.
 - The watch skill keeps one `tracker watch` running under Claude Code's Monitor, in place of a new run after each batch, and sends the changes that do not need you at most once a minute.
 - `tracker watch` goes on reading the tracker and its agents while a GitHub sync runs.
+- A watch is no longer read-only or one per tracker. The watching session writes to the tracker and can be on one; several sessions can watch one tracker, one watch each; and an agent starts a watch when you, or a skill or instruction of yours, tell it to. The watch skill has no task of its own: give it one, as in `/work-tracker:watch payments tell me when a review comes back`. `tracker watch --stop` ends a session's watch.
 
 ### Fixed
 

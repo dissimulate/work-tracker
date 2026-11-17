@@ -1251,12 +1251,12 @@ class Hooks(unittest.TestCase):
         self.assertNotIn("tracker", session.load_session(f"{sid}a"))
         self.assertIsNone(hook("session-start", f"{sid}c", mine, nogh, source="startup"))  # declined: no link or offer
         (store.HOME / ".declined.json").unlink()
-        hook("session-start", f"{sid}w", mine, nogh, source="startup")  # linked by itself; the user's watch wins
-        self.assertIn(f"off {a} now: it watches",
-                      said(hook("prompt", f"{sid}w", mine, nogh, prompt="/work-tracker:watch")))
+        hook("session-start", f"{sid}w", mine, nogh, source="startup")  # linked by itself; it stays on it to watch
+        self.assertIsNone(hook("prompt", f"{sid}w", mine, nogh, prompt="/work-tracker:watch"))
         self.assertTrue(watcher.granted(f"{sid}w"))
-        self.assertNotIn("tracker", session.load_session(f"{sid}w"))
+        self.assertEqual(session.load_session(f"{sid}w")["tracker"], a)
         watcher.set_grant(f"{sid}w", False)
+        session.drop_session(f"{sid}w")
         run("archive", a)  # off every later lookup
 
         env = {**os.environ, "TRACKER_SESSION": sid}
@@ -1993,7 +1993,7 @@ class Ui(unittest.TestCase):
         s = self.tracker()
         tr = model.tracker_at(s)
         session.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        watcher.WATCH_DIR.mkdir(parents=True, exist_ok=True)
+        watcher.state_path(s).parent.mkdir(parents=True, exist_ok=True)
         on = json.dumps({"tracker": s})
         for path, text in ((tr.root / "tickets/T-1.md", None), (session.SESSIONS_DIR / f"{slug()}.json", on),
                            (watcher.state_path(s), None)):
@@ -2634,52 +2634,98 @@ class Watch(unittest.TestCase):
             model.tracker_at(s).save_state({"last_sync": now + 1})
             self.assertIn("github: sync works again", "".join(synced(now + 3 * schema.LIVE_SYNC_S)))
 
-    def test_only_the_user_starts_it(self):
+    def test_a_session_watches_when_told(self):
+        """In an agent session `tracker watch` gives the session the watch: the model runs it only when told to (its
+        help and the skill say so). `--stop`, or the user's `/work-tracker:watch stop` at once, ends it. A watching
+        session writes, and may be on a tracker."""
         sid, cwd = f"sid{time.monotonic_ns()}", self.work
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
-            self.assertIn("starts only when the user asks", run("watch", self.s, "--once", code=4))
-        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):  # a Claude session whose hooks did not run
-            run("watch", self.s, "--once", code=4)
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):  # a Claude session whose hooks did not run: no id
+            self.assertIn("cannot watch", run("watch", self.s, "--once", code=4))
         for other in ("/watchlist", "/watch", "$watch payments"):  # another plugin's command
             self.assertIsNone(hook("prompt", sid, cwd, prompt=other))
             self.assertFalse(watcher.granted(sid))
-
-        self.assertIsNone(hook("prompt", sid, cwd, prompt=f"/work-tracker:watch {self.s}"))  # only the user types it
-        self.assertTrue(watcher.granted(sid))
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             out = run("watch", self.s, "--once")
+            self.assertTrue(watcher.granted(sid))
             self.assertIn(f"watching {self.s}: 0 under way", out)
             self.assertIn("Next: the same `tracker watch` command again", out)
-            run(*self.t, "log", "a note", code=4)  # it watches only
-            run("start", self.s, code=4)
+            run(*self.t, "log", "a note")  # it writes
+            run("start", self.s, cwd=cwd)  # and may be on the tracker
         self.assertIn("Watched by session sid", data(self.s)["now"]["watch"]["text"])  # between two `--once` it watches
-
-        self.assertIsNone(hook("prompt", sid, cwd, prompt="/work-tracker:watch stop"))
-        self.assertFalse(watcher.granted(sid))
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
-            run(*self.t, "log", "a note")
-        st = watcher.load_state(self.s)
-        watcher.state_path(self.s).write_text(json.dumps({**st, "ended": time.time() - watcher.REARM_S - 1}))
+            self.assertIn("The watch has ended", run("watch", "--stop"))
+        self.assertFalse(watcher.granted(sid))
+        st = watcher.load_state(self.s, sid)
+        watcher.state_path(self.s, sid).write_text(json.dumps({**st, "ended": time.time() - watcher.REARM_S - 1}))
         self.assertEqual(data(self.s)["now"]["watch"]["running"], False)
         self.assertRegex(data(self.s)["now"]["watch"]["text"], "^Watch by session sid")
 
-        worker = f"sid{time.monotonic_ns()}"
-        subprocess.run([str(ROOT / "bin/tracker"), "start", self.s], cwd=cwd, env={**os.environ,
-                       "TRACKER_SESSION": worker}, capture_output=True, check=True)
-        self.assertIn("works on tracker", said(hook("prompt", worker, cwd, prompt="/work-tracker:watch")))
-        self.assertFalse(watcher.granted(worker))  # a session on a tracker does the work
+        self.assertIsNone(hook("prompt", sid, cwd, prompt=f"/work-tracker:watch {self.s} tell me when W-1 merges"))
+        self.assertTrue(watcher.granted(sid))  # the user's command gives it before its skill starts the watch
+        self.assertIsNone(hook("prompt", sid, cwd, prompt="/work-tracker:watch stop"))
+        self.assertFalse(watcher.granted(sid))
+        self.assertIn("a terminal's watch ends with Ctrl-C", run("watch", "--stop", code=2))
+
+    def test_one_watch_per_session_and_tracker(self):
+        """Several sessions, and a terminal, watch one tracker at once, each from its own state; a second watch of
+        the same session is refused."""
+        now = time.time()
+        for sid in ("", "qb", "overseer"):
+            self.assertIn("watching", self.watcher(sid).claim(now)[0])
+        self.assertEqual([w["who"] for w in watcher.watches_of(model.Tracker(self.root))], ["terminal"] * 3)
+        self.assertIn("the watch by terminal, terminal, terminal",
+                      lifecycle.in_use(model.Tracker(self.root)))
+        other = subprocess.Popen(["sleep", "30"])
+        try:
+            st = watcher.load_state(self.s, "qb")
+            watcher.state_path(self.s, "qb").write_text(json.dumps({**st, "pid": other.pid}))
+            with self.assertRaises(SystemExit) as refused, contextlib.redirect_stderr(io.StringIO()):
+                self.watcher("qb").claim(now)
+            self.assertEqual(refused.exception.code, watcher.REFUSED)
+            self.watcher("overseer").claim(now)  # another session's watch goes on
+        finally:
+            other.kill()
+            other.wait()
+        lifecycle.forget(self.s)
+        self.assertEqual(watcher.watches_of(model.Tracker(self.root)), [])
+
+    def test_a_watch_leaves_out_its_own_session(self):
+        """A watching session on the tracker it watches: its own turns are no news to it, or each would wake it."""
+        run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
+        now, sid = time.time(), f"qb{time.monotonic_ns()}"
+
+        def turn(status: str, at: float) -> None:
+            session.save_session(sid, tracker=self.s, cwd=str(self.work),
+                                 activity={"status": status, "since": at, "at": at})
+        turn("busy", now)
+        own, terminal = self.watcher(sid), self.watcher()
+        self.assertIn("0 agent(s)", own.claim(now)[0])
+        self.assertIn("1 agent(s)", terminal.claim(now)[0])
+        turn("idle", now + 5)
+        self.assertEqual(own.poll(now + 5), [])
+        self.assertIn(f"agent {sid[:8]}: turn ended", "".join(terminal.poll(now + 5)))
+
+    def test_a_watching_session_gets_no_change_news(self):
+        """The prompt hook's news of what others changed: a watching session has them from its watch."""
+        run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
+        for n, watching in enumerate((False, True)):
+            sid = f"news{n}{time.monotonic_ns()}"
+            with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+                run("start", self.s, cwd=self.work)
+            hook("prompt", sid, self.work, prompt="go on")  # what it has seen
+            watcher.set_grant(sid, watching)
+            run(*self.t, "decide", f"Pick {n}", "--refs", "W-1", "--resolve", "A", "--by", "me")  # another session
+            news = said(hook("prompt", sid, self.work, prompt="go on"))
+            (self.assertNotIn if watching else self.assertIn)("by another session or a PR sync", news)
 
     def test_codex_watch_grant(self):
         sid, cwd = f"codex{time.monotonic_ns()}", self.work
         with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": sid}):
-            run("watch", self.s, "--once", code=4)
-            hook("prompt", sid, cwd, prompt=f"$work-tracker:watch {self.s}")
-            self.assertTrue(watcher.granted(sid))
             self.assertIn(f"watching {self.s}", run("watch", self.s, "--once"))
-            run(*self.t, "log", "refused", code=4)
+            self.assertTrue(watcher.granted(sid))
+            run(*self.t, "log", "it writes")
             hook("prompt", sid, cwd, prompt="$work-tracker:watch stop")
             self.assertFalse(watcher.granted(sid))
-            run("watch", self.s, "--once", code=4)
 
 
 class Delete(unittest.TestCase):

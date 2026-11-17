@@ -288,7 +288,7 @@ export function changesOf(paths, dir, slug) {
   if (!paths || paths.some(p => !p.startsWith(`${dir}/`))) return null;
   const sessions = `${dir}/.sessions/`; // <session id>.json; a write's temporary file starts with a dot
   return {
-    tracker: Boolean(slug) && paths.some(p => p.startsWith(`${dir}/${slug}/`) || p === `${dir}/.watch/${slug}.json`),
+    tracker: Boolean(slug) && paths.some(p => p.startsWith(`${dir}/${slug}/`) || p.startsWith(`${dir}/.watch/${slug}/`)),
     sessions: paths.filter(p => p.startsWith(sessions) && /^[^./][^/]*\.json$/.test(p.slice(sessions.length))),
   };
 }
