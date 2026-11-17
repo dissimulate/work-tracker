@@ -142,7 +142,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 - `tracker watch [name]` prints each change as one line; `!` marks what needs you, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. One watcher per tracker.
 - `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
-- `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder and transcript file.
+- `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
 - Only you start it: in a terminal, or with the watch skill ([Usage](#usage) step 5), which makes that session a read-only overseer. The CLI refuses `watch` in an agent session without that grant, and every write in a session with it.
 
 ### Upgrading a tracker

@@ -2529,16 +2529,28 @@ class Watch(unittest.TestCase):
         self.assertEqual(w.poll(late + 10), [])
 
     def test_agents_command(self):
-        """`tracker agents`: each live agent's state, tickets, branch, folder, and the transcript its hooks gave."""
+        """`tracker agents`: each live agent's state, tickets, branch and folder; the ids Claude Code and Herdr know it
+        by; the transcript its hooks gave."""
         run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
         self.assertIn(f"no agent session on {self.s}", run("agents", self.s))
-        sid = f"tr{time.monotonic_ns()}"
+        sid, herdr = f"tr{time.monotonic_ns()}", {"HC_TERMINAL_ID": "t7"}
         session.save_session(sid, tracker=self.s, cwd=str(self.work))
-        hook("prompt", sid, self.work, prompt="go on", transcript_path="/t/one.jsonl")
-        hook("waiting", sid, self.work, tool_name="Bash", agent_id="sub", transcript_path="/t/sub.jsonl")  # not its own
-        hook("stop", sid, self.work)  # an event with no transcript keeps the one known
-        self.assertEqual(run("agents", self.s).strip(), f"{sid[:8]} idle 0 min · on W-1 · branch feat/W-1 · "
-                                                         f"{self.work} · transcript /t/one.jsonl")
+        hook("prompt", sid, self.work, herdr, prompt="go on", transcript_path="/t/one.jsonl")
+        hook("waiting", sid, self.work, {"HC_TERMINAL_ID": "t9"}, tool_name="Bash", agent_id="sub",
+             transcript_path="/t/sub.jsonl")  # a subagent's: not the session's
+        hook("stop", sid, self.work, herdr)  # with no transcript, the one known stays
+        where = f"on W-1 · branch feat/W-1 · {self.work}"
+        self.assertEqual(run("agents", self.s).strip(), f"{sid[:8]} idle 0 min · {where} · herdr t7 · "
+                                                         "transcript /t/one.jsonl")
+
+        claude = session.CLAUDE_SESSIONS / f"{sid}.json"  # Claude Code runs it, by the name it lists it by
+        claude.parent.mkdir(parents=True, exist_ok=True)
+        claude.write_text(json.dumps({"pid": os.getpid(), "sessionId": sid, "name": "api", "status": "idle",
+                                      "statusUpdatedAt": time.time() * 1000}))
+        self.addCleanup(claude.unlink)
+        hook("stop", sid, self.work, {"HC_TERMINAL_ID": ""})  # out of Herdr now
+        self.assertEqual(run("agents", self.s).strip(), f"api idle 0 min · {where} · claude api · "
+                                                         "transcript /t/one.jsonl")
 
     def test_only_and_hold(self):
         """`--only` keeps the kinds asked for; `--hold` makes one batch of what needs no one, an urgent event comes at

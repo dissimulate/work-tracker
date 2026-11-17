@@ -193,13 +193,15 @@ def agent_state(x: Live, now: float) -> str:
 
 
 def agents_lines(tr: Tracker, now: float) -> list[str]:
-    """`tracker agents`: per live agent session on the tracker, its state, tickets, branch, folder and transcript."""
+    """`tracker agents`: per live agent session on the tracker, its state, tickets, branch and folder; the ids a
+    program that reaches an agent knows it by (Claude Code's session name, Herdr's terminal); its transcript."""
     out = []
     for x in live_sessions(tr.slug):
         on = agent_tickets(tr, x)
-        out.append(" · ".join([agent_state(x, now), *([f"on {', '.join(on)}"] if on else []),
-                               *([f"branch {x.branch}"] if x.branch else []), *([x.cwd] if x.cwd else []),
-                               *([f"transcript {x.transcript}"] if x.transcript else [])]))
+        facts = [f"on {', '.join(on)}" if on else "", f"branch {x.branch}" if x.branch else "", x.cwd,
+                 f"claude {x.claude}" if x.claude else "", f"herdr {x.terminal}" if x.terminal else "",
+                 f"transcript {x.transcript}" if x.transcript else ""]
+        out.append(" · ".join([agent_state(x, now), *filter(None, facts)]))
     return out or [f"no agent session on {tr.slug}"]
 
 

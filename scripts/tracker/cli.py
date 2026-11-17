@@ -252,8 +252,9 @@ def build_parser():
     sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
                     help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
                          "marked `!` prints at once, with those held")
-    sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: its name as the host lists "
-                                   "it, status and for how long, tickets, branch, folder and transcript file")
+    sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
+                                   "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
+                                   "transcript file")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp = add("archive", cmd_archive, "put a tracker away: out of every list, lookup and hook, still in the UI. "
                                      "Refuses while another agent session or a watch is on it")

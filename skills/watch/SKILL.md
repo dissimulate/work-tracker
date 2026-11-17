@@ -28,7 +28,7 @@ Use the command prefix from the session's `[work-tracker]` hook when supplied. I
 
 ## Look closer
 
-When a line hints at trouble, read before you judge: `tracker context <id> --brief`, `tracker show <id> --section <name>`, `tracker index --active`, `tracker decisions --all`, `gh pr view <n>`, `git log`. `tracker agents $ARGUMENTS` gives each agent's status, tickets, branch, folder and transcript file: to see what an agent did, read the end of its transcript (it is large: never all of it). Bring the user:
+When a line hints at trouble, read before you judge: `tracker context <id> --brief`, `tracker show <id> --section <name>`, `tracker index --active`, `tracker decisions --all`, `gh pr view <n>`, `git log`. `tracker agents $ARGUMENTS` gives each agent's status, tickets, branch and folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file: to see what an agent did, read the end of its transcript (it is large: never all of it). Bring the user:
 
 - a step or plan that contradicts a settled decision
 - a stuck agent: busy for long with nothing recorded, or the same step again and again

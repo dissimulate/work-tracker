@@ -21,7 +21,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker new <ID> --plan -` takes the ticket's Plan when it creates the ticket, so no `tracker put <id> plan -` has to follow.
 - `Code` is a link label in every tracker, for a place in the code: `- Code: [title](url) — why`. `tracker add --help` lists the labels.
 - `tracker watch --only <kinds>` prints only those kinds of change, and `--hold <seconds>` prints the changes that do not need you as one batch (a `!` line still comes at once). The watch also says when an agent ends its turn.
-- `tracker agents` lists the agent sessions on a tracker: status, tickets, branch, folder and transcript file.
+- `tracker agents` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
 
 ### Changed
 
