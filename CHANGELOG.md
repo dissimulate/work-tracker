@@ -7,6 +7,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Fixed
 
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
+- In a Herdr layout, the view follows an agent you started from a shell (a tab opened as a shell, then `claude` or `claude --resume` run in it) to its tracker, instead of saying that the focused agent has none. With two or more agents under that shell it still says none. Not on Windows.
 
 ## 0.32.0 - 2026-11-17
 
