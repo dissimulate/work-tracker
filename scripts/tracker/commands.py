@@ -14,7 +14,7 @@ from pathlib import Path
 from .system import ROOT, die, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
-from .store import HOME, atomic_file, atomic_write, create, locked, record_cli
+from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
 from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIVE_SYNC_S,
     MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA,
     STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
@@ -60,7 +60,7 @@ def new_record(tr: Tracker, kind: str, ident: str, title: str, **meta) -> Record
     and `updated_at` now. It joins the tracker's records."""
     now = utc_now()
     path = tr.root / KINDS[kind].folder / f"{ident}.md"
-    path.parent.mkdir(exist_ok=True)
+    make_folder(path.parent)
     create(path, from_template(kind, {"id": ident, "title": title, "status": STATUSES[kind][0], **meta,
                                       "created_at": now, "updated_at": now}, tr.labels))
     rec = load_record(path, kind)
@@ -628,7 +628,7 @@ def keep_evidence(args, folder: Path) -> str:
         if dest.exists() and dest.read_bytes() != src.read_bytes() and not args.force:
             die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, --force to replace it, or `--append -` "
                 "to add text to it")
-        folder.mkdir(exist_ok=True)
+        make_folder(folder)
         with src.open("rb") as source, atomic_file(dest) as target:
             shutil.copyfileobj(source, target)
     return name

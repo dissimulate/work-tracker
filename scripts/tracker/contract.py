@@ -1,4 +1,5 @@
-"""The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it."""
+"""The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it, and
+`refuse_newer` keeps this code from writing a newer one."""
 
 from __future__ import annotations
 
@@ -6,10 +7,11 @@ import datetime as dt
 import json
 import os
 import re
+from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, locked, read_json
+from .store import HOME, guard_writes, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
     ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
     OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
@@ -433,10 +435,28 @@ def stop_old_viewer() -> None:
     OLD_VIEWER.unlink(missing_ok=True)
 
 
+class NewerFormat(Exception):
+    """`refuse_newer` refused a write."""
+
+
+NEWER_FORMAT = ("{slug} was written by a newer version of the work-tracker plugin (tracker format {schema}; this "
+                "one writes {own}), so this one writes nothing to it: reload the plugin or restart the session")
+
+
+def refuse_newer(root: Path) -> None:
+    """Refuse a write into a tracker in a format newer than SCHEMA: raise NewerFormat. A session runs the plugin
+    version it loaded until it reloads, and the newer version that migrated the tracker never migrates it again: what
+    this one wrote there would stay in the older format."""
+    newer = Tracker(root).schema
+    if newer > SCHEMA:
+        raise NewerFormat(NEWER_FORMAT.format(slug=root.name, schema=newer, own=SCHEMA))
+
+
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
-    tracker that fails stays as it is, says why, and tries again next time. Also stops the old viewer
-    (`stop_old_viewer`)."""
+    tracker that fails stays as it is, says why, and tries again next time. From here on, refuse each write into a
+    tracker in a newer format (`refuse_newer`). Also stops the old viewer (`stop_old_viewer`)."""
+    guard_writes(refuse_newer)
     if OLD_VIEWER.exists():
         stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):

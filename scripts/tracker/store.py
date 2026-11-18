@@ -1,5 +1,5 @@
-"""Writing the tracker's files: atomic writes, JSON files and the one write lock across every session and worktree.
-What the files hold is schema's and model's."""
+"""Writing the tracker's files: atomic writes, JSON files, the one write lock across every session and worktree, and
+the guard each write in a tracker passes. What the files hold is schema's and model's."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI out
 
 _writes = 0  # tracker files this process wrote: a Tracker rebuilds its index after any write (Tracker.index)
 _first_writes: tuple = ()  # while first_writes lasts: its callback, and the tracker folders written so far
+_guard = None  # guard_writes' check
 
 
 @contextmanager
@@ -32,22 +33,52 @@ def first_writes(callback):
         _first_writes = ()
 
 
+def guard_writes(check) -> None:
+    """From now on, run `check` with a tracker's folder before each write in it, a new folder or an appended line too:
+    it raises to refuse that write."""
+    global _guard
+    _guard = check
+
+
+def tracker_root(path: Path) -> Path | None:
+    """The folder of the tracker that holds `path`; None outside HOME and in HOME's own files and folders: sessions,
+    watches, the archive. A tracker's folder can be a link out of HOME, so the path counts first as it is named."""
+    for named, home in ((Path(os.path.abspath(path)), Path(os.path.abspath(HOME))), (path.resolve(), HOME.resolve())):
+        if named.is_relative_to(home):
+            parts = named.relative_to(home).parts
+            return HOME / parts[0] if len(parts) > 1 and not parts[0].startswith(".") else None
+    return None
+
+
 def will_write(path: Path) -> None:
-    """Note a write to come: when it is the first in a tracker's folder, first_writes' callback sees that folder as it
-    still is."""
-    if not _first_writes:
+    """Note a write to come: guard_writes' check sees its tracker's folder, and when it is the first write there,
+    first_writes' callback sees that folder as it still is."""
+    root = tracker_root(path) if _guard or _first_writes else None
+    if not root:
         return
-    try:
-        parts = path.resolve().relative_to(HOME.resolve()).parts
-    except ValueError:
-        return
-    if len(parts) < 2 or parts[0].startswith("."):  # HOME's own files and folders: sessions, watches, the archive
-        return
-    callback, written = _first_writes
-    root = HOME / parts[0]
-    if root not in written:
-        written.add(root)
-        callback(root)
+    if _guard:
+        _guard(root)
+    if _first_writes:
+        callback, written = _first_writes
+        if root not in written:
+            written.add(root)
+            callback(root)
+
+
+def append(path: Path, text: str) -> None:
+    """Add text at the end of a file. guard_writes' check sees it; first_writes' callback does not, as no record
+    changes."""
+    root = tracker_root(path) if _guard else None
+    if root:
+        _guard(root)
+    with open(path, "a", encoding="utf-8", newline="\n") as f:  # Windows: no CRLF
+        f.write(text)
+
+
+def make_folder(path: Path) -> None:
+    """Make a folder, as a write (`will_write`), if it is not there."""
+    will_write(path)
+    path.mkdir(exist_ok=True)
 
 
 @contextmanager

@@ -19,7 +19,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
-from .contract import prune_backups, upgrade_trackers
+from .contract import prune_backups, upgrade_trackers, NewerFormat
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -375,6 +375,22 @@ HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": 
          "waiting": lambda data: None, "resumed": lambda data: None, "stop-failure": lambda data: None}
 
 
+# The handlers whose event can tell the model, and that event as emit_context names it.
+CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit", "post-bash": "PostToolUse",
+                  "answered": "PostToolUse", "subagent-start": "SubagentStart"}
+
+
+def tell_newer(data: dict, event: str, exc: NewerFormat) -> None:
+    """The handler's write was refused (`contract.refuse_newer`): tell the model and the user, once per session, at the
+    first such handler that can tell the model. Not a subagent's: the session reloads, not it."""
+    sid, text = where(data)[1], f"[work-tracker] {exc}."
+    if event not in CONTEXT_EVENTS or data.get("agent_id") or load_session(sid).get("told_newer") == text:
+        warn(f"hook {event}: {exc}")
+        return
+    save_session(sid, told_newer=text)
+    emit_context(CONTEXT_EVENTS[event], text, text)
+
+
 HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks that call gh 15 s
 
 
@@ -396,7 +412,10 @@ def run_hook(*events: str) -> None:
             status = STATUS_OF.get(event)
             if event == "session-end" and not data.get("agent_id"):
                 session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
-            HOOKS[event](data)
+            try:
+                HOOKS[event](data)
+            except NewerFormat as exc:  # it wrote nothing to the tracker; the session's own files go on
+                tell_newer(data, event, exc)
             # A subagent's turn is not the session's, but its wait on the user is.
             asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
             if status and event != "session-end" and (not data.get("agent_id") or asker is not None):

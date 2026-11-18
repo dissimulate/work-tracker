@@ -1171,6 +1171,123 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(re.findall(r"^(T-\d+) ", run(*t, "issue"), re.M), ["T-1"])  # not the closed T-2
 
 
+def tree(root: Path) -> dict[str, bytes | None]:
+    """Every file under `root` with its bytes, and every folder."""
+    return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None for p in sorted(root.rglob("*"))}
+
+
+NEWER = "was written by a newer version of the work-tracker plugin"
+RELOAD = "reload the plugin or restart the session"
+
+
+class NewerFormat(unittest.TestCase):
+    """A tracker in a newer format than this code's: a newer plugin version wrote it, and this one, still running in
+    a session, writes nothing to it."""
+
+    WRITES = (["set", "N-1", "next=More"], ["set", "tracker", "owner=you"], ["log", "A note"],
+              ["new", "N-2", "--title", "Two"], ["decide", "Which store"], ["act", "Ask Sam"],
+              ["add", "N-1", "carry", "A fact"], ["put", "N-1", "plan", "Do it", "--why", "A reason"],
+              ["wait", "N-1", "on", "N-0"])
+
+    def tracker(self, in_repo: str = "") -> tuple[str, tuple[str, str]]:
+        s, t = new_tracker("Newer", in_repo)
+        run(*t, "new", "N-0", "--title", "Zero")
+        run(*t, "new", "N-1", "--title", "One", "--branch", "feat/N-1")
+        run(*t, "set", "N-1", "status=in-progress")
+        return s, t
+
+    def newer(self, s: str) -> None:
+        model.tracker_at(s).readme.save({"schema": schema.SCHEMA + 1})
+
+    def test_a_write_refuses_and_changes_nothing(self):
+        s, t = self.tracker()
+        self.newer(s)
+        evidence = Path(tempfile.mkdtemp(dir=BASE)) / "run.log"
+        evidence.write_text("a run")
+        before = tree(store.HOME / s)
+        for args in (*self.WRITES, ["attach", str(evidence), "--ref", "N-1"], ["refresh"]):  # a UI's write too
+            with self.subTest(args=args):
+                said = run(*t, *args, code=watcher.REFUSED)
+                self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")  # one sentence, nothing else
+        self.assertEqual(tree(store.HOME / s), before)
+
+    def test_a_linked_tracker_folder_counts_as_any_other(self):
+        s, t = self.tracker()
+        target = Path(tempfile.mkdtemp(dir=BASE)) / s
+        (store.HOME / s).rename(target)
+        (store.HOME / s).symlink_to(target, target_is_directory=True)
+        self.assertIn("`check`: no new problems", run(*t, "set", "N-1", "next=Linked"))  # a write reports on it
+        self.newer(s)
+        before = tree(target)
+        for args in (["set", "N-1", "next=More"], ["log", "A note"], ["act", "Ask Sam"]):
+            with self.subTest(args=args):
+                self.assertIn(RELOAD, run(*t, *args, code=watcher.REFUSED))
+        self.assertEqual(tree(target), before)
+
+    def test_an_equal_or_older_format_writes_and_an_older_one_migrates_first(self):
+        s, t = self.tracker()
+        for args in self.WRITES:
+            with self.subTest(args=args):
+                run(*t, *args)
+        model.tracker_at(s).readme.save({"schema": schema.SCHEMA - 1})
+        self.assertIn("no new problems", run(*t, "set", "N-1", "next=Again"))
+        self.assertEqual(model.tracker_at(s).schema, schema.SCHEMA)
+        self.assertIn(f"Migrated to tracker format {schema.SCHEMA}", (store.HOME / s / "log.md").read_text())
+
+    def test_a_read_works_and_check_keeps_its_error(self):
+        s, t = self.tracker()
+        self.newer(s)
+        before = tree(store.HOME / s)
+        self.assertIn("N-1", run(*t, "index"))
+        self.assertIn("One", run(*t, "show", "N-1"))
+        self.assertIn("One", run(*t, "context", "N-1"))
+        self.assertEqual(data(s)["slug"], s)
+        self.assertIn(f"tracker format {schema.SCHEMA + 1} is newer than this plugin's {schema.SCHEMA}",
+                      run(*t, "check", code=1))
+        self.assertEqual(tree(store.HOME / s), before)
+        self.assertEqual(list((store.HOME / ".backups").glob(f"{s}-*")), [])  # and no migration
+
+    def test_sync_and_the_watchs_sync_write_nothing(self):
+        s, t = self.tracker("a/x")
+        self.newer(s)
+        before = tree(store.HOME / s)
+        fake = answers([pull(11, branch="feat/N-1", state="MERGED", merged_at="2026-10-01T06:30:00Z")])
+        with mock.patch.object(github, "gh", fake):
+            said = run(*t, "sync", code=watcher.REFUSED)
+            job = watcher.SyncJob(model.tracker_at(s))
+            job.run()
+        self.assertEqual(len(fake.queries), 2)  # each read GitHub: the write is what refused
+        self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")
+        self.assertIn(RELOAD, job.changes[0])
+        self.assertEqual(tree(store.HOME / s), before)
+
+    def test_a_hook_writes_nothing_and_tells_the_session_once(self):
+        s, t = self.tracker()
+        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        for x in (sid, f"{sid}b"):
+            session.save_session(x, tracker=s, cwd=str(work))
+        self.assertIn("Tracker protocol", said(hook("session-start", sid, work, source="startup")))  # the mark
+        self.newer(s)
+        before = tree(store.HOME / s)
+        committed = {"tool_input": {"command": "git commit -m x"}}
+        commit(work, "a subagent's")
+        self.assertIsNone(tool("Bash", sid, work, agent_id="a1", **committed))  # the session reloads, not a subagent
+        commit(work, "on a newer tracker")
+        told = tool("Bash", sid, work, **committed)  # exits 0: `hook` checks
+        self.assertEqual(told["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertIn(f"[work-tracker] {s} {NEWER}", told["hookSpecificOutput"]["additionalContext"])
+        self.assertIn(RELOAD, told["systemMessage"])  # the user, who reloads, sees it too
+        commit(work, "again")
+        self.assertIsNone(tool("Bash", sid, work, **committed))  # once per session
+        hook("prompt", sid, work, prompt="go")
+        self.assertIsNone(hook("stop", sid, work))
+        other = hook("session-start", f"{sid}b", work, source="startup")  # another session is told too
+        self.assertEqual(other["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        self.assertIn(RELOAD, other["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(tree(store.HOME / s), before)
+        self.assertEqual(session.load_session(sid)["activity"]["status"], "idle")  # its own files go on
+
+
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""
     data = json.dumps({"session_id": sid, "cwd": str(cwd), "hook_event_name": event, **extra})
