@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .system import alive, die
+from .system import alive, die, session_id
 from .store import HOME, locked, read_json, write_json
 from .schema import STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_log, archived_at, branch_entry, commits_text, load_record,
@@ -77,11 +77,6 @@ class Match:
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
 SESSIONS_MAX = 200
-
-
-def session_id() -> str:
-    return (os.environ.get("TRACKER_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
-            or os.environ.get("CODEX_THREAD_ID") or "")
 
 
 def inside_home(path: str | Path) -> bool:

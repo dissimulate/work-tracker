@@ -4,6 +4,7 @@ schema's, the text format itself markdown's, the writing of files store's."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -11,13 +12,13 @@ from functools import cached_property
 from pathlib import Path
 
 from . import store
-from .system import die
+from .system import die, plugin_version, session_id
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, append, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE,
-    PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
-    utc_now, utc_seconds, Stage)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR,
+    PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day,
+    show_value, stage_of, today, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -809,6 +810,86 @@ def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     line = f"- {today()}" + (f" [{' '.join(refs)}]" if refs else "") + f" {' '.join(msg.split())}"
     append(tr.root / "log.md", line + "\n")
     return line
+
+
+def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
+    """Record a change as the next event of the tracker's event file (EVENTS_FILE), and return it: its number, the
+    time in UTC, its kind (one of EVENTS), the session and plugin version that wrote it, its repo, the records it
+    concerns (`refs`), the text on one line, then `data`, the kind's own fields. The repo is the first ticket's in
+    `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number is one past the file's
+    last, so two writers at once would share it. ValueError for a kind not in EVENTS, or `data` that names a field
+    above."""
+    if kind not in EVENTS:
+        raise ValueError(f"no event kind {kind!r} (EVENTS)")
+    ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
+    repo = tr.repo_of(ticket) if ticket else tr.repos[0] if len(tr.repos) == 1 else ""
+    e = {"seq": last_seq(tr) + 1, "at": utc_now(), "kind": kind, "session": session_id(),
+         "version": plugin_version(), "repo": repo, "refs": list(refs), "text": " ".join(text.split())}
+    if clash := sorted(e.keys() & data.keys()):
+        raise ValueError(f"an event's own fields cannot be data: {', '.join(clash)}")
+    e.update(data)
+    path = tr.root / EVENTS_FILE
+    # A writer killed part way leaves a last line with no newline: the new event starts a line of its own.
+    append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
+    return e
+
+
+def event_of(line: bytes) -> dict | None:
+    """A line of the event file as its event; None for a line that is none, such as a half-written last line."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return None
+    return e if isinstance(e, dict) and isinstance(e.get("seq"), int) else None
+
+
+def read_events(tr: Tracker, after: int = 0) -> list[dict]:
+    """The events numbered past `after`, oldest first; a line that is no event is left out."""
+    try:
+        lines = (tr.root / EVENTS_FILE).read_bytes().splitlines()
+    except FileNotFoundError:
+        return []
+    return [e for line in lines if (e := event_of(line)) and e["seq"] > after]
+
+
+def last_seq(tr: Tracker) -> int:
+    """The number of the last whole event; 0 for none. Read back from the end of the file, as the file only grows."""
+    try:
+        f = open(tr.root / EVENTS_FILE, "rb")
+    except FileNotFoundError:
+        return 0
+    with f:
+        size, block = f.seek(0, 2), 4096
+        while True:
+            start = max(0, size - block)
+            f.seek(start)
+            lines = f.read().split(b"\n")
+            # The last piece has no newline after it, so it is not whole; the first may start mid-line.
+            for line in reversed(lines[1 if start else 0:-1]):
+                if e := event_of(line):
+                    return e["seq"]
+            if not start:
+                return 0
+            block *= 4
+
+
+def ends_open(path: Path) -> bool:
+    """The file's last line has no newline."""
+    try:
+        with open(path, "rb") as f:
+            if not f.seek(0, 2):
+                return False
+            f.seek(-1, 2)
+            return f.read(1) != b"\n"
+    except FileNotFoundError:
+        return False
+
+
+def log_line(e: dict) -> str:
+    """An event as its line in log.md, `- <day> [<refs>] <text>`: the day is a legacy event's own, else the local day
+    of its time."""
+    day = e["day"] if "day" in e else dt.date.fromtimestamp(utc_seconds(e["at"])).isoformat()
+    return f"- {day}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
 
 
 @dataclass(frozen=True)

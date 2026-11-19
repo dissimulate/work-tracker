@@ -1,12 +1,14 @@
-"""The operating system: this Python and the CLI as processes, whether a process runs, and the system's trash. The
-tracker's own files are store's and model's."""
+"""The operating system: this Python and the CLI as processes, the session that runs them, the plugin's version,
+whether a process runs, and the system's trash. The tracker's own files are store's and model's."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 
 WINDOWS = os.name == "nt"
@@ -27,6 +29,20 @@ CLI_ENV = ("TRACKER_HOME", "TRACKER_SYNC", "CLAUDE_CONFIG_DIR", "HOME", "USERPRO
 # What makes a process outlive this one
 DETACH = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
           else {"start_new_session": True})
+
+
+def session_id() -> str:
+    return (os.environ.get("TRACKER_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+            or os.environ.get("CODEX_THREAD_ID") or "")
+
+
+@lru_cache(maxsize=None)
+def plugin_version() -> str:
+    """This copy's version, from its manifest; "" when that cannot be read."""
+    try:
+        return str(json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
 
 
 def warn(msg: str) -> None:

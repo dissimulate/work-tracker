@@ -1287,6 +1287,103 @@ class NewerFormat(unittest.TestCase):
         self.assertEqual(tree(store.HOME / s), before)
         self.assertEqual(session.load_session(sid)["activity"]["status"], "idle")  # its own files go on
 
+    def test_no_event_and_no_log_line(self):
+        s, _ = self.tracker()
+        self.newer(s)
+        store.guard_writes(contract.refuse_newer)  # as each command and hook does first
+        before = tree(store.HOME / s)
+        with store.locked(), self.assertRaises(contract.NewerFormat):
+            model.append_event(model.tracker_at(s), "note", "A note", [])
+        self.assertEqual(tree(store.HOME / s), before)
+
+
+class Events(unittest.TestCase):
+    """The event file: each change the tool writes, as one typed event per line."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Events")
+        self.tr = model.tracker_at(self.s)
+        self.file = store.HOME / self.s / schema.EVENTS_FILE
+
+    def append(self, kind: str = "note", text: str = "x", refs: tuple = (), tr: model.Tracker | None = None,
+               **data) -> dict:
+        with store.locked():
+            return model.append_event(tr or self.tr, kind, text, list(refs), **data)
+
+    def test_an_event_has_the_fields_of_R12(self):
+        e = self.append("note", "a  b\nc", ["T-1"])
+        self.assertEqual([*e][:8], ["seq", "at", "kind", "session", "version", "repo", "refs", "text"])
+        self.assertEqual((e["seq"], e["kind"], e["refs"], e["text"]), (1, "note", ["T-1"], "a b c"))
+        self.assertRegex(e["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(e["version"], json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"])
+        self.assertEqual(model.read_events(self.tr), [e])
+
+    def test_sequence_numbers_have_no_gaps(self):
+        events = [self.append(text=f"n{i}") for i in range(3)]
+        self.assertEqual([e["seq"] for e in events], [1, 2, 3])
+        self.assertEqual(model.read_events(self.tr, after=2), [events[2]])
+        self.assertEqual(model.last_seq(self.tr), 3)
+
+    def test_the_session_is_the_environments(self):
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": "s1"}):
+            self.assertEqual(self.append()["session"], "s1")
+        with mock.patch.dict(os.environ):
+            for var in ("TRACKER_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
+                os.environ.pop(var, None)
+            self.assertEqual(self.append()["session"], "")  # a human at a terminal: empty, never missing
+
+    def test_the_repo_is_the_tickets(self):
+        s, t = new_tracker("Two repos", "a/x,b/y")
+        run(*t, "new", "T-1", "--title", "One", "--repo", "b/y")
+        two = model.tracker_at(s)
+        self.assertEqual(self.append(refs=["X-9", "T-1"], tr=two)["repo"], "b/y")  # the first ticket's
+        self.assertEqual(self.append(tr=two)["repo"], "")  # no ticket, and no one repo
+        one, _ = new_tracker("One repo", "a/x")
+        self.assertEqual(self.append(tr=model.tracker_at(one))["repo"], "a/x")
+
+    def test_an_unknown_kind_is_refused(self):
+        self.append()
+        before = self.file.read_bytes()
+        with self.assertRaises(ValueError):
+            self.append("noted")
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_data_cannot_shadow_a_fixed_field(self):
+        with self.assertRaises(ValueError):
+            self.append(seq=9)
+        self.assertEqual(model.read_events(self.tr), [])
+
+    def test_a_half_written_line_is_skipped(self):
+        first = self.append()
+        with open(self.file, "a") as f:
+            f.write('{"seq": 2, "at')  # a process killed part way
+        self.assertEqual(model.read_events(self.tr), [first])
+        second = self.append()
+        self.assertEqual(second["seq"], 2)
+        self.assertEqual(json.loads(self.file.read_text().splitlines()[-1]), second)  # on its own line
+        self.assertEqual(model.read_events(self.tr), [first, second])
+
+    def test_the_number_is_found_past_a_long_damaged_tail(self):
+        for _ in range(3):
+            self.append(text="y" * 3000)
+        with open(self.file, "a") as f:
+            f.write("not an event " * 1000 + "\n")  # longer than the first block read back
+        self.assertEqual(self.append()["seq"], 4)
+
+    def test_one_event_is_one_line(self):
+        self.append()
+        before = len(self.file.read_bytes().splitlines())
+        e = self.append(text="é\nx")
+        self.assertEqual(len(self.file.read_bytes().splitlines()), before + 1)
+        self.assertIn("é x".encode(), self.file.read_bytes())  # as written, not escaped
+        self.assertEqual((e["text"], model.read_events(self.tr)[-1]["text"]), ("é x", "é x"))
+
+    def test_log_line_matches_todays_form(self):
+        e = self.append(text="a  b c", refs=["T-1", "D-2"])
+        self.assertEqual(model.log_line(e), f"- {schema.today()} [T-1 D-2] a b c")
+        self.assertEqual(model.log_line(self.append(text="a b c")), f"- {schema.today()} a b c")
+        self.assertEqual(model.log_line({**e, "day": "2025-01-02"}), "- 2025-01-02 [T-1 D-2] a b c")
+
 
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""

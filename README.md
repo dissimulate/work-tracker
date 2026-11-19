@@ -172,7 +172,7 @@ Environment variables. All are optional.
 
 `scripts/tracker/`: stdlib only, run by `bin/tracker` and `scripts/hook.sh`. One module per concern; each imports only the modules before it:
 
-1. `system`: this Python and the CLI as processes, the plugin's folder, whether a process runs, the system's trash
+1. `system`: this Python and the CLI as processes, the plugin's folder and version, the session id, whether a process runs, the system's trash
 2. `markdown`: the file format as text (frontmatter, sections, link lines)
 3. `store`: writing the tracker's files: atomic writes, JSON files, the lock, the guard on each write
 4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
