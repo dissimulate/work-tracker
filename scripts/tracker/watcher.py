@@ -351,7 +351,7 @@ class Watcher:
             self.sig = files_hash(tr.data_files())
             self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
-            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now), now)  # each stuck item, once
+            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now)[0], now)  # each stuck item, once
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
@@ -406,7 +406,12 @@ class Watcher:
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role, self.sid)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
-        events += self.stuck(tr, now)
+        stuck, about = self.stuck(tr, now)
+        # A move that turned stuck at this look is its item's stuck line to say (`ticket_events` knows only the last
+        # move it saw, and one stuck at once never showed its move before)
+        facts = self.st.get("snapshot", {}).get("tickets", {})
+        events = [e for e in events if not (e.kind == "ticket" and e.key in about and facts[e.key].get("stuck_from")
+                                            and e.text == f"move: {facts[e.key]['move']}")] + stuck
         named = {e.key for e in events}
         for sid, a in self.st.get("agents", {}).items():
             if named & set(a["on"]):
@@ -490,27 +495,30 @@ class Watcher:
         self.st.update(agents=agents, shared=shared)
         return out
 
-    def stuck(self, tr: Tracker, now: float) -> list[Event]:
-        """Each open item that is stuck (`items_of`, with the clock at each look and the log read only when it
-        changed), said once each time it turns stuck, and in a new watch's first lines: its key stays in the state
+    def stuck(self, tr: Tracker, now: float) -> tuple[list[Event], set[str]]:
+        """A line for each open item that is stuck (`items_of`, with the clock at each look and the log read only when
+        it changed), said once each time it turns stuck, and in a new watch's first lines: its key stays in the state
         while it is stuck, so one that comes back, or turns stuck anew, is said again.
-        Nothing is written to the tracker. A wait whose session the agent line already shows waiting is that line's
-        to say, and the watch's own session's waits are not news to it."""
+        With them, the tickets those lines are about. Nothing is written to the tracker. A wait whose session the
+        agent line already shows waiting is that line's to say, when `only` keeps agent lines, and the watch's own
+        session's waits are not news to it."""
         items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]
         told, agents = set(self.st.get("stuck", [])), self.st.get("agents", {})
-        out = []
+        asks_shown = self.wanted(Event("agent", "", True, ""))
+        out, about = [], set()
         for i in items:
             if not i.stuck or i.key in told:
                 continue
             told.add(i.key)
-            if i.kind != "wait" or agents.get(i.session, {}).get("status") != "waiting":
+            if i.kind != "wait" or not asks_shown or agents.get(i.session, {}).get("status") != "waiting":
                 if i.kind == "question":
-                    about = i.key.split(":", 1)[1]  # its decision
+                    name = i.key.split(":", 1)[1]  # its decision
                 else:
-                    about = i.refs[0] if i.refs else ""
-                out.append(Event("stuck", f"stuck {about}".strip(), True, i.what))  # a line of its own
+                    name = i.refs[0] if i.refs else ""
+                out.append(Event("stuck", f"stuck {name}".strip(), True, i.what))  # a line of its own
+                about.update(i.refs)
         self.st["stuck"] = sorted(told & {i.key for i in items if i.stuck})  # stuck again later: said again
-        return out
+        return out, about
 
     def run(self, once: bool) -> None:
         """A session's watch stops when the user ends it (/work-tracker:watch stop)."""

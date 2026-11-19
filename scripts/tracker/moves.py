@@ -245,9 +245,9 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
         if e["kind"] == "human.wait":
             waits[(e.get("session"), e.get("asker"))] = e  # a later one replaces it: a hook that failed left it
         elif e["kind"] == "human.wait.end":
-            ended.add(e.get("of"))
+            ended.add((e.get("session"), e.get("of")))  # its own session's: `of` numbers one tracker's events
     for (sid, asker), e in waits.items():
-        if e["seq"] in ended or sid not in live:
+        if (sid, e["seq"]) in ended or sid not in live:
             continue
         at = utc_seconds(e.get("at")) or now
         late = now - at > DEADLINE_S["wait"]

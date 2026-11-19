@@ -3547,6 +3547,31 @@ class Watch(unittest.TestCase):
         self.assertEqual(self.stuck_lines(lines), [])
         self.assertEqual(self.stuck_lines(w.poll(now + 41)), [])
 
+    def test_a_watch_that_leaves_agent_lines_out_says_a_stuck_wait(self):
+        sid, now = f"asker{time.monotonic_ns()}", time.time()
+        self.addCleanup(session.drop_session, sid)
+        session.save_session(sid, tracker=self.s, cwd=str(self.work),
+                             activity={"status": "waiting", "since": now - 10, "at": now})
+        w = watcher.Watcher(model.Tracker(self.root), only=frozenset({"stuck"}))  # `--only stuck`: no agent line
+        w.claim(now)
+        with store.locked(), mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            model.append_event(model.Tracker(self.root), "human.wait", "Waiting on a human: Bash", [], asker="",
+                               why="Bash")
+        lines = w.poll(now + 40)
+        self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
+        self.assertEqual(w.poll(now + 41), [])  # said once
+
+    def test_a_move_that_turns_stuck_at_once_is_said_by_the_stuck_line_alone(self):
+        self.coordinator()
+        run(*self.t, "set", "W-1", "status=in-progress")  # under way, no session on it
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        w.poll(now)
+        run(*self.t, "submit", "W-1", "--what", "plan")  # the coordinator's move is never seen: stuck at once
+        lines = w.poll(now + 1)
+        self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
+        self.assertEqual([x for x in lines if "move:" in x], [], lines)
+
     def test_a_deadline_passing_is_seen_without_a_read(self):
         w, now = self.watcher(), time.time()
         w.claim(now)
@@ -3646,7 +3671,7 @@ class Watch(unittest.TestCase):
         looks = [[item], [dataclasses.replace(item, stuck=False)], [item]]  # passed on, then left again
         w = self.watcher()
         with mock.patch.object(watcher, "items_of", side_effect=looks):
-            said = [len(w.stuck(model.Tracker(self.root), time.time())) for _ in looks]
+            said = [len(w.stuck(model.Tracker(self.root), time.time())[0]) for _ in looks]
         self.assertEqual(said, [1, 0, 1])
 
     def opened(self, *flags: str) -> list[dict]:
@@ -5134,6 +5159,31 @@ class OpenItems(unittest.TestCase):
         data(self.s)
         claimed = watcher.Watcher(model.tracker_at(self.s), "old").claim(time.time())  # and takes its place
         self.assertTrue(claimed)
+
+    def test_a_pid_that_is_no_whole_number_runs_no_watch(self):
+        path = watcher.state_path(self.s, "old")
+        self.addCleanup(path.unlink, True)
+        for bad in ("true", '"1"', "1.9", "1", "1e300", "1" + "0" * 40):  # as pid 1, which always runs, or too large
+            with self.subTest(pid=bad):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f'{{"who": "session old", "sid": "old", "pid": {bad}, "role": "coordinator"}}')
+                self.assertEqual(session.state_pid(json.loads(path.read_text())), 0)
+                self.assertFalse(session.coordinated(model.tracker_at(self.s)))
+        self.assertFalse(session.is_time(True))
+        self.assertEqual(session.state_pid({"pid": os.getpid()}), os.getpid())
+
+    def test_a_running_watch_with_a_damaged_start_names_no_time(self):
+        self.coordinator()
+        path = watcher.state_path(self.s, "qb")
+        store.write_json(path, {**json.loads(path.read_text()), "started": -5})
+        self.assertEqual(data(self.s)["now"]["watch"]["text"], "Watched by session qb")
+
+    def test_a_wait_is_ended_only_by_its_own_session(self):
+        live = {"s1": "worker"}
+        wait = event(1, "human.wait", [], 5, session="s1", asker="")
+        # A session that moved here from another tracker ends that tracker's wait 1, not this one's.
+        self.assertEqual(self.keys([wait, event(2, "human.wait.end", [], session="s2", of=1)], live=live), ["wait:1"])
+        self.assertEqual(self.keys([wait, event(2, "human.wait.end", [], session="s1", of=1)], live=live), [])
 
     def test_a_running_watch_with_a_damaged_end_still_watches(self):
         self.coordinator()

@@ -526,11 +526,10 @@ def watch_running(st: dict) -> bool:
 
 
 def state_pid(st: dict) -> int:
-    """A watch state's process id; 0 for none, and for a damaged one."""
-    try:
-        return int(st.get("pid") or 0)
-    except (TypeError, ValueError, OverflowError):
-        return 0
+    """A watch state's process id; 0 for none, and for a damaged one: only a whole number a process can have counts
+    (`true`, "1" and 1.9 would all read as 1, which always runs)."""
+    pid = st.get("pid")
+    return pid if type(pid) is int and 1 < pid < 2 ** 32 else 0
 
 
 def coordinated(tr: Tracker) -> bool:
@@ -555,7 +554,7 @@ TIME_SLACK_S = 60  # another clock may run a little ahead of this one
 def is_time(x) -> bool:
     """A watch state's time is an epoch time up to now: a damaged state can hold any JSON, infinity or a time in
     milliseconds too. Every such time is past."""
-    return isinstance(x, (int, float)) and 0 < x <= time.time() + TIME_SLACK_S  # NaN fails both
+    return type(x) in (int, float) and 0 < x <= time.time() + TIME_SLACK_S  # NaN fails both; `true` is no time
 
 
 # Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's

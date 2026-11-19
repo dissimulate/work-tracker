@@ -245,8 +245,8 @@ def now_view(tr: Tracker) -> dict:
     watches = watches_of(tr)  # `tracker watch`: who watches the tracker, or when the last watch ended
     running = [w for w in watches if w["running"]]
     last = max(watches, key=lambda w: w["ended"], default=None)
-    watch = {"running": True, "text": "Watched by " + ", ".join(f"{w['who']} since {clock(w['since'])}"
-                                                                 for w in running)} if running else \
+    watch = {"running": True, "text": "Watched by " + ", ".join(  # a damaged start names no time
+        f"{w['who']} since {clock(w['since'])}" if w["since"] else w["who"] for w in running)} if running else \
         {"running": False, "text": f"Watch by {last['who']} ended {clock(last['ended'])}"} if last else None
     now = time.time()
     opened = [{"kind": i.kind, "refs": i.refs, "what": i.what, "move": move_view(i.move), "stuck": i.stuck,
