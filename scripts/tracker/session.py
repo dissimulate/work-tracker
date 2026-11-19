@@ -128,6 +128,17 @@ def drop_session(sid: str) -> None:
         path.unlink(missing_ok=True)
 
 
+def unlink_session(sid: str) -> None:
+    """Take the session off its tracker and forget what it saw there, as `drop_session` does, but keep its open waits
+    on a human with its status: the command that moves a session is often the one it asked a permission for, and that
+    wait has still to end, in the tracker it started in (`session_activity`)."""
+    with locked():
+        entry = load_session(sid)
+        drop_session(sid)
+        if entry.get("waits"):
+            save_session(sid, waits=entry["waits"], activity=entry.get("activity"))
+
+
 # "Not now" to the offer to link a session to a tracker, per repo and branch: no link or offer there for DECLINE_S.
 DECLINED_FILE = HOME / ".declined.json"
 DECLINE_S = 86400
@@ -774,17 +785,22 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
     tell apart). One lock around the whole: two hooks of one session do not interleave."""
     with locked():
         entry = load_session(sid)
-        if not entry.get("tracker"):
+        # asker: [its human.wait's seq (0: none written), epoch, tracker]; a damaged one is no wait
+        waits = {k: v for k, v in (entry.get("waits") or {}).items() if isinstance(v, list) and len(v) == 3}
+        linked = bool(entry.get("tracker"))
+        if not linked and not waits:
             return
-        waits = dict(entry.get("waits") or {})  # asker: [its human.wait's seq (0: none written), epoch, tracker]
         if asker is None:
             starting, ending = [], list(waits)
         elif status == "waiting":
-            starting, ending = [asker] if asker not in waits else [], []
+            starting, ending = [asker] if linked and asker not in waits else [], []
         else:
             starting, ending = [], [asker] if asker in waits else []
         if starting or ending:
             log_waits(sid, entry, waits, starting, ending, tool, failed)
+        if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file
+            save_session(sid, waits=waits) if waits else drop_session(sid)
+            return
         status = "waiting" if waits else status
         now = time.time()
         old = entry.get("activity", {})

@@ -4910,15 +4910,44 @@ class HumanWaits(unittest.TestCase):
         self.assertEqual(self.waits(), [])
         self.assertNotIn("waits", session.load_session(self.sid))
 
+    def moved(self, *start: str) -> list[dict]:
+        """The session waits on a permission for `tracker start <start>`, which then runs, and the tool ends. The wait
+        events of the tracker the wait started in."""
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("start", *start, cwd=self.work)
+        hook("resumed", self.sid, self.work, tool_name="Bash")
+        return self.waits()
+
     def test_a_wait_ends_in_the_tracker_it_started_in(self):
         other, _ = new_tracker("Elsewhere")
-        hook("waiting", self.sid, self.work, tool_name="Bash")  # for a command that moves the session
-        session.save_session(self.sid, tracker=other)
-        hook("resumed", self.sid, self.work, tool_name="Bash")
-        start, end = self.waits()
+        start, end = self.moved(other)  # the command it asked about moves the session
         self.assertEqual((end["kind"], end["of"]), ("human.wait.end", start["seq"]))
         elsewhere = model.read_events(model.Tracker(store.HOME / other))
         self.assertEqual([e for e in elsewhere if e["kind"] in schema.QUIET_KINDS], [])
+        entry = session.load_session(self.sid)
+        self.assertEqual((entry["tracker"], entry["activity"]["status"], entry.get("waits")), (other, "busy", None))
+
+    def test_a_wait_ends_when_its_command_starts_the_session_again(self):
+        start, end = self.moved(self.s, "--on", "T-1")
+        self.assertEqual((end["kind"], end["of"]), ("human.wait.end", start["seq"]))
+        self.assertEqual([i for i in session.items_of(model.Tracker(self.root), time.time() + 60) if i.kind == "wait"],
+                         [])
+
+    def test_a_wait_ends_when_its_command_takes_the_session_off_its_tracker(self):
+        for flag in ("--clear", "--decline"):
+            with self.subTest(flag):
+                self.setUp()
+                start, end = self.moved(flag)
+                self.assertEqual((end["kind"], end["of"]), ("human.wait.end", start["seq"]))
+                self.assertEqual(session.load_session(self.sid), {})  # on no tracker: no file is kept for it
+
+    def test_a_damaged_wait_in_the_session_file_stops_no_hook(self):
+        waiting = {"status": "waiting", "since": 1, "at": 1}
+        session.save_session(self.sid, waits={"": [3, time.time()]}, activity=waiting)  # no tracker in the entry
+        hook("stop", self.sid, self.work)
+        entry = session.load_session(self.sid)
+        self.assertEqual((entry["activity"]["status"], entry.get("waits")), ("idle", None))
 
     def test_a_refused_tracker_gets_no_wait_event(self):
         for refuse in (NewerFormat.newer, NewerFormat.unmigrated):

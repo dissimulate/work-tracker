@@ -25,9 +25,10 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
     sort_key, tracker_at, unknown_dep, Record, Tracker)
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
+from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, find_tracker,
     in_repos, items_of, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
-    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
+    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
+    work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -1137,7 +1138,7 @@ def cmd_start(args):
     the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
-        drop_session(sid)
+        unlink_session(sid)
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
         return
     if args.decline:
@@ -1145,7 +1146,7 @@ def cmd_start(args):
         decline(cwd)
         own = session_tracker(sid)
         if own:  # any link goes; most often one the session start made (AUTO_LINKED)
-            drop_session(sid)
+            unlink_session(sid)
         print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
               f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
         return
@@ -1182,7 +1183,7 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    drop_session(sid)  # a new start: nothing seen yet
+    unlink_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
     record_commits(m, cwd)
