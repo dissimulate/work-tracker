@@ -2983,6 +2983,13 @@ class SessionNews(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
         self.assertIn("T-3: the API changed under you", self.message())
 
+    def test_my_own_hand_edit_of_my_last_ticket_is_no_news(self):
+        self.message()
+        path = store.HOME / self.s / "tickets/T-1.md"
+        path.write_text(re.sub(r"^status: .*", "status: done", path.read_text(), flags=re.M))
+        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+        self.assertNotIn("Changed on", self.message())
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE
