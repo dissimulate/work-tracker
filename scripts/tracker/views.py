@@ -14,7 +14,7 @@ from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_
     span, Dep, Record, Start, Tracker)
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, move_of, Match
-from .contract import check
+from .contract import check, other_format
 
 # ---------------------------------------------------------------- views
 
@@ -454,7 +454,8 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
     and the README in full. The rest wait for `check`, and each write prints the problems it adds."""
     errors, warnings = check(tr)
     ids = {t.id for t in tickets} | {"README.md"}
-    mine = [w for w in warnings if w.split(":", 1)[0] in ids]
+    said = f"README.md: {other_format(tr.root)}"  # the callers of a brief print this sentence after it
+    mine = [w for w in warnings if w.split(":", 1)[0] in ids and w != said]
     if not errors and not mine:
         return ""
     return "\n".join([f"Tracker check: {len(errors)} error(s) — run `check` and fix them." if errors
