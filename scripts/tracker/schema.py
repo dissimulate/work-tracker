@@ -537,9 +537,10 @@ def resolution_who(text: str | None) -> str | None:
 # A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
 COORDINATOR = "coordinator"
 # A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
-CITE = '--cite "<a few words from the start of what they said>"'  # the human's message a resolution rests on
-RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` in place of both '
-           'when the spec, a settled decision or the code already answered it)')
+# The human's message a resolution rests on: optional, as only a message this session kept can be cited
+CITE = '[--cite "<a few words from the start of what they said in this session>"]'
+RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` instead, when the '
+           'spec, a settled decision or the code already answered it)')
 DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
 # A session keeps the human's last WORDS_KEPT messages and answers, each as a fingerprint and its first
 # WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. These

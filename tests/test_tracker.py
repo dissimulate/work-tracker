@@ -5295,6 +5295,7 @@ class CitedWord(unittest.TestCase):
         other = other["hookSpecificOutput"]["additionalContext"]
         self.assertIn("direction decision", other)
         self.assertNotIn("--cite", other)  # nothing kept: a citation of it would be refused
+        self.assertNotIn("both", other)  # what --source replaces reads right with --cite and without
 
     def test_a_refused_tracker_is_left_as_it_is(self):
         for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
