@@ -7,11 +7,12 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
+from .schema import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+    resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
     read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import is_pr_link, linked_prs, whose_move, Move
-from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
+from .moves import decision_move, is_pr_link, linked_prs, owner_kind, Move
+from .session import ago, coordinated, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -94,7 +95,7 @@ def due_text(d: dt.date) -> str:
 
 
 def move_view(move: Move | None) -> dict | None:
-    return {"text": move.text(), "mine": move.mine, "quiet": move.quiet} if move else None
+    return {"text": move.text(), "mine": move.mine, "human": move.human, "quiet": move.quiet} if move else None
 
 
 def dep_view(d: Dep) -> dict:
@@ -128,7 +129,9 @@ def time_view(t: Record) -> list[dict]:
 def record_view(tr: Tracker, r: Record) -> dict:
     """What a record shows when it opens: its lead line (its next or summary), what it waits on and what waits on it
     (dep_facts, as the text views give them), its facts and links, then its body in Markdown. An open decision gives
-    its choices apart (`answer`), for the UI to offer each as the answer, and who answers (its owner)."""
+    its move, and its choices apart (`answer`), for the UI to offer each as the answer, with the name its answer is
+    given by: its owner when that names a person, else `user` (a coordinator or a ticket's session is not who
+    clicked)."""
     g = tr.gate(r)
     deps = [{"label": label, "text": v} if isinstance(v, str) else {"label": label, "items": [dep_view(d) for d in v]}
             for label, v in dep_facts(tr, r)]
@@ -136,9 +139,17 @@ def record_view(tr: Tracker, r: Record) -> dict:
         deps.append({"label": "decisions", "items": [
             {"id": d.id, "done": d.closed, "tone": "done" if d.closed else "blocked", "ref": True, "title": ""}
             for d in tr.decisions_for(r)]})
-    move = whose_move(tr, r) if r.kind == "ticket" else None
-    word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     asks = r.kind == "decision" and not r.closed
+    if r.kind == "ticket":
+        move = move_of(tr, r)
+    elif asks:
+        move = decision_move(tr, r, coordinated(tr))
+    else:
+        move = None
+    # The view's answer goes as `--by`: a person the owner names, else `user`, never what would be refused
+    kind, name = owner_kind(tr, r) if asks else ("", "")
+    by = (kind == "human" and resolution_who(name)) or "user"
+    word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     options = parse_options(strip_comments(section(r.body, "Options")))[0] if asks else []
     body = without_section(r.body, "Links")
     return {
@@ -154,7 +165,7 @@ def record_view(tr: Tracker, r: Record) -> dict:
                   for k in FACTS if r.get(k)],
         "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
         "answer": {"options": [{"text": o.text, "cost": o.cost, "recommended": o.recommended} for o in options],
-                   "by": str(r.get("owner") or "user")} if asks else None,
+                   "by": by} if asks else None,
         "body": strip_comments(without_section(body, "Options") if options else body).strip(),
     }
 
@@ -196,7 +207,7 @@ def now_view(tr: Tracker) -> dict:
     watch."""
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
-    moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.in_flight}
+    moves = {t.id: move_of(tr, t) for t in tr.tickets if t.in_flight}
 
     # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket they have under way; a
     # session with none gets its own entry.

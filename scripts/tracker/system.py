@@ -37,6 +37,18 @@ def session_id() -> str:
             or os.environ.get("CODEX_THREAD_ID") or "")
 
 
+VIA_ENV = "TRACKER_VIA"  # "view" in the CLI a UI starts (cli_for_ui)
+
+
+def entered_via() -> str:
+    """How this command was entered: "view" (a human in the view), "agent" (an agent session), or "terminal" (no
+    session: taken to be a human at a terminal). The view's mark wins over a session id, as a view opened from an
+    agent's shell has that session's environment. A guard against mistakes, not proof: an agent can set either."""
+    if os.environ.get(VIA_ENV) == "view":
+        return "view"
+    return "agent" if session_id() or os.environ.get("CLAUDECODE") == "1" else "terminal"
+
+
 @lru_cache(maxsize=None)
 def plugin_version() -> str:
     """This copy's version, from its manifest; "" when that cannot be read."""
@@ -86,12 +98,16 @@ def spawn(*args: str) -> None:
                      **DETACH)
 
 
+# How a UI starts the CLI (cli_for_ui): ENV becomes the environment it takes as its default
+UI_START = "import os; os.environ.update({**ENV, **os.environ, " + repr(VIA_ENV) + ": 'view'}); " + CLI_START
+
+
 def cli_for_ui() -> list[str]:
-    """How a UI starts the CLI: as CLI, with this environment as the default for what it finds unset. Never a secret:
-    CLI_ENV names none, and `gh` keeps its login in its own config."""
+    """How a UI starts the CLI: as CLI, with this environment as the default for what it finds unset, and marked as
+    the view's (VIA_ENV) whatever it finds. Never a secret: CLI_ENV names none, and `gh` keeps its login in its own
+    config."""
     env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
-    start = f"import os; os.environ.update({{**{env!r}, **os.environ}}); {CLI_START}"
-    return [*PYTHON, "-c", start, str(PACKAGE.parent)]
+    return [*PYTHON, "-c", UI_START.replace("ENV", repr(env), 1), str(PACKAGE.parent)]
 
 
 def open_with_system(path: Path, reveal: bool = False) -> None:

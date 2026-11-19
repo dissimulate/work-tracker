@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy
-from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .schema import BLOCKER, COORDINATOR, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers, OtherFormat
@@ -161,7 +161,9 @@ def build_parser():
     sp.add_argument("--recommend", metavar="CHOICE", help="the choice you recommend; added when it is new")
     sp.add_argument("--note", help="a fact, proposal or finding; a dated line in ## Notes")
     sp.add_argument("--resolve", help="the answer; closes the decision")
-    sp.add_argument("--by", help="who decided")
+    sp.add_argument("--by", metavar="NAME", help="with --resolve: the human who decided")
+    sp.add_argument("--source", metavar="WHERE", help="with --resolve: where the answer already is, when no human "
+                                                      "decided it (the spec, a settled decision's id, a file)")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")
     sp.add_argument("--unref", **IDS, help="ticket ids to drop from refs")
     sp.add_argument("--blocks", **IDS, help="ticket ids that cannot proceed until it is settled (adds it to their "
@@ -243,7 +245,7 @@ def build_parser():
     sp.add_argument("ids", nargs="*", help="ticket ids")
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
     sp = add("watch", cmd_watch, "print each change to a tracker, one line per ticket or agent (`!` marks what needs "
-                                 "the user), until stopped: a move, a step, a decision, a PR event, an agent that ends "
+                                 "a human), until stopped: a move, a step, a decision, a PR event, an agent that ends "
                                  "its turn or waits on the user, a `check` error. One watch per session and tracker. "
                                  "In an agent session, run it only when the user, or a skill or instruction from "
                                  "them, tells you to watch: never on your own")
@@ -258,6 +260,9 @@ def build_parser():
     sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
                     help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
                          "marked `!` prints at once, with those held")
+    sp.add_argument("--as", dest="role", choices=[COORDINATOR], help="in an agent session: take the tracker's "
+                    "coordinator role while this watch runs; an open decision with no owner is then yours to triage "
+                    "before a human's")
     sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
                                    "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
                                    "transcript file")

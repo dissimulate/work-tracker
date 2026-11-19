@@ -12,9 +12,8 @@ from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTI
     STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
 from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_events, resolution, sequence, short,
     span, Dep, Record, Start, Tracker)
-from .moves import whose_move
 from .git import cwd_repo
-from .session import ago, branch_handoff, handoff_line, lag, Match
+from .session import ago, branch_handoff, handoff_line, lag, move_of, Match
 from .contract import check, other_format
 
 # ---------------------------------------------------------------- views
@@ -73,11 +72,11 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
 
 
 def move_lines(tr: Tracker) -> list[str]:
-    """The tickets under way by whose move (`whose_move`), yours first: each move once, with its tickets."""
+    """The tickets under way by whose move (`move_of`), yours first: each move once, with its tickets."""
     moves: dict[str, tuple[tuple, list[str]]] = {}  # text: (order, tickets)
     unread = []
     for t in tr.tickets:
-        move = whose_move(tr, t)
+        move = move_of(tr, t)
         if move:
             moves.setdefault(move.text(), ((not move.mine, move.rank, move.text()), []))[1].append(t.id)
         elif t.in_flight:
@@ -114,7 +113,7 @@ def start_text(tr: Tracker, s: Start) -> str:
     if s.base:
         b = s.base
         where = f"stack on {b.get('branch')}" if b.get("branch") else f"stack on {b.id}'s work (no branch recorded)"
-        move = whose_move(tr, b)
+        move = move_of(tr, b)
         facts = [f"{b.id} {b.stage}" + (f", {b.pr_refs}" if b.prs else ""), *([move.text()] if move else [])]
         return f"{where} ({'; '.join(facts)})"
     if s.apart:
@@ -220,7 +219,7 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
     k = "summary" if closed else "next"
     if rec.get(k):
         out.append(f"{k}: {rec.get(k)}")
-    move = whose_move(tr, rec)
+    move = move_of(tr, rec)
     if move:
         out.append(f"move: {move.text(' — ')}")
     if handoff and not closed and (h := branch_handoff(tr, tr.repo_of(rec), str(rec.get("branch")))):
@@ -507,7 +506,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
                                    + (["", t.body.strip()] if full else [])))
         if rest:
             parts.append("\n".join(["Also under way (`tracker context <id>` for each):",
-                                    *(f"  {t.id} {t.stage}" + (f" ({mv.text()})" if (mv := whose_move(tr, t)) else "")
+                                    *(f"  {t.id} {t.stage}" + (f" ({mv.text()})" if (mv := move_of(tr, t)) else "")
                                       + f": {short(t.get('next') or t.get('title'), 120)}" for t in rest)]))
         shared = carry_lines(tr, shown, limit=BRIEF_CARRY_CHARS) + decision_lines(tr, shown, BRIEF_LINE_CHARS)
         if shared:

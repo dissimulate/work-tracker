@@ -147,7 +147,8 @@ KEYS = {
         "title": ("set", "short name of the decision"),
         "status": ("decide", "open until `decide --resolve` closes it; the answer is ## Resolution"),
         "refs": ("decide", "tickets it touches but does not block; a block is the ticket's depends_on"),
-        "owner": ("set", "who must decide"),
+        "owner": ("decide", "who must decide: a person's name, a ticket id (the session on it), or coordinator; none: "
+                            "the coordinator when one is watching, else a human"),
         "due": ("set", DUE),
         "created_at": ("auto", "when it was opened"),
         "updated_at": ("auto", UPDATED),
@@ -191,7 +192,8 @@ EVENTS = {
     "evidence.attached": "a file kept in evidence/ or added to (`file`)",
     "decision.opened": "a decision opened (`decision`, its id)",
     "decision.updated": "a decision's notes, choices or recommendation changed (`decision`)",
-    "decision.decided": "a decision settled (`decision`)",
+    "decision.decided": "a decision settled (`decision`; `decided`: human, source or unattributed; `by`, the human "
+                        "named; `source`, where the answer was; `cited`: false while no human's word is cited)",
     "action.added": "an action for the user added (`action`, its id)",
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
@@ -200,7 +202,7 @@ EVENTS = {
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
     "migrated": "the tracker brought to a newer format (`schema`)",
-    "legacy": "a log.md line from before the event file: no time, session or version (`day`; `decision` when it "
+    "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",
 }
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
@@ -498,8 +500,19 @@ README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required fro
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
 OPEN_DECISIONS_WARN = 12  # more open than this and the list is carrying ticket-level questions
 
-RESOLVE = '`tracker decide D-<n> --resolve "..." --by <who>`'  # a decision answered
-DECIDED = '`tracker decide "<title>" --resolve "..." --by <who>`'  # a choice made on the spot, in one command
+def resolution_who(text: str | None) -> str | None:
+    """A name or source as a resolution line's `(<who>)` holds it, on one line; None when it holds ": " or ")", which
+    would end the `(<who>)` early (`model.answer` reads the answer from the first ": "). "" for none."""
+    who = " ".join((text or "").split())
+    return None if ": " in who or ")" in who else who
+
+
+# A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
+COORDINATOR = "coordinator"
+# A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
+RESOLVE = ('`tracker decide D-<n> --resolve "..." --by <who decided>` (`--source "<where>"` when the spec, a settled '
+           'decision or the code already answered it)')
+DECIDED = '`tracker decide "<title>" --resolve "..." --by <who decided>`'  # a choice made on the spot, in one command
 DECISION_BAR = (
     "A decision is a direction choice: it changes the Goal or Scope, a ticket's plan, order or split, a contract "
     "between tickets, a product, design or architecture rule, or it needs someone else's sign-off. Record it with "
@@ -508,6 +521,9 @@ DECISION_BAR = (
     "with "
     f"{RESOLVE} when it is answered, including an answer given in chat (a choice made on the spot is one command: "
     f"{DECIDED}). "
+    "A decision a human will answer asks one thing in plain words, lists one option per choice with what it costs, "
+    "recommends one, and keeps detail for agents in its notes; a question that picking one option cannot settle is "
+    "split. "
     "A choice inside one ticket's build (implementation detail, review fix, naming, styling) is not a decision: "
     "it goes in that ticket's Plan, `next` or PR.")
 # A decision's ## Options holds only its choices, one line each, so a UI can offer each one as an answer; what is said

@@ -11,14 +11,14 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .system import ROOT, die, open_with_system
+from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS,
     LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES,
     SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
-    parse_options, read_value, stage_of, today, utc_now, Option)
+    parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
     names, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
@@ -338,13 +338,47 @@ def cmd_new(args):
     print(f"created {args.id}: {t.path}")
 
 
-def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
-    who = f" ({by})" if by else ""
+SAY_WHO = ('say who decided: --by <name> when a human told you, or --source "<where>" when the spec, a settled '
+           "decision or the code already answers it")
+
+
+def who_settled(by: str | None, source: str | None) -> tuple[str, dict]:
+    """Who settled a decision and how it was entered (R9), from `--by` or `--source` and `entered_via`: the `<who>` of
+    its resolution line and its `decision.decided` event's data. In the view, a human (`by`, else "human"); through an
+    agent, the human it names (not cited yet) or the source it names, and one of them it must name; at a terminal,
+    unattributed, with what it names kept as said. Dies on flags that cannot say it: the caller writes nothing
+    before."""
+    by, source = resolution_who(by), resolution_who(source)
+    if by is None or source is None:
+        die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
+    if by and source:
+        die("--by and --source: a human decided or a source did, not both")
+    via = entered_via()
+    if via == "view":
+        by = by or "human"
+        return f"{by}, in the view", {"decided": "human", "by": by}
+    if via == "agent":
+        if by:
+            return f"{by}, entered by an agent", {"decided": "human", "by": by, "cited": False}
+        if source:
+            return f"from {source}, entered by an agent", {"decided": "source", "source": source}
+        die(SAY_WHO)
+    data, said = {"decided": "unattributed"}, ""
+    if by:
+        data["by"], said = by, f", said {by}"
+    elif source:
+        data["source"], said = source, f", from {source}"
+    return f"unattributed{said}", data
+
+
+def resolve_decision(tr: Tracker, rec: Record, answer: str, settled: tuple[str, dict]) -> str:
+    """Close a decision with its answer and who settled it (`who_settled`)."""
+    who, data = settled
     rec.change(rec.status_update("closed"))
-    append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=who,
+    append_to_section(rec, "Resolution", f"{today()} ({who}): {answer.strip()}")
+    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=f" ({who})",
                                                                answer=short(answer)),
-                 [rec.id, *tr.touched_by(rec)], decision=rec.id)
+                 [rec.id, *tr.touched_by(rec)], decision=rec.id, **data)
     return f"{rec.id} closed"
 
 
@@ -714,12 +748,18 @@ def choice(text: str) -> Option:
     return found[0]
 
 
-def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
-    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
-    changed, for the log."""
+def options_of(d: Record) -> list[Option]:
+    """A decision's choices; dies when ## Options holds a line that is no choice, which a person fixes first."""
     options, bad = parse_options(strip_comments(section(d.body, "Options")))
     if bad:
         die(f"{d.id} ## Options holds a line that is no choice ({short(bad[0], 60)}): fix it first. {OPTION_RULE}")
+    return options
+
+
+def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
+    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
+    changed, for the log."""
+    options = options_of(d)
     known = {o.text.lower() for o in options}
     said = []
     for o in [*given, *([pick] if pick else [])]:
@@ -737,6 +777,12 @@ def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str
 
 def cmd_decide(args):
     tr = resolve(args)
+    if (args.by or args.source) and not args.resolve:
+        die("--by and --source say who settled it: pass them with --resolve")
+    settled = who_settled(args.by, args.source) if args.resolve else ("", {})
+    owner = resolution_who(args.owner)  # the view answers as the owner it names (`--by`)
+    if owner is None:
+        die('--owner takes no ": " or ")": the view gives the owner as who decided, in "<day> (<who>): <answer>"')
     refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
@@ -744,40 +790,50 @@ def cmd_decide(args):
     pick = choice(args.recommend) if args.recommend else None
     d = existing(tr, "decision", args.target)
     if d:
-        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or args.owner or args.question):
+        others = args.note or given or pick or args.resolve or refs or unrefs or blocks or args.question
+        if owner and owner == str(d.get("owner") or "").strip():
+            if not others:
+                die(f"{d.id}'s owner is {owner} already")
+            owner = ""  # no change to write or log
+        if not (others or owner):
             die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
                 "or --question")
+        if given or pick:
+            options_of(d)  # a refusal writes nothing: before the first write
         upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
-        d.change({**upd, **({"owner": args.owner} if args.owner else {})})
+        owned = {"owner": owner} if owner else {}
+        d.change({**upd, **owned})
         if args.question:
             append_to_section(d, "Question", dated(args.question))
-        said = add_choices(d, given, pick) if given or pick else []
+        said = [f"owner {owner}"] if owner else []  # whose move it is changes: a watch reads it from the event
+        said += add_choices(d, given, pick) if given or pick else []
         if args.note:
             append_to_section(d, "Notes", f"- {dated(args.note)}")
             said.append(short(args.note))
         if said:
             append_event(tr, "decision.updated", f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)],
-                         decision=d.id)
+                         decision=d.id, **owned)
         if msg := blocks_line(tr, d, blocks):
             print(msg)
-        print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
+        print(resolve_decision(tr, d, args.resolve, settled) if args.resolve else f"{d.id} updated")
         return
     if unrefs:
         die("--unref changes an existing decision; pass its D-id")
     refuse_similar(tr, "decision", args.target, args.force)
-    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
+    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=owner)
     append_to_section(d, "Question", args.question or args.target)
     if given or pick:
         add_choices(d, given, pick)
     if args.note:
         append_to_section(d, "Notes", f"- {dated(args.note)}")
     if args.resolve:
-        resolve_decision(tr, d, args.resolve, args.by)
+        resolve_decision(tr, d, args.resolve, settled)
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)
         append_event(tr, "decision.opened", LOG["opened"].format(id=d.id, title=args.target)
-                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id)
+                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id,
+                     **({"owner": owner} if owner else {}))
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
@@ -1063,6 +1119,8 @@ def cmd_watch(args):
     session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
     skill say so."""
     inside, sid = agent_session()
+    if args.role and not inside:
+        die(f"--as {args.role}: a session takes the role, not a terminal")
     if inside and not grant_path(sid):
         die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
     if args.stop:
@@ -1077,10 +1135,8 @@ def cmd_watch(args):
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
     tr = named_tracker(args, "watch")
-    if inside:
-        set_grant(sid, True)
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
-            args.hold).run(args.once)
+            args.hold, args.role or "").run(args.once)
 
 
 def cmd_agents(args):
