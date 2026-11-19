@@ -4364,7 +4364,8 @@ class Coordinator(unittest.TestCase):
                 model.tracker_at(self.s).lookup("D-01").save({"owner": owner})  # "Sam (PM)": `decide` refuses it
                 d = data(self.s)["records"]["D-01"]
                 self.assertEqual(d["answer"]["by"], by)
-                self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, owner != "W-2"))
+                # W-2's session's too: no session is on W-2, so its question is stuck at once (`moves.open_items`)
+                self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, True))
                 with mock.patch.dict(os.environ, {"TRACKER_VIA": "view"}):  # the view's answer is never refused
                     run(*self.t, "decide", "D-1", "--resolve", "x", f"--by={by}")
                 model.tracker_at(self.s).lookup("D-01").change({"status": "open", "closed_at": None})
