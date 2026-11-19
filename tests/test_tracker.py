@@ -2344,6 +2344,25 @@ class PrsOpened(unittest.TestCase):
         self.assertNotIn("no ticket claims it", run(*self.t, "check"))
         self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"12": "open"})
 
+    def test_a_pr_a_tickets_branch_held_stays_claimed_once_another_replaces_it(self):
+        self.bash(self.CREATE, self.CREATED)
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1")])):
+            run(*self.t, "sync")
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1", state="CLOSED"), pull(13, branch="f1")])):
+            run(*self.t, "sync")
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"13": "open"})  # #12 dropped from its list
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+
+    def test_a_pr_an_older_format_held_is_claimed(self):
+        self.bash(self.CREATE, self.CREATED)
+        tr = model.tracker_at(self.s)
+        tr.lookup("S-1").save({"pr": "12", "pr_state": "open"})  # an older format's one PR, which logged no pr.state
+        tr.readme.save({"schema": 3})
+        run(*self.t, "list")  # migrates it
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"12": "open"})
+        self.assertEqual([e["kind"] for e in model.read_events(model.tracker_at(self.s)) if e.get("pr")], ["pr.opened"])
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+
     def test_a_write_reports_the_new_warning_once(self):
         self.bash(self.CREATE, self.CREATED)
         said_ = run(*self.t, "set", "S-1", "next=Ship it")  # the PR came from a hook: this write did not add it

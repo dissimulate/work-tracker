@@ -116,11 +116,14 @@ def no_issue(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
 
 
 def unclaimed(tr: Tracker) -> list[str]:
-    """Each PR a session on the tracker opened (`pr.opened`) that no ticket names now, by its branch's PRs (`prs`) or
-    a `PR:` link (R11)."""
+    """Each PR a session on the tracker opened (`pr.opened`) that no ticket claims (R11): none names it now, by its
+    branch's PRs (`prs`) or a `PR:` link, and none ever held it (a `pr.state` event on a ticket: a later PR from the
+    branch replaced it, and `sync` dropped it from `prs`)."""
+    events = read_events(tr)
     claimed = {pr_key(tr.repo_of(t), n) for t in tr.tickets for n in t.prs}
     claimed |= {pr_key(x.repo, x.number) for t in tr.tickets for x in linked_prs(t)}
-    opened = dict.fromkeys(e.get("pr") for e in read_events(tr) if e["kind"] == "pr.opened")
+    claimed |= {e.get("pr") for e in events if e["kind"] == "pr.state" and e["refs"]}
+    opened = dict.fromkeys(e.get("pr") for e in events if e["kind"] == "pr.opened")
     return [f"PR {pr} was opened by a session on this tracker and no ticket claims it: add a PR: link to the "
                  'ticket it is for, `tracker add <id> link "PR: [title](url) — why"`'
                  for pr in opened if isinstance(pr, str) and pr not in claimed]
