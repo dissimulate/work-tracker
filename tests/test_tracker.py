@@ -4563,7 +4563,9 @@ class Watch(unittest.TestCase):
             with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
                 run("start", self.s, cwd=self.work)
             hook("prompt", sid, self.work, prompt="go on")  # what it has seen
-            watcher.set_grant(sid, watching)
+            if watching:  # its full watch of this tracker runs
+                self.addCleanup(watcher.set_grant, sid, False)
+                watcher.Watcher(model.Tracker(self.root), sid).claim(time.time())
             run(*self.t, "decide", f"Pick {n}", "--refs", "W-1", "--resolve", "A", "--by", "me")  # another session
             news = said(hook("prompt", sid, self.work, prompt="go on"))
             (self.assertNotIn if watching else self.assertIn)("by another session or a PR sync", news)
@@ -4769,6 +4771,22 @@ class MineWatch(unittest.TestCase):
         self.assertTrue(st.get("ended"))
         self.assertFalse(session.watch_running(st))
         self.assertNotIn("Next:", out)
+
+    def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
+        other, _ = new_tracker("Elsewhere")
+        watcher.Watcher(model.tracker_at(other), self.a).claim(time.time())  # its full watch of another tracker runs
+        out, _ = self.run_watch(self.mine(), during=lambda: self.as_b(*self.t, "set", "T-1", "status=done",
+                                                                       "summary=Shipped"))
+        self.assertEqual(len(self.ended(out)), 1, out)
+        self.assertTrue(watcher.granted(self.a))  # the other watch goes on
+        self.assertTrue(session.watch_running(watcher.load_state(other, self.a)))
+        self.assertFalse(session.watch_running(watcher.load_state(self.s, self.a)))  # this one is over
+
+    def test_a_watch_of_another_tracker_keeps_no_news_out_of_the_message(self):
+        other, _ = new_tracker("Elsewhere")
+        watcher.Watcher(model.tracker_at(other), self.a).claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertIn("T-1: base branch moved", self.message())  # no watch of this tracker tells it
 
     def test_the_watch_ends_when_the_session_moves_to_another_tracker(self):
         other, _ = new_tracker("Elsewhere")

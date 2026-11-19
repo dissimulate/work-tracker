@@ -601,9 +601,10 @@ def granted(sid: str) -> bool:
 
 def watch_running(st: dict) -> bool:
     """A watch's saved state (WATCH_DIR) is of one that runs: its process does, or it is a session's that holds the
-    grant and ended within REARM_S, so it starts again. A state that is damaged runs none: no view stops for it."""
-    return alive(state_pid(st)) or (
-        granted(str(st.get("sid") or "")) and is_time(st.get("ended")) and time.time() - st["ended"] < REARM_S)
+    grant and ended within REARM_S, so it starts again, unless it ended by itself (`over`: a `tracker watch --mine`
+    with nothing left to watch). A state that is damaged runs none: no view stops for it."""
+    return alive(state_pid(st)) or (not st.get("over") and granted(str(st.get("sid") or "")) and is_time(
+        st.get("ended")) and time.time() - st["ended"] < REARM_S)
 
 
 def state_pid(st: dict) -> int:

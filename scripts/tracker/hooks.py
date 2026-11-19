@@ -23,7 +23,7 @@ from .session import (behind, branch_matches, context_tracker, cwd_field, declin
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
-from .watcher import granted, load_state, set_grant, stop_watch
+from .watcher import load_state, set_grant, stop_watch
 
 PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's PR commands, or a push
 
@@ -374,8 +374,10 @@ def hook_prompt(data: dict) -> None:
     told = news(sid, m)
     fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []
-    # A session whose full watch runs has them from that watch; a watch of its own tickets shares this baseline.
-    if told and not (granted(sid) and not load_state(m.tracker.slug, sid).get("mine")):
+    # A session whose full watch of this tracker runs has them from that watch; a watch of its own tickets shares this
+    # baseline, so what it printed is not here, and a watch of another tracker shows none of them.
+    watched = load_state(m.tracker.slug, sid)
+    if told and not (watch_running(watched) and not watched.get("mine")):
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
                      "another session or a PR sync): " + "; ".join(told) + ".")
     ask = next_request(m, cwd, sid)

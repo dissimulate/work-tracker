@@ -404,6 +404,7 @@ class Watcher:
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
+        self.st.pop("over", None)
         self.save(now)
         return lines
 
@@ -619,7 +620,11 @@ class Watcher:
             if self.ended:  # a `mine` watch with nothing left to watch: an end, not a refusal
                 print(f"{time.strftime('%H:%M')} no ticket of this session is under way: the watch has ended",
                       flush=True)
-                set_grant(self.sid, False)
+                self.st["over"] = True  # it does not start again (`watch_running`)
+                # The grant is the session's: another watch of the session goes on with it.
+                own = state_path(self.slug, self.sid)
+                if not any(watch_running(read_json(f)) for f in WATCH_DIR.glob(f"*/{self.sid}.json") if f != own):
+                    set_grant(self.sid, False)
                 return
             if self.sid:
                 print("Next: the same `tracker watch` command again, in the background.", flush=True)
