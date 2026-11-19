@@ -4939,8 +4939,45 @@ class HumanWaits(unittest.TestCase):
             with self.subTest(flag):
                 self.setUp()
                 start, end = self.moved(flag)
-                self.assertEqual((end["kind"], end["of"]), ("human.wait.end", start["seq"]))
+                self.assertEqual((end["kind"], end["of"], end["refs"]), ("human.wait.end", start["seq"], ["T-1"]))
                 self.assertEqual(session.load_session(self.sid), {})  # on no tracker: no file is kept for it
+
+    def test_a_session_that_moves_is_not_said_to_have_asked_on_its_new_tracker(self):
+        other, _ = new_tracker("Elsewhere")
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        asked = session.load_session(self.sid)["activity"]
+        session.save_session(self.sid, activity={**asked, "since": asked["since"] - 60})  # answered a minute later
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("start", other, cwd=self.work)
+        (x,) = session.live_sessions(other)  # until the tool ends
+        self.assertEqual(x.status, "waiting")
+        self.assertFalse(watcher.waits(x, time.time()))  # the watch of `other` has no one asking
+
+    def test_a_wait_left_by_a_session_that_comes_back_ends(self):
+        (a, _), nogh = new_tracker("Back", "acme/back"), {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"}
+        mine, sid = repo(f"feat/{a}"), f"b{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, sid)
+        subprocess.run(["git", "-C", str(mine), "remote", "add", "origin", "git@github.com:acme/back.git"], check=True)
+        with mock.patch.object(github, "gh", lambda *args, **kw: None):
+            run("--tracker", a, "new", "U-1", "--title", "Work", "--branch", f"feat/{a}")
+            run("--tracker", a, "set", "U-1", "status=in-progress", cwd=mine)
+        session.save_session(sid, tracker=a, cwd=str(mine))
+        hook("waiting", sid, mine, nogh, tool_name="Bash")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", "--clear", cwd=mine)
+        hook("session-start", sid, mine, nogh, source="resume")  # the terminal closed; its branch links it again
+        self.assertEqual(session.load_session(sid)["tracker"], a)
+        hook("stop", sid, mine, nogh)
+        start, end = [e for e in model.read_events(model.Tracker(store.HOME / a)) if e["kind"] in schema.QUIET_KINDS]
+        self.assertEqual(end["of"], start["seq"])
+
+    def test_a_session_on_no_tracker_starts_no_wait(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash", agent_id="a1")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("start", "--clear", cwd=self.work)
+        session.session_activity(self.sid, "waiting", asker="a2")  # raises nothing
+        self.assertEqual(list(session.load_session(self.sid)["waits"]), ["a1"])
+        (start,) = self.waits()
 
     def test_a_damaged_wait_in_the_session_file_stops_no_hook(self):
         waiting = {"status": "waiting", "since": 1, "at": 1}
@@ -4948,6 +4985,9 @@ class HumanWaits(unittest.TestCase):
         hook("stop", self.sid, self.work)
         entry = session.load_session(self.sid)
         self.assertEqual((entry["activity"]["status"], entry.get("waits")), ("idle", None))
+        session.save_session(self.sid, waits={"": [3, time.time()]})
+        session.unlink_session(self.sid)
+        self.assertEqual(session.load_session(self.sid), {})  # no wait to keep a file for
 
     def test_a_refused_tracker_gets_no_wait_event(self):
         for refuse in (NewerFormat.newer, NewerFormat.unmigrated):

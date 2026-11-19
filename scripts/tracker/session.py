@@ -132,11 +132,24 @@ def unlink_session(sid: str) -> None:
     """Take the session off its tracker and forget what it saw there, as `drop_session` does, but keep its open waits
     on a human with its status: the command that moves a session is often the one it asked a permission for, and that
     wait has still to end, in the tracker it started in (`session_activity`)."""
+    path = session_path(sid)
     with locked():
         entry = load_session(sid)
-        drop_session(sid)
-        if entry.get("waits"):
-            save_session(sid, waits=entry["waits"], activity=entry.get("activity"))
+        waits = open_waits(entry)
+        if not waits or not path:
+            drop_session(sid)
+            return
+        # Written over the file, which a hook's shell filter tests without the lock. It waits from now: where it goes
+        # next, nobody has seen it ask. Its folder names the tickets of each wait's end.
+        now = time.time()
+        kept = {"waits": waits, "activity": {"status": "waiting", "since": now, "at": now}, "cwd": entry.get("cwd")}
+        write_json(path, {k: v for k, v in kept.items() if v is not None})
+
+
+def open_waits(entry: dict) -> dict:
+    """A session entry's open waits on a human, by asker: [its human.wait's seq (0: none written), epoch, tracker].
+    A damaged one is no wait."""
+    return {k: v for k, v in (entry.get("waits") or {}).items() if isinstance(v, list) and len(v) == 3}
 
 
 # "Not now" to the offer to link a session to a tracker, per repo and branch: no link or offer there for DECLINE_S.
@@ -785,8 +798,7 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
     tell apart). One lock around the whole: two hooks of one session do not interleave."""
     with locked():
         entry = load_session(sid)
-        # asker: [its human.wait's seq (0: none written), epoch, tracker]; a damaged one is no wait
-        waits = {k: v for k, v in (entry.get("waits") or {}).items() if isinstance(v, list) and len(v) == 3}
+        waits = open_waits(entry)
         linked = bool(entry.get("tracker"))
         if not linked and not waits:
             return

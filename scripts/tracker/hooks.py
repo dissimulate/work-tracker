@@ -16,7 +16,7 @@ from .store import locked, record_cli, OtherFormat
 from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, drop_session,
+from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
     get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
     session_activity, take_over, watch, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
@@ -127,7 +127,7 @@ def hook_session_start(data: dict) -> None:
             elif command_context():
                 emit_context("SessionStart", "")
             return
-        drop_session(sid)
+        unlink_session(sid)  # a wait it left open ends at its next event
         save_session(sid, tracker=sure.tracker.slug)
         m = match_cwd(cwd, sid)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
