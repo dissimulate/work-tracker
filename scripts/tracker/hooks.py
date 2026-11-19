@@ -394,7 +394,7 @@ CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
 RELOAD_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
                   "plugin or restart the session, then run `tracker start`, which prints the brief.")
 REPAIR_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to fix what "
-                  "`tracker check` reports, then run `tracker start`, which prints the brief.")
+                  "stops its migration, then run `tracker start`, which prints the brief.")
 
 
 def refusal_request(root: Path) -> str:

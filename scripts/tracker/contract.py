@@ -505,7 +505,7 @@ def other_format(root: Path) -> str:
     if tr.schema < SCHEMA and tr.readme.path.exists():
         fix = (f"`tracker check --tracker {root.name}` says what is wrong in its README.md, which the user, not an "
                "agent, fixes by hand" if tr.readme_problems else
-               f"run `tracker check --tracker {root.name}` and fix what it reports")
+               "fix the error each `tracker` command prints when it tries to migrate it (the next command tries again)")
         return (f"{root.name} could not be brought to this version's tracker format (it is in format {tr.schema}; "
                 f"this one writes {SCHEMA}), so this one writes nothing to it: {fix}")
     return ""

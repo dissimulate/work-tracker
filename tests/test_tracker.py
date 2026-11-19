@@ -1095,7 +1095,8 @@ class Upgrade(unittest.TestCase):
         with mock.patch.object(contract, "migrate", fails_on_one):
             said = run("list")
             report = run(*t, "check")
-        self.assertIn(f"run `tracker check --tracker {s}` and fix what it reports", report)  # the refusal's sentence
+        # the refusal's sentence
+        self.assertIn("fix the error each `tracker` command prints when it tries to migrate it", report)
         self.assertIn(f"could not migrate {s} to format {schema.SCHEMA}: disk full", report)  # what it reports
         self.assertIn("Old", said)
         self.assertIn(f"could not migrate {s} to format {schema.SCHEMA}: disk full", said)
@@ -1249,7 +1250,7 @@ class Upgrade(unittest.TestCase):
         self.assertIn(f"could not migrate {s}", said)
         self.assertIn(OLDER, said)
         self.assertNotIn(FIX, said)  # its README is fine
-        self.assertIn(f"run `tracker check --tracker {s}` and fix what it reports", said)
+        self.assertIn("fix the error each `tracker` command prints when it tries to migrate it", said)
 
     def test_start_on_a_tracker_that_cannot_migrate_changes_nothing(self):
         s, _, root, _ = self.unmigratable()
@@ -1615,6 +1616,7 @@ class NewerFormat(unittest.TestCase):
                         out = run(cmd, cwd=work)  # a read: exits 0
                     self.assertIn("N-1", out)
                     self.assertTrue(out.endswith(f"\n{self.why(s)}.\n"), out)
+                    self.assertEqual(out.count(self.why(s)[:60]), 1, out)  # once: not in the brief's check too
                     self.assertEqual(tree(store.HOME / s), before)
 
     def test_no_event_and_no_log_line(self):
