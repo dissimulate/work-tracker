@@ -204,9 +204,13 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
     if m.branch:
         adopt_branch(m, cwd)
         record_commits(m, cwd)
+    here = cwd_field(cwd)
+    if ask and here and here["cwd"] != load_session(sid).get("cwd"):
+        # The session's own watch matches its tickets in this folder: a turn a watch line started brings no message,
+        # whose hook would save it.
+        save_session(sid, **here)
     text = watch_ask(data, m, sid) if ask else ""
     if text:
-        save_session(sid, **cwd_field(cwd))  # the watch it asks for matches the session's tickets where it works now
         print(json.dumps({"decision": "block", "reason": text}))
     return bool(text)
 

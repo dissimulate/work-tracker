@@ -4822,6 +4822,18 @@ class MineWatch(TwoSessions):
         self.assertEqual(w.poll(self.clock + watcher.SETTLE_S), [])
         self.assertTrue(w.ended)
 
+    def test_the_watch_follows_the_session_to_another_checkout(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f3")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        w = self.mine()
+        w.claim(self.clock)
+        other = repo("f3")  # the session works there now, in this turn: no message of the user's has seen it
+        self.as_a(*self.t, "submit", "T-3", "--what", "plan", cwd=other)
+        self.assertIsNone(hook("stop", self.a, other, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"},
+                               stop_hook_active=False))  # its watch runs: nothing to ask
+        self.as_b(*self.t, "review", "T-3", "--what", "plan", "--verdict", "changes", "--finding", "Rename it")
+        self.assertIn("T-3 plan review: changes, 1 finding: 1. Rename it", self.texts(self.look(w)))
+
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
         watcher.Watcher(model.tracker_at(other), self.a).claim(time.time())  # its full watch of another tracker runs
