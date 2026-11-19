@@ -18,8 +18,8 @@ from .model import append_event, pr_key, pr_name, read_events, set_branch, short
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, cwd_field, declined, get_mark, hand_over, in_repos,
-    keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, remember,
-    save_session, session_activity, take_over, watch_running, work_dir, Lag, Match)
+    keep_word, lag, load_session, match_cwd, move_of, news, news_ids, own_edit, record_commits, relink_session,
+    remember, save_session, session_activity, take_over, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -372,7 +372,7 @@ def hook_prompt(data: dict) -> None:
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
-    ids = entry.get("seen_for") or [t.id for t in m.focus]  # the tickets `news` reports on
+    ids = news_ids(entry, m)
     told = news(sid, m)
     fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []

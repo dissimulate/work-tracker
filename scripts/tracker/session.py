@@ -771,16 +771,16 @@ GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, wh
 def news(sid: str, m: Match) -> list[str]:
     """What the session has not been told yet about its tickets, one line each, and now counts as told: of the tickets
     its baseline was taken for (`seen_for`, set by the brief and by each call), what `changes_since` finds since then
-    (`seen`), and each event on them since `seen_seq` that another session, a terminal or GitHub wrote (not of
-    NEWS_LEFT_OUT), the newest NEWS_MAX. A ticket that left the session's focus (it closed) is told of this once more;
-    one that joined it starts from now. The baseline then becomes `m.focus` now. A session with no `seen_seq` yet gets
-    no event lines: its event baseline starts from now. The prompt hook and the session's own watch (`tracker watch
-    --mine`) both call it, so each thing is told once, by whichever comes first."""
+    (`seen`); then each event since `seen_seq` that another session, a terminal or GitHub wrote (not of NEWS_LEFT_OUT)
+    on those tickets or on the focus now (`news_ids`), the newest NEWS_MAX. A ticket that left the focus (it closed) is
+    told of once more; one that joined it is told what others wrote on it since the session last looked. The baseline
+    then becomes `m.focus` now. A session with no `seen_seq` yet gets no event lines: its event baseline starts now.
+    The prompt hook and the session's own watch (`tracker watch --mine`) both call it, so each thing is told once, by
+    whichever comes first."""
     tr, ids = m.tracker, [t.id for t in m.focus]
     with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
         entry = load_session(sid)
-        was = told_tickets(entry, tr)
-        known = [t.id for t in was]
+        was, known = told_tickets(entry, tr), news_ids(entry, m)
         lines = changes_since(tr, entry.get("seen") or {}, watch(tr, was))
         base, last = entry.get("seen_seq"), last_seq(tr)
         if type(base) is int:
@@ -804,6 +804,11 @@ def told_tickets(entry: dict, tr: Tracker) -> list[Record]:
     """The tickets a session entry's news baseline was taken for (`seen_for`), as `tr` holds them: what `news` reports
     on, so what a session's own write counts as seen (`count_own`)."""
     return [t for t in map(tr.lookup, entry.get("seen_for") or []) if t and t.kind == "ticket"]
+
+
+def news_ids(entry: dict, m: Match) -> list[str]:
+    """The tickets a session's news is about: those its baseline was taken for (`seen_for`), then the focus now."""
+    return list(dict.fromkeys([*(entry.get("seen_for") or []), *(t.id for t in m.focus)]))
 
 
 def remember(sid: str, m: Match, cwd: str | Path) -> None:

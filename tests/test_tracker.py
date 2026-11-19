@@ -2967,13 +2967,21 @@ class SessionNews(TwoSessions):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         self.message()
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
-        self.as_b(*self.t, "log", "--ref", "T-3", "before it started")
         run(*self.t, "set", "T-3", "status=in-progress")  # A's focus is now T-1 and T-3
+        self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")  # before A looks again
         told = self.message()
+        self.assertIn("Changed on T-1, T-3 since", told)
         self.assertIn("T-1: base branch moved", told)
-        self.assertNotIn("before it started", told)  # a ticket new to A starts from now
+        self.assertIn("T-3: the API changed under you", told)
         self.as_b(*self.t, "log", "--ref", "T-3", "after it started")
         self.assertIn("T-3: after it started", self.message())
+
+    def test_a_note_on_a_ticket_i_started_myself_is_news(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        self.message()
+        self.as_a(*self.t, "set", "T-3", "status=in-progress")  # its own start: no brief, no new baseline
+        self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
+        self.assertIn("T-3: the API changed under you", self.message())
 
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
@@ -4777,6 +4785,14 @@ class MineWatch(TwoSessions):
         out, _ = self.run_watch(self.mine(), during=close_both)
         self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
         self.assertEqual(len(self.ended(out)), 1, out)
+
+    def test_a_note_on_a_ticket_that_joined_my_branch_wakes_me(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        w = self.mine()
+        w.claim(self.clock)
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
+        self.assertEqual(self.texts(self.look(w)), ["T-3: the API changed under you"])
 
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
