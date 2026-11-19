@@ -1,5 +1,5 @@
-"""The operating system: this Python and the CLI as processes, whether a process runs, and the system's trash. The
-tracker's own files are store's and model's."""
+"""The operating system: this Python and the CLI as processes, whether a process runs and which run under it, and the
+system's trash. The tracker's own files are store's and model's."""
 
 from __future__ import annotations
 
@@ -185,3 +185,23 @@ def alive(pid: int) -> bool:
     except (OSError, OverflowError):
         return False
     return True
+
+
+def descendants(pid: int) -> list[int]:
+    """The processes under `pid`, at any depth, as `ps` lists them; none on Windows or without `ps`."""
+    if WINDOWS:
+        return []
+    try:
+        table = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    kids: dict[int, list[int]] = {}
+    for line in table.splitlines():
+        child, parent = map(int, line.split())
+        kids.setdefault(parent, []).append(child)
+    found, todo = [], [pid]
+    while todo:
+        under = kids.pop(todo.pop(), [])  # pop: each parent once, so a pid listed as its own parent ends the walk
+        found += under
+        todo += under
+    return found

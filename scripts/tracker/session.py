@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .system import alive, die
+from .system import alive, descendants, die
 from .store import HOME, locked, read_json, write_json
 from .schema import STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_log, archived_at, branch_entry, commits_text, load_record,
@@ -654,9 +654,14 @@ def claude_sessions() -> list[dict]:
 
 def attached_tracker(pid: int, cwd: str = "") -> str:
     """The slug of the tracker linked to the agent in a process, "" with none. Claude Code's process file names its
-    session. Another host has no such file: the live sessions its hooks report in that folder, when they agree on one
-    tracker."""
+    session. A process with no file, such as the shell a terminal ran `claude` in, stands for the one Claude Code
+    process under it, if there is exactly one. Another host has no such file: the live sessions its hooks report in
+    that folder, when they agree on one tracker."""
     sid = read_json(CLAUDE_SESSIONS / f"{pid}.json").get("sessionId")
+    if not sid:
+        under = [CLAUDE_SESSIONS / f"{p}.json" for p in descendants(pid)]
+        under = [f for f in under if f.exists()]
+        sid = read_json(under[0]).get("sessionId") if len(under) == 1 else None
     if sid:
         tr = session_tracker(str(sid))
         return tr.slug if tr else ""
