@@ -4186,8 +4186,12 @@ class Coordinator(unittest.TestCase):
         run(*self.t, "decide", "D-1", "--owner", "Sam", "--note", "asked")
         self.assertEqual(model.read_events(self.tr())[-1]["text"], "Updated D-01: asked")  # the owner did not change
         self.assertNotIn("owner", model.read_events(self.tr())[-1])
-        run(*self.t, "decide", "Which queue", "--owner", "Kim")
-        self.assertEqual(model.read_events(self.tr())[-1]["owner"], "Kim")
+        run(*self.t, "decide", "Which queue", "--owner", " Kim\n Lee ")  # one line, as the view gives it as `--by`
+        self.assertEqual((self.tr().lookup("D-02").get("owner"), model.read_events(self.tr())[-1]["owner"]),
+                         ("Kim Lee", "Kim Lee"))
+        run(*self.t, "decide", "D-2", "--owner", " Kim\n Ng ")
+        self.assertEqual((self.tr().lookup("D-02").get("owner"), model.read_events(self.tr())[-1]["owner"]),
+                         ("Kim Ng", "Kim Ng"))
         before = tree(store.HOME / self.s)  # one way to pass it on, and it is logged
         self.assertIn("owner: use `tracker decide`", run(*self.t, "set", "D-1", "owner=Kim", code=2))
         self.assertEqual(tree(store.HOME / self.s), before)
