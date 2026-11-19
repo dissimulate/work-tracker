@@ -130,8 +130,8 @@ def drop_session(sid: str) -> None:
 
 def unlink_session(sid: str) -> None:
     """Take the session off its tracker and forget what it saw there, as `drop_session` does, but keep its open waits
-    on a human, as a session that waits from now: the command that moves a session is often the one it asked a permission for, and that
-    wait has still to end, in the tracker it started in (`session_activity`)."""
+    on a human, as a session that waits from now: the command that moves a session is often the one it asked a
+    permission for, and that wait has still to end, in the tracker it started in (`session_activity`)."""
     path = session_path(sid)
     with locked():
         entry = load_session(sid)
