@@ -25,8 +25,8 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_log, appen
     unknown_dep, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
-    in_repos, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits, remember, resolve,
-    save_session, session_id, session_tracker, trackers_for_repo, work_dir)
+    in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
+    remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
 from .contract import check, newer_format, refuse_newer, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -1008,8 +1008,14 @@ def cmd_start(args):
     focus = id_list(args.on)
     if not args.name and not focus and session_tracker(sid):
         m = match_cwd(cwd, sid)
-        print(brief(m, cwd, with_protocol=False))
-        if why := newer_format(m.tracker.root):  # the brief asks for writes that refuse_newer refuses
+        why = newer_format(m.tracker.root)
+        # A session told of a newer tracker got that line in place of its brief (hooks.tell_newer), so it has no
+        # protocol: the first brief once this code may write the tracker brings it.
+        told = bool(load_session(sid).get("told_newer")) and not why
+        print(brief(m, cwd, with_protocol=told))
+        if told:
+            save_session(sid, told_newer=None)
+        if why:  # the brief asks for writes that refuse_newer refuses
             print(f"{why}.")
         tell_updates(m.tracker)
         return
