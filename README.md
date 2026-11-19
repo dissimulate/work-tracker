@@ -104,7 +104,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 ### Hooks
 
-Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python starts only when the hook can add something. A hook never blocks the session.
+Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python starts only when the hook can add something. Only the turn-end hook holds a session back, once per wait.
 
 | Event | Does |
 |---|---|
@@ -114,7 +114,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
 | PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you, and logs that the agent began to wait on you. The wait ends when that agent goes on, or at the session's next message, turn end, start (a resume, a compaction) or end, which ends every wait. Neither is in `tracker history` or `log.md` unless `--kind` names it. |
 | PostToolUseFailure, SubagentStop | Ends that agent's mark and logs that its wait ended (with the tool's error after a failed tool: a refusal or a failure, which the hook cannot tell apart), in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
-| Stop | Logs the commits no other hook saw. |
+| Stop | Logs the commits no other hook saw. Then, when a ticket the session has under way waits on someone else (its move is not the session's) and no watch of the session runs on the tracker, holds the turn once per wait to ask the agent to start `tracker watch --mine`. Not after you stopped the session's watch (`tracker watch --stop`), in an unattended session, for a subagent, on a tracker that takes no write, or on a host that does not say whether the hook already holds the turn (Claude Code says so). |
 | StopFailure | Marks the session idle after a failed turn. |
 | SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
 

@@ -2530,7 +2530,7 @@ class Hooks(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             self.assertIn("H-1: next set; feat/H-1 up to date", run("step", "--next", "Ship it", cwd=work))
         commit(work, "last work")  # as in the terminal: no post-bash hook sees it
-        self.assertIsNone(hook("stop", sid, work))  # logs it, and never blocks
+        self.assertIsNone(hook("stop", sid, work))  # logs it, and holds nothing back: its move is its own
         self.assertIn("1 logged commit(s) since `next` last changed", run("--tracker", s, "here", cwd=work))
         self.assertIn("H-1 next: Ship it", said(hook("prompt", sid, work, prompt="and now?")))  # a new `next`
         log = (store.HOME / s / "log.md").read_text()
@@ -4812,6 +4812,136 @@ class MineWatchAtOnce(MineWatch):
     """MineWatch with no settle time: a change is printed at the first look."""
 
     SETTLE = 0
+
+
+class WatchAsk(unittest.TestCase):
+    """The turn-end hook: a session whose ticket under way waits on someone else, with no watch running, is held back
+    once per wait and asked to start `tracker watch --mine` (R5). Session A is on T-1; B is another session."""
+
+    def setUp(self):
+        attended = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ATTENDED": "1"})  # a person uses each session
+        attended.start()
+        self.addCleanup(attended.stop)
+        self.s, self.t = new_tracker("Asked")
+        run(*self.t, "new", "T-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "new", "T-2", "--title", "Two")
+        run(*self.t, "set", "T-1", "status=in-progress")
+        self.work = repo("f1")
+        n = time.monotonic_ns()
+        self.a, self.b = f"wa{n}", f"wb{n}"
+        for sid in (self.a, self.b):
+            self.addCleanup(session.drop_session, sid)
+            self.addCleanup(watcher.set_grant, sid, False)
+        self.as_a("start", self.s)
+
+    def as_a(self, *args: str, code: int = 0, cwd: Path | None = None) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            return run(*args, cwd=cwd or self.work, code=code)
+
+    def as_b(self, *args: str) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):
+            return run(*args, cwd=self.work)
+
+    def stop(self, cwd: Path | None = None, env: dict | None = None, **extra) -> dict | None:
+        """A's turn ends, as Claude Code sends it: `stop_hook_active` false unless `extra` says otherwise."""
+        return hook("stop", self.a, cwd or self.work, env={**no_gh(), **(env or {})},
+                    **{"stop_hook_active": False, **extra})
+
+    def asked(self, out: dict | None, *tickets: str) -> None:
+        self.assertEqual(set(out or {}), {"decision", "reason"}, out)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("`tracker watch --mine`", out["reason"])
+        for t in tickets:
+            self.assertIn(f"{t} waits on ", out["reason"])
+
+    def test_a_session_whose_ticket_waits_is_asked_once_to_watch(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")  # the move is no longer A's
+        out = self.stop()
+        self.asked(out, "T-1")
+        self.assertEqual(out["reason"], hooks.WATCH_ASK.format(waits="T-1 waits on human: plan review"))
+        self.assertIsNone(self.stop())
+
+    def test_a_session_whose_move_is_its_own_is_not_asked(self):
+        self.assertIsNone(self.stop())
+
+    def test_a_session_that_watches_is_not_asked(self):
+        for mine in (False, True):
+            with self.subTest(mine=mine):
+                self.setUp()
+                watcher.Watcher(model.tracker_at(self.s), self.a, mine=mine).claim(time.time())
+                self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+                self.assertIsNone(self.stop())
+
+    def test_the_hook_never_asks_while_it_holds_the_session(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIsNone(self.stop(stop_hook_active=True))
+        self.asked(self.stop(), "T-1")  # the held stop used nothing up
+
+    def test_a_wait_that_comes_back_is_asked_again(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        self.assertIsNone(self.stop())  # the move is A's again
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+
+    def test_after_watch_stop_the_session_is_not_asked(self):
+        self.as_a("watch", "--stop")
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIsNone(self.stop())
+        # A watch it starts forgets the stop; once that watch ends by itself, a new wait is asked for again.
+        out, _ = MineWatch.run_watch(self, watcher.Watcher(model.tracker_at(self.s), self.a, mine=True),
+                                     during=lambda: self.as_b(*self.t, "set", "T-1", "status=done", "summary=Done"))
+        self.assertIn("the watch has ended", out)
+        self.as_a("start", self.s, "--on", "T-2")
+        self.as_a(*self.t, "set", "T-2", "status=in-progress")
+        self.as_a(*self.t, "submit", "T-2", "--what", "plan")
+        self.asked(self.stop(), "T-2")
+
+    def test_an_unattended_session_a_subagent_and_a_session_end_are_not_asked(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIsNone(self.stop(env={"CLAUDE_CODE_SESSION_ATTENDED": "0"}))
+        self.assertIsNone(self.stop(agent_id="sub"))
+        self.assertIsNone(hook("session-end", self.a, self.work, env=no_gh(), reason="other",
+                               stop_hook_active=False))
+        self.asked(self.stop(), "T-1")  # none of them used the ask up
+
+    def test_a_host_that_sends_no_stop_hook_active_is_not_asked(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIsNone(hook("stop", self.a, self.work, env=no_gh()))
+        self.asked(self.stop(), "T-1")
+
+    def test_a_session_on_a_tracker_with_no_branch_is_asked(self):
+        plain = Path(tempfile.mkdtemp(dir=BASE))  # no git here
+        self.as_a("start", self.s, "--on", "T-1", cwd=plain)
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan", cwd=plain)
+        self.asked(self.stop(cwd=plain), "T-1")
+
+    def test_the_ask_survives_tracker_start(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        self.as_a("start", self.s, "--on", "T-1")
+        self.assertIsNone(self.stop())
+
+    def test_a_refused_tracker_gets_no_ask(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            for plain in (False, True):
+                with self.subTest(refuse.__name__, plain=plain):
+                    self.setUp()
+                    cwd = Path(tempfile.mkdtemp(dir=BASE)) if plain else self.work
+                    self.as_a("start", self.s, "--on", "T-1", cwd=cwd)
+                    self.as_a(*self.t, "submit", "T-1", "--what", "plan", cwd=cwd)
+                    refuse(self, self.s)
+                    before = tree(store.HOME / self.s)
+                    self.assertIsNone(self.stop(cwd=cwd))  # exits 0: `hook` checks
+                    self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_the_commits_are_still_logged_when_the_hook_asks(self):
+        self.stop()  # the branch's mark
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        commit(self.work, "terminal work")  # no post-bash hook sees it
+        self.asked(self.stop(), "T-1")
+        self.assertIn("terminal work", (store.HOME / self.s / "log.md").read_text())
 
 
 class Delete(unittest.TestCase):

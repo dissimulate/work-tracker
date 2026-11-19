@@ -18,8 +18,8 @@ from .model import append_event, pr_key, pr_name, read_events, set_branch, short
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, cwd_field, declined, get_mark, hand_over, in_repos,
-    keep_word, lag, load_session, match_cwd, news, own_edit, record_commits, relink_session, remember,
-    save_session, session_activity, take_over, work_dir, Lag, Match)
+    keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, remember,
+    save_session, session_activity, take_over, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -156,7 +156,7 @@ def hook_session_end(data: dict) -> None:
     if data.get("reason") == "clear":
         cwd, sid = where(data)
         hand_over(sid, cwd)
-    hook_stop(data)
+    hook_stop(data, ask=False)
 
 
 def adopt_branch(m: Match, cwd: str | Path) -> None:
@@ -186,16 +186,52 @@ def next_request(m: Match, cwd: str | Path, sid: str) -> str:
             "`--carry \"...\"` for each fact a later ticket must know.")
 
 
-def hook_stop(data: dict) -> None:
+WATCH_ASK = ("[work-tracker] {waits}. Nothing wakes this session when that changes. Start a watch of your tickets, "
+             "then end the turn: `tracker watch --mine`, run as the work-tracker:watch skill says for `mine`. If the "
+             "user told you not to watch, end the turn.")
+
+
+def hook_stop(data: dict, ask: bool = True) -> None:
     """The end of a turn or of the session: log the commits no other hook saw (made in the terminal, or by a command
-    the post-bash filter did not let through). Never blocks: the model records only what git does not hold, when
-    `next_request` asks."""
+    the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
+    asks. Then, at a turn's end (`ask`), the reminder to watch (`watch_ask`): the one time a hook holds a session
+    back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
-    if not m or not m.branch:
+    if not m:
         return
-    adopt_branch(m, cwd)
-    record_commits(m, cwd)
+    if m.branch:
+        adopt_branch(m, cwd)
+        record_commits(m, cwd)
+    text = watch_ask(data, m, sid) if ask else ""
+    if text:
+        print(json.dumps({"decision": "block", "reason": text}))
+
+
+def watch_ask(data: dict, m: Match, sid: str) -> str:
+    """The reminder to a session whose tickets under way wait on someone else (their move is not its own), with no
+    watch of its own running on the tracker: WATCH_ASK, once per wait (`told_watch`: each ticket and whose move it
+    waits on, as last seen), else "". Only where someone can act on it: the host says the hook does not hold the
+    session already (`stop_hook_active` false: a host that sends no such key cannot say so, and is never asked), not a
+    subagent's stop, a session a person attends, a tracker in this code's format (no `refusal_told` covers Stop), and
+    not after the user stopped the session's watch (`no_watch`). A stop where it is not free to ask uses up nothing."""
+    if data.get("stop_hook_active") is not False or data.get("agent_id") \
+            or os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "0" or other_format(m.tracker.root):
+        return ""
+    with locked():
+        entry = load_session(sid)
+        if entry.get("no_watch"):
+            return ""
+        waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in m.active
+                 if (move := move_of(m.tracker, t)) and not move.mine}
+        new = set(waits) - set(entry.get("told_watch") or [])
+        # Saved whether asked or not: a wait that ends and comes back is new again, and one that began while a watch
+        # ran is not asked for once that watch stops.
+        if sorted(waits) != (entry.get("told_watch") or []):
+            save_session(sid, told_watch=sorted(waits) or None)
+    if not new or watch_running(load_state(m.tracker.slug, sid)):
+        return ""
+    return WATCH_ASK.format(waits="; ".join(waits[k] for k in sorted(waits)))
 
 
 COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")

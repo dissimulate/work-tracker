@@ -24,6 +24,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Changed
 
+- When a session ends its turn while a ticket it has under way waits on someone else (a review, a decision, a person) and no watch of it runs, the turn-end hook holds it back once per wait and asks it to start `tracker watch --mine`, so it is woken when that changes. Not after you stopped its watch with `tracker watch --stop`, in an unattended session, or on a host that does not say whether the hook already holds the turn.
 - A decision's move reads `human`, a person's name, `<ticket>'s session` or `coordinator`. `!` in the watch marks what needs a human, now also a question a human must answer, and a decision passed to a person (`tracker decide D-<n> --owner`) is logged. A decision's owner is no longer changed with `tracker set`, and takes no ": " or ")", since the view gives it as who decided.
 - A decision's resolution now says who decided and how it was entered: a human in the view, a human through an agent, an agent from a named source (`--source`), or unattributed from a terminal. An agent that resolves a decision must pass `--by` or `--source`.
 - A tracker's log is now kept as typed events in `events.jsonl`, each with a time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. `log.md` reads the same as before and is written from the events; editing it by hand no longer changes what `tracker history` shows.
