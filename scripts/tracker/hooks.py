@@ -301,7 +301,7 @@ def hook_edit(data: dict) -> None:
         r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", tool.get("command", ""), re.M)
     for path in paths:
         edited = (Path(cwd) / path).resolve()
-        if m and m.focus and edited.is_relative_to(m.tracker.root.resolve()):
+        if m and edited.is_relative_to(m.tracker.root.resolve()):
             own_edit(sid, m, edited.stem)
 
 

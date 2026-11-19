@@ -2953,6 +2953,15 @@ class SessionNews(TwoSessions):
         self.assertIn("T-3 is now done", told)
         self.assertIn("T-1: base branch moved", told)
 
+    def test_my_own_writes_after_my_tickets_changed_are_no_news(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_a("start", self.s)  # on T-1 and T-3
+        self.message()
+        self.as_a(*self.t, "set", "T-3", "status=done", "summary=Shipped")  # A's focus is now T-1 alone
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        self.assertNotIn("Changed on", self.message())
+
     def test_news_survives_another_ticket_starting_on_my_branch(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         self.message()
@@ -4754,6 +4763,19 @@ class MineWatch(TwoSessions):
         self.assertTrue(st.get("ended"))
         self.assertFalse(session.watch_running(st))
         self.assertNotIn("Next:", out)
+
+    def test_my_own_closes_print_only_the_end(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_a("start", self.s)  # on T-1 and T-3
+
+        def close_both():
+            self.as_a(*self.t, "set", "T-3", "status=done", "summary=Shipped")
+            self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+
+        out, _ = self.run_watch(self.mine(), during=close_both)
+        self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
+        self.assertEqual(len(self.ended(out)), 1, out)
 
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")

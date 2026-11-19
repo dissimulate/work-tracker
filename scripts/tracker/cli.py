@@ -15,7 +15,7 @@ from .store import first_writes, locked, Busy, OtherFormat
 from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
     SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
-from .session import match_cwd, own_change, session_id, watch, work_dir
+from .session import load_session, match_cwd, own_change, session_id, told_tickets, watch, work_dir
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
@@ -373,9 +373,9 @@ def own_changes(run) -> None:
     only what others changed."""
     sid = session_id()
     m = match_cwd(work_dir(), sid) if sid else None
-    before = watch(m.tracker, m.focus) if m and m.focus else None
+    before = watch(m.tracker, told_tickets(load_session(sid), m.tracker)) if m else None
     run()
-    if before is not None:
+    if before:
         own_change(sid, m, before)
 
 

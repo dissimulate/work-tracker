@@ -779,7 +779,7 @@ def news(sid: str, m: Match) -> list[str]:
     tr, ids = m.tracker, [t.id for t in m.focus]
     with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
         entry = load_session(sid)
-        was = [t for t in map(tr.lookup, entry.get("seen_for") or []) if t and t.kind == "ticket"]
+        was = told_tickets(entry, tr)
         known = [t.id for t in was]
         lines = changes_since(tr, entry.get("seen") or {}, watch(tr, was))
         base, last = entry.get("seen_seq"), last_seq(tr)
@@ -800,6 +800,12 @@ def news(sid: str, m: Match) -> list[str]:
     return lines
 
 
+def told_tickets(entry: dict, tr: Tracker) -> list[Record]:
+    """The tickets a session entry's news baseline was taken for (`seen_for`), as `tr` holds them: what `news` reports
+    on, so what a session's own write counts as seen (`count_own`)."""
+    return [t for t in map(tr.lookup, entry.get("seen_for") or []) if t and t.kind == "ticket"]
+
+
 def remember(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed about its tickets (the commits past `next` too, so the hooks do not ask
     again), and the directory it works in (`work_dir`): the baseline of its `news`."""
@@ -814,7 +820,8 @@ def remember(sid: str, m: Match, cwd: str | Path) -> None:
 
 
 def own_change(sid: str, m: Match, before: dict) -> None:
-    """A write command this session ran: count what it changed (`before`: `watch` before it) as seen."""
+    """A write command this session ran: count what it changed (`before`: `watch` of `told_tickets` before it) as
+    seen."""
     count_own(sid, m, lambda k, v, seen: before.get(k) != v)
 
 
@@ -825,14 +832,15 @@ def own_edit(sid: str, m: Match, ident: str) -> None:
 
 
 def count_own(sid: str, m: Match, picked) -> None:
-    """Count the session's own change as seen, so the prompt hook reports only other sessions' and GitHub's: the
-    entries of `watch` now that `picked(key, value, seen)` names."""
+    """Count the session's own change as seen, so that `news` reports only other sessions' and GitHub's: the entries
+    of `watch` now, over the tickets its baseline was taken for (`told_tickets`), that `picked(key, value, seen)`
+    names."""
     with locked():  # read and save as one step, so as not to overwrite what `news` saved
         entry = load_session(sid)
-        if entry.get("seen_for") != [t.id for t in m.focus]:
-            return
         tr = Tracker(m.tracker.root)
-        now = watch(tr, [t for t in map(tr.lookup, entry["seen_for"]) if t])
+        now = watch(tr, told_tickets(entry, tr))
+        if not now:
+            return
         seen = entry.get("seen", {})
         seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
         save_session(sid, seen=seen)
