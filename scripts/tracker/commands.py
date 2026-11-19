@@ -1236,8 +1236,9 @@ def cmd_watch(args):
     tr = named_tracker(args, "watch")
     own = context_tracker(sid) if args.mine else None
     if args.mine and (not own or own.slug != tr.slug):
-        die(f"--mine watches this session's tickets on its own tracker, and it is on {own.slug if own else 'none'}: "
-            "`tracker start <name>` puts it on one")
+        die(f"--mine watches this session's tickets on its own tracker: {own.slug}, which `tracker watch --mine` with "
+            "no name watches" if own else "--mine watches this session's tickets, and it is on no tracker: `tracker "
+            "start <name>` puts it on one")
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
             args.hold, args.role or "", args.mine).run(args.once)
 

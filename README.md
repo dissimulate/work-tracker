@@ -23,7 +23,7 @@ Talk to the agent. It runs the `tracker` CLI for you.
    - After `/clear`, the new session stays on the tracker (and the `--on` ticket) of the session it replaces.
 3. **Work as usual.** The agent records steps, decisions and pauses as they happen. The hooks log each commit and keep PR state current. You write nothing yourself.
 4. **See it.** Ask the agent to open the tracker, or run `tracker open`. The view updates live.
-5. **Watch the work (optional).** In a session, type `/work-tracker:watch payments <what to do>` in Claude Code or `$work-tracker:watch payments <what to do>` in Codex, such as "tell me when a review comes back". The session gets each change to the tracker as it happens, and does that task. A skill or instruction of yours can start it too. Invoke the same skill with `stop` to end it. In a terminal: `tracker watch payments`.
+5. **Watch the work (optional).** In a session, type `/work-tracker:watch payments <what to do>` in Claude Code or `$work-tracker:watch payments <what to do>` in Codex, such as "tell me when a review comes back". The session gets each change to the tracker as it happens, and does that task. A skill or instruction of yours can start it too. A session whose ticket waits on someone else is also asked, once per wait, to watch its own tickets (`tracker watch --mine`), so it is woken when that changes. Invoke the same skill with `stop` to end either. In a terminal: `tracker watch payments`.
 
 `/work-tracker:tracker <command>` runs any `tracker` command, for example `/work-tracker:tracker index --active`.
 
