@@ -140,7 +140,9 @@ def hook_session_start(data: dict) -> None:
     remember(sid, m, cwd)
     note = "\n\n".join(x for x in (note, found) if x)
     text = brief(m, cwd, note, compact=source == "compact")
-    fields = {"told_updates": updates_told(m.tracker)}  # the brief lists them: no prompt repeats them
+    # The brief lists the updates, so no prompt repeats them, and carries the protocol, so a session told its tracker
+    # took no write (`tell_refusal`) needs none from `tracker start` now.
+    fields = {"told_updates": updates_told(m.tracker), "told_refusal": None}
     # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
     sync_later(m.tracker, load_session(sid), fields)
     if sid:

@@ -1643,6 +1643,19 @@ class NewerFormat(unittest.TestCase):
             self.assertNotIn("Tracker protocol", run("start", cwd=work))  # once: the session has it now
         self.assertNotIn("told_refusal", session.load_session(sid))
 
+    def test_a_restart_brings_the_protocol_with_its_brief_and_the_start_after_adds_none(self):
+        s, _ = self.tracker()
+        sid, work = self.sid(), repo("feat/N-1")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", s, cwd=work)
+            self.newer(s)
+            hook("session-start", sid, work, source="resume")  # told in place of its brief
+            readme = store.HOME / s / "README.md"  # by hand: the guard refuses this code's own write
+            readme.write_text(readme.read_text().replace(f"schema: {schema.SCHEMA + 1}", f"schema: {schema.SCHEMA}"))
+            self.assertIn("Tracker protocol", said(hook("session-start", sid, work, source="resume")))  # the restart
+            self.assertNotIn("told_refusal", session.load_session(sid))  # that brief had the protocol
+            self.assertNotIn("Tracker protocol", run("start", cwd=work))  # so the start it was asked for adds none
+
 
 class Events(unittest.TestCase):
     """The event file: each change the tool writes, as one typed event per line."""
