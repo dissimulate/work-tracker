@@ -202,8 +202,9 @@ def build_parser():
     add("ready", cmd_ready, "the todo tickets that can start now, the most urgent first: nothing blocks them (from "
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
-    add("check", cmd_check, "validate the tracker, then list what is stuck (a submission, a question or a wait on a "
-                            "human left too long); exit 1 on errors")
+    add("check", cmd_check, "validate the tracker, then list what is stuck (a submission or a question left too long "
+                            "or on a ticket under way that no session is on, a wait on a human past 30 s); exit 1 on "
+                            "errors")
     sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
                                "base, reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")

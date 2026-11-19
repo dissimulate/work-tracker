@@ -1001,6 +1001,11 @@ def cmd_submit(args):
     print(f"submitted {t.id}'s {args.what}")
 
 
+def numbered(word: str, numbers: list[int]) -> str:
+    """`finding 2`, `findings 1, 3`."""
+    return f"{word}{'s' * (len(numbers) > 1)} {', '.join(map(str, numbers))}"
+
+
 def cmd_review(args):
     """Record a review of a ticket's plan or built code, with its numbered findings, answering the submission before it
     (`last_submission`); or, with --fixed, mark findings of the latest review fixed. Every check runs before the
@@ -1014,8 +1019,8 @@ def cmd_review(args):
         die("a review that asks for changes lists them: one --finding per change")
     if args.verdict == "pass" and args.finding:
         die("a finding is a change asked for: use --verdict changes, or leave the finding out")
-    if empty := [str(i) for i, x in enumerate(args.finding or [], 1) if not x.strip()]:
-        die(f"a finding says what to change: finding {', '.join(empty)} is empty")
+    if empty := [i for i, x in enumerate(args.finding or [], 1) if not x.strip()]:
+        die(f"a finding says what to change: {numbered('finding', empty)} {'are' if len(empty) > 1 else 'is'} empty")
     tr, t = open_ticket(args)
     events, name = read_events(tr), HANDED[args.what].review
     if args.fixed is not None:
@@ -1023,10 +1028,11 @@ def cmd_review(args):
         have = finding_numbers(review)
         given = csv(args.fixed)
         if not given or any(not x.isdigit() or int(x) not in have for x in given):
-            die(f"{t.id}'s latest {name} has " + (f"findings {', '.join(map(str, have))}: --fixed takes those numbers"
+            die(f"{t.id}'s latest {name} has " + (f"{numbered('finding', have)}: --fixed takes "
+                                                    f"{'those numbers' if len(have) > 1 else 'that number'}"
                                                     if have else "no findings"))
         fixed = list(dict.fromkeys(int(x) for x in given))
-        listed = f"finding{'s' * (len(fixed) > 1)} {', '.join(map(str, fixed))}"
+        listed = numbered("finding", fixed)
         append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
                      of=review["seq"], findings=fixed)
         print(f"marked {listed} of {t.id}'s {name} fixed")

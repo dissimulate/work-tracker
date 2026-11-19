@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -3558,6 +3559,61 @@ class Watch(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertRegex(lines[0], r"^\d\d:\d\d ! stuck W-2: coordinator has not reviewed W-2's plan for 30 min$")
 
+    def coordinator_claims(self, prior: dict | None = None) -> tuple[list[str], str]:
+        """A coordinator's watch claims the tracker, with `prior` as its saved state, when W-1 (under way, a worker
+        session on it) has had its plan submitted for two hours. Its first lines, and its session id."""
+        sid, now = f"co{time.monotonic_ns()}", time.time()
+        worker = f"wk{time.monotonic_ns()}"
+        session.save_session(worker, tracker=self.s, focus=["W-1"], cwd=BASE,
+                             activity={"status": "busy", "since": now, "at": now})
+        self.addCleanup(session.drop_session, worker)
+        self.addCleanup(watcher.set_grant, sid, False)
+        run(*self.t, "set", "W-1", "status=in-progress")
+        two_hours = time.strftime(schema.TIME_FORMAT, time.gmtime(now - 7200))
+        with store.locked(), mock.patch.object(model, "utc_now", return_value=two_hours):
+            model.append_event(model.Tracker(self.root), "submission", "W-1 plan ready for review", ["W-1"],
+                               what="plan")
+        if prior is not None:
+            watcher.set_grant(sid, True)
+            watcher.state_path(self.s, sid).parent.mkdir(parents=True, exist_ok=True)
+            store.write_json(watcher.state_path(self.s, sid), {"who": "session co", "sid": sid, "pid": 0, **prior})
+        lines = watcher.Watcher(model.Tracker(self.root), sid, role="coordinator").claim(now)
+        return lines, sid
+
+    def test_a_coordinators_first_lines_count_from_its_start(self):
+        lines, _ = self.coordinator_claims()
+        w1 = next(x for x in lines if " W-1 " in x)
+        self.assertRegex(w1, r"^\d\d:\d\d W-1 in-progress · move: coordinator — plan review")  # not stuck: no `!`
+        self.assertFalse(any(i.stuck for i in session.items_of(model.Tracker(self.root))))
+
+    def test_a_coordinator_that_comes_back_counts_from_its_return(self):
+        now = time.time()
+        prior = {"role": "coordinator", "started": now - 3 * 3600, "ended": now - 2.5 * 3600, "at": now - 2.5 * 3600,
+                 "snapshot": {"tickets": {}, "errors": []}, "seq": 0}  # it stopped before the plan came
+        lines, _ = self.coordinator_claims(prior)
+        self.assertFalse([x for x in lines if " ! " in x or "stuck W-" in x], lines)
+        self.assertFalse(any(i.stuck for i in session.items_of(model.Tracker(self.root))))
+
+    def test_a_stuck_move_is_said_by_its_stuck_line_alone(self):
+        tr = model.Tracker(self.root)
+        self.coordinator()
+        run(*self.t, "set", "W-1", "status=in-progress")
+        run(*self.t, "submit", "W-1", "--what", "plan")  # no session on W-1: stuck at once
+        facts = session.ticket_facts(model.Tracker(self.root), tr.lookup("W-1"))
+        self.assertEqual((facts["move"], facts["stuck"]), ("human — plan review, stuck with coordinator", True))
+        before = {**facts, "move": "coordinator — plan review", "stuck": False, "human": False}
+        new = {"tickets": {"W-1": {**facts, "start": ""}}, "errors": []}
+        self.assertEqual(watcher.ticket_events({"tickets": {"W-1": {**before, "start": ""}}}, new), [])
+
+    def test_an_item_stuck_again_is_said_again(self):
+        item = moves.Item("question", "question:D-01", ["W-1"], 0, "coordinator has not answered D-01 for 31 min",
+                          moves.Move("human", "D-01 open", 5, human=True), stuck=True)
+        looks = [[item], [dataclasses.replace(item, stuck=False)], [item]]  # passed on, then left again
+        w = self.watcher()
+        with mock.patch.object(watcher, "items_of", side_effect=looks):
+            said = [len(w.stuck(model.Tracker(self.root), time.time())) for _ in looks]
+        self.assertEqual(said, [1, 0, 1])
+
     def opened(self, *flags: str) -> list[dict]:
         """D-01 opened with `flags`: its events, as the watch reads them."""
         run(*self.t, "decide", "Pick a store", *flags)
@@ -4611,6 +4667,7 @@ class Handoffs(unittest.TestCase):
         run(*self.t, "set", "T-1", "status=in-progress")
         run(*self.t, "new", "T-2", "--title", "Two")
         run(*self.t, "set", "T-2", "status=done")
+        run(*self.t, "new", "T-3", "--title", "Three")
         run(*self.t, "decide", "Which store")
 
     def last(self, kind: str = "") -> dict:
@@ -4678,6 +4735,7 @@ class Handoffs(unittest.TestCase):
 
     def test_each_refusal_changes_nothing(self):
         run(*self.t, "review", "T-1", "--what", "code", "--verdict", "changes", "--finding", "a", "--finding", "b")
+        run(*self.t, "review", "T-3", "--what", "plan", "--verdict", "changes", "--finding", "a")
         before = tree(self.root)
         refusals = [
             (["submit", "D-01", "--what", "plan"], "D-01 is a decision: `tracker decide D-01 --note \"...\"`"),
@@ -4690,6 +4748,8 @@ class Handoffs(unittest.TestCase):
              "a review that asks for changes lists them: one --finding per change"),
             (["review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a", "--finding", "  "],
              "a finding says what to change: finding 2 is empty"),
+            (["review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", " ", "--finding", ""],
+             "a finding says what to change: findings 1, 2 are empty"),
             (["review", "T-1", "--what", "plan", "--verdict", "pass", "--finding", "a"],
              "a finding is a change asked for: use --verdict changes, or leave the finding out"),
             (["review", "T-1", "--what", "code", "--fixed", "1", "--verdict", "pass"], "--fixed"),
@@ -4698,6 +4758,8 @@ class Handoffs(unittest.TestCase):
             (["review", "T-1", "--what", "code", "--fixed", "3"], "findings 1, 2"),
             (["review", "T-1", "--what", "code", "--fixed", "x"], "findings 1, 2"),
             (["review", "T-1", "--what", "code"], "--verdict"),
+            (["review", "T-3", "--what", "plan", "--fixed", "2"], "T-3's latest plan review has finding 1: --fixed "
+                                                                  "takes that number"),
         ]
         for args, sentence in refusals:
             with self.subTest(args=args):
@@ -5000,6 +5062,20 @@ class OpenItems(unittest.TestCase):
         items = moves.open_items(model.tracker_at(self.s), submitted, NOW, True, {"T-1"}, {}, arrived)
         self.assertEqual([(i.kind, i.stuck, i.at) for i in items],
                          [("submission", False, arrived), ("question", False, max(created, arrived))])
+
+    def test_a_ticket_owners_clock_starts_when_the_ticket_starts_again(self):
+        run(*self.t, "decide", "Which store", "--owner", "T-1")
+        restarted = [event(1, "status", ["T-1"], 60, status="in-progress")]
+        (item,) = self.items(restarted)
+        self.assertEqual((item.move.who, item.stuck, item.at), ("T-1's session", False, NOW - 60))
+
+    def test_a_damaged_coordinator_state_breaks_no_view(self):
+        self.coordinator()
+        path = watcher.state_path(self.s, "qb")
+        store.write_json(path, {**json.loads(path.read_text()), "started": "yesterday"})
+        self.assertTrue(session.coordinated(model.tracker_at(self.s)))
+        run(*self.t, "check")
+        data(self.s)
 
     def test_a_humans_own_question_is_never_stuck(self):
         run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")

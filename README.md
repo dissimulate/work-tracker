@@ -167,8 +167,8 @@ Environment variables. All are optional.
 | `TRACKER_SYNC` | 120 | seconds (at least 30) between GitHub syncs while the view or a watch is open (a session's hooks sync at most every 10 min) |
 | `TRACKER_WATCH_IDLE` | 600 | seconds before an idle agent that waits on you is reported |
 | `TRACKER_WATCH_BUSY` | 2700 | seconds a busy agent can record nothing before it is reported |
-| `TRACKER_DEADLINE_SUBMISSION` | 1800 | seconds a submitted plan or built code can wait for its review before it is stuck |
-| `TRACKER_DEADLINE_QUESTION` | 1800 | seconds an open decision for the coordinator or a session can wait for its answer before it is stuck |
+| `TRACKER_DEADLINE_SUBMISSION` | 1800 | seconds a submitted plan or built code can wait for the coordinator's review, from the later of its submission and the coordinator's start, before it is stuck |
+| `TRACKER_DEADLINE_QUESTION` | 1800 | seconds an open decision for the coordinator or a session can wait for its answer, from when it became theirs (opened, passed on, the coordinator's start, the owner ticket's start), before it is stuck |
 
 ## Develop
 

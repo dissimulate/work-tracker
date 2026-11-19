@@ -119,7 +119,7 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
             continue
         if was["stage"] != now["stage"]:
             out.append(Event("ticket", ident, False, f"{was['stage']} → {now['stage']}"))
-        if now.get("move") and now["move"] != was.get("move"):
+        if now.get("move") and now["move"] != was.get("move") and not now.get("stuck"):  # its stuck line says it
             # A move that comes back from someone else (a reviewer, CI, a decision's owner) needs the user too.
             back = bool(was.get("move")) and not was.get("mine")
             out.append(Event("ticket", ident, needs_you(now) or now["mine"] and back, f"move: {now['move']}"))
@@ -268,8 +268,9 @@ def watches_of(tr: Tracker) -> list[dict]:
             continue
         running = watch_running(st)
         if running or time.time() - ended <= 86400:
+            started = st.get("started")
             out.append({"who": st["who"], "role": str(st.get("role") or ""), "running": running,
-                        "since": st.get("started", 0), "ended": 0 if running else ended})
+                        "since": started if isinstance(started, (int, float)) else 0, "ended": 0 if running else ended})
     return sorted(out, key=lambda w: w["since"])
 
 
@@ -331,10 +332,13 @@ class Watcher:
             if pid and pid != os.getpid() and alive(pid):
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
+            again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
+            # Since when this watch has watched: a session's that ran on until now keeps its start. Saved before the
+            # first lines, whose moves read it for a coordinator (`session.coordinator_since`).
+            started = st.get("started", now) if again and self.sid and watch_running(st) else now
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
             set_grant(self.sid, True)  # a session's watch holds it; a watch refused above gives none
-            write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid()}))
-        again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
+            write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid(), "started": started}))
         if again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
                 st["seq"] = last_seq(self.tracker())
@@ -347,8 +351,7 @@ class Watcher:
             self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
             lines = summary(tr, self.others(), now)
-        self.st.update(pid=os.getpid(), sid=self.sid, who=self.who,
-                       started=st.get("started", now) if again and self.sid else now)
+        self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
         self.save(now)
@@ -504,7 +507,7 @@ class Watcher:
                 else:
                     about = i.refs[0] if i.refs else ""
                 out.append(Event("stuck", f"stuck {about}".strip(), True, i.what))  # a line of its own
-        self.st["stuck"] = sorted(told & {i.key for i in items})
+        self.st["stuck"] = sorted(told & {i.key for i in items if i.stuck})  # stuck again later: said again
         return out
 
     def run(self, once: bool) -> None:

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from .markdown import Link
-from .schema import COORDINATOR, DEADLINE_S, parse_day, utc_seconds
+from .schema import COORDINATOR, DEADLINE_S, parse_day, stage_of, utc_seconds
 from .model import link_title, short, Record, Tracker
 
 # What a move reads of an open PR, in the tracker's own words: a forge's adapter (github.py) maps its own words onto
@@ -49,6 +49,7 @@ class Move:
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
     quiet: bool = False  # your own work going on as planned, where nothing has stopped to wait for you
     human: bool = False  # the move is a human's to make: an open action, or a decision a human must answer
+    stuck: bool = False  # it is a human's as its open item is stuck (`open_items`), which a watch says on its own line
 
     @property
     def mine(self) -> bool:
@@ -199,7 +200,7 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
             what = f"{item.what}, and no session is on {', '.join(alone)}"
         else:
             return item
-        move = Move("human", f"{item.move.what}, stuck with {item.move.who}", item.move.rank, human=True)
+        move = Move("human", f"{item.move.what}, stuck with {item.move.who}", item.move.rank, human=True, stuck=True)
         return replace(item, stuck=True, what=what, move=move)
 
     def minutes(at: float) -> str:
@@ -227,13 +228,15 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
                                   utc_seconds(h.review.get("at")) or now, f"{t.id}: {said}", Move(YOU, said, 5)))
     owned = {e.get("decision"): utc_seconds(e.get("at")) or 0 for e in events
              if e["kind"] == "decision.updated" and "owner" in e}  # each decision's last change of owner
+    started = {e["refs"][0]: utc_seconds(e.get("at")) or 0 for e in events  # each ticket's last start
+               if e["kind"] == "status" and e["refs"] and stage_of("ticket", e.get("status")).in_flight}
     for d in tr.open_decisions():
         kind, name = owner_kind(tr, d)
         refs = sorted(set(tr.touched_by(d)) | ({name} if kind == "ticket" else set()))
         move = decision_move(tr, d, coordinated)
         at = max(created(d, now), owned.get(d.id, 0),
                  coordinator_since if move.who == COORDINATOR else 0,
-                 utc_seconds(tr.lookup(name).get("started_at")) or 0 if kind == "ticket" else 0)
+                 started.get(name, 0) if kind == "ticket" else 0)
         items.append(judged(Item("question", question_key(d.id), refs, at, f"{d.id} open", move),
                             f"{move.who} has not answered {d.id} for {minutes(at)}"))
     waits, ended = {}, set()

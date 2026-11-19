@@ -538,9 +538,10 @@ def coordinator_since(tr: Tracker) -> float:
     """Since when a coordinator has watched the tracker (`coordinated`), as its running watch's start (epoch s); 0
     with none."""
     # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
-    starts = [float(st.get("started") or 0) or 1.0 for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
+    starts = [st.get("started") for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
               if st.get("role") == COORDINATOR and watch_running(st)]
-    return min(starts, default=0.0)
+    # A start that is no number (a damaged state) counts as long ago: no view stops for it (`watch_running`)
+    return min((x if isinstance(x, (int, float)) and x > 0 else 1.0 for x in starts), default=0.0)
 
 
 # Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
@@ -579,7 +580,8 @@ def ticket_facts(tr: Tracker, t: Record) -> dict:
     move = move_of(tr, t)
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
-            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human} if move else {})}
+            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human,
+                "stuck": move.stuck} if move else {})}
 
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, dict]:
