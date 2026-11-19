@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import time
@@ -522,11 +521,16 @@ def granted(sid: str) -> bool:
 def watch_running(st: dict) -> bool:
     """A watch's saved state (WATCH_DIR) is of one that runs: its process does, or it is a session's that holds the
     grant and ended within REARM_S, so it starts again. A state that is damaged runs none: no view stops for it."""
+    return alive(state_pid(st)) or (
+        granted(str(st.get("sid") or "")) and is_time(st.get("ended")) and time.time() - st["ended"] < REARM_S)
+
+
+def state_pid(st: dict) -> int:
+    """A watch state's process id; 0 for none, and for a damaged one."""
     try:
-        return alive(int(st.get("pid") or 0)) or (
-            granted(str(st.get("sid") or "")) and is_time(st.get("ended")) and time.time() - st["ended"] < REARM_S)
-    except (TypeError, ValueError):
-        return False
+        return int(st.get("pid") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def coordinated(tr: Tracker) -> bool:
@@ -545,9 +549,13 @@ def coordinator_since(tr: Tracker) -> float:
     return min((x if is_time(x) else 1.0 for x in starts), default=0.0)
 
 
+TIME_SLACK_S = 60  # another clock may run a little ahead of this one
+
+
 def is_time(x) -> bool:
-    """A watch state's time is an epoch time: a damaged state can hold any JSON, infinity too."""
-    return isinstance(x, (int, float)) and math.isfinite(x) and x > 0
+    """A watch state's time is an epoch time up to now: a damaged state can hold any JSON, infinity or a time in
+    milliseconds too. Every such time is past."""
+    return isinstance(x, (int, float)) and 0 < x <= time.time() + TIME_SLACK_S  # NaN fails both
 
 
 # Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's

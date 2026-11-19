@@ -5107,7 +5107,7 @@ class OpenItems(unittest.TestCase):
     def test_a_damaged_coordinator_state_breaks_no_view(self):
         self.coordinator()
         path = watcher.state_path(self.s, "qb")
-        for bad in ('"yesterday"', "1e400"):  # no number, and one JSON reads as infinity
+        for bad in ('"yesterday"', "1e400", "1e300"):  # no number, one JSON reads as infinity, one far off
             with self.subTest(bad=bad):
                 state = json.loads(path.read_text())
                 path.write_text(json.dumps({**state, "started": 0}).replace('"started": 0', f'"started": {bad}'))
@@ -5116,15 +5116,33 @@ class OpenItems(unittest.TestCase):
                 data(self.s)
         path.unlink()  # no watch running: the view says when the last one ended
         ended = watcher.state_path(self.s, "old")  # a watch that ended, with no grant: its end damaged
-        for bad in ("1e400", "-1e400"):
+        for bad in ("1e400", "1e300"):
             with self.subTest(ended=bad):
                 ended.write_text(f'{{"who": "session old", "sid": "old", "pid": 0, "started": 5, "ended": {bad}}}')
                 self.addCleanup(ended.unlink, True)
                 data(self.s)
         watcher.set_grant("old", True)  # one that holds the grant: an end of infinity is no watch that runs on
         self.addCleanup(watcher.set_grant, "old", False)
-        ended.write_text('{"who": "session old", "sid": "old", "pid": 0, "role": "coordinator", "ended": 1e400}')
-        self.assertFalse(session.coordinated(model.tracker_at(self.s)))
+        for bad in ("1e400", str(time.time() * 1000)):  # infinity, and an end saved in milliseconds
+            with self.subTest(granted_ended=bad):
+                ended.write_text('{"who": "session old", "sid": "old", "pid": 0, "role": "coordinator", '
+                                 f'"ended": {bad}}}')
+                self.assertFalse(session.coordinated(model.tracker_at(self.s)))
+        ended.write_text('{"who": "session old", "sid": "old", "pid": 1e400, "role": "coordinator", "ended": 5}')
+        self.assertFalse(session.coordinated(model.tracker_at(self.s)))  # a pid of infinity runs nothing
+        run(*self.t, "check")
+        data(self.s)
+        claimed = watcher.Watcher(model.tracker_at(self.s), "old").claim(time.time())  # and takes its place
+        self.assertTrue(claimed)
+
+    def test_a_running_watch_with_a_damaged_end_still_watches(self):
+        self.coordinator()
+        path = watcher.state_path(self.s, "qb")
+        store.write_json(path, {**json.loads(path.read_text()), "started": time.time() - 60, "ended": -5})
+        tr = model.tracker_at(self.s)
+        self.assertEqual([w["running"] for w in watcher.watches_of(tr)], [True])
+        self.assertIn("Watched by session qb since", data(self.s)["now"]["watch"]["text"])
+        self.assertIn("the watch by session qb", lifecycle.in_use(tr))
 
     def test_a_humans_own_question_is_never_stuck(self):
         run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")

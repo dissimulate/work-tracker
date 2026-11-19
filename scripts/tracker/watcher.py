@@ -20,7 +20,7 @@ from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEE
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
-    granted, is_time, items_of, live_sessions, session_id, ticket_facts, watch_running, Live)
+    granted, is_time, items_of, state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -264,11 +264,10 @@ def watches_of(tr: Tracker) -> list[dict]:
     out = []
     for f in (WATCH_DIR / tr.slug).glob("*.json"):
         st = read_json(f)
-        ended = st.get("ended") or 0
-        if not st.get("who") or not (ended == 0 or is_time(ended)):  # not a watch's state, or a damaged one
+        if not st.get("who"):  # not a watch's state
             continue
-        running = watch_running(st)
-        if running or time.time() - ended <= 86400:
+        running, ended = watch_running(st), st.get("ended") or 0
+        if running or is_time(ended) and time.time() - ended <= 86400:  # a damaged end is of no watch that ran
             started = st.get("started")
             out.append({"who": st["who"], "role": str(st.get("role") or ""), "running": running,
                         "since": started if is_time(started) else 0, "ended": 0 if running else ended})
@@ -329,7 +328,7 @@ class Watcher:
         read it (`session.coordinated`)."""
         with locked():  # the test and the claim are one step; the rest runs outside the lock (sync asks GitHub)
             st = load_state(self.slug, self.sid)
-            pid = int(st.get("pid") or 0)
+            pid = state_pid(st)
             if pid and pid != os.getpid() and alive(pid):
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
