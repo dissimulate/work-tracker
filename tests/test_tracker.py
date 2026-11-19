@@ -2950,6 +2950,7 @@ class SessionNews(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")  # A's focus is now T-1 alone
         told = self.message()
+        self.assertIn("Changed on T-1, T-3 since", told)  # the tickets its lines are about
         self.assertIn("T-3 is now done", told)
         self.assertIn("T-1: base branch moved", told)
 
@@ -4853,6 +4854,13 @@ class MineWatch(TwoSessions):
                 self.assertIn("--mine", run("watch", *case[1:], "--mine", "--once", cwd=self.work, code=2))
                 self.assertEqual(kept(), before)
 
+    def test_mine_on_no_tracker_offers_no_tracker_to_name(self):
+        c = f"mc{time.monotonic_ns()}"
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+            said_ = run("watch", "--mine", "--once", cwd=self.work, code=2)  # not 3, a list of slugs to pass
+        self.assertIn("it is on no tracker: `tracker start <name>`", said_)
+        self.assertFalse(watcher.granted(c))
+
     def test_stop_marks_the_session_and_a_new_watch_clears_it(self):
         self.as_a("watch", "--stop")
         self.assertTrue(session.load_session(self.a).get("no_watch"))
@@ -4954,6 +4962,14 @@ class WatchAsk(TwoSessions):
         self.as_a("start", self.s, "--on", "T-1", cwd=plain)
         self.as_a(*self.t, "submit", "T-1", "--what", "plan", cwd=plain)
         self.asked(self.stop(cwd=plain), "T-1")
+
+    def test_a_held_turn_still_shows_busy(self):
+        hook("prompt", self.a, self.work, env=no_gh(), prompt="go")
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        self.assertEqual(session.load_session(self.a)["activity"]["status"], "busy")  # its turn goes on
+        self.assertIsNone(self.stop())
+        self.assertEqual(session.load_session(self.a)["activity"]["status"], "idle")
 
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")

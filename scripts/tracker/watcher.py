@@ -421,7 +421,7 @@ class Watcher:
         tickets = [f"{t.id} {t.stage}" + (f" · move: {move.text(' — ')}" if (move := move_of(tr, t)) else "")
                    for t in m.focus]
         return short(f"{time.strftime('%H:%M', time.localtime(now))} watching your tickets on {self.slug}: "
-                     + "; ".join(tickets), LINE_MAX)
+                     + ("; ".join(tickets) or "none open"), LINE_MAX)
 
     def news_lines(self, events: list[Event], now: float) -> list[str]:
         """A `mine` watch's lines: the session's news as it is, with the time: no merging by key, no `!`, no holding."""

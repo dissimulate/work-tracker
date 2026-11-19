@@ -191,21 +191,23 @@ WATCH_ASK = ("[work-tracker] {waits}. Nothing wakes this session when that chang
              "user told you not to watch, end the turn.")
 
 
-def hook_stop(data: dict, ask: bool = True) -> None:
+def hook_stop(data: dict, ask: bool = True) -> bool:
     """The end of a turn or of the session: log the commits no other hook saw (made in the terminal, or by a command
     the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
     asks. Then, at a turn's end (`ask`), the reminder to watch (`watch_ask`): the one time a hook holds a session
-    back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`."""
+    back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`.
+    Whether it held the turn, which then goes on."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
-        return
+        return False
     if m.branch:
         adopt_branch(m, cwd)
         record_commits(m, cwd)
     text = watch_ask(data, m, sid) if ask else ""
     if text:
         print(json.dumps({"decision": "block", "reason": text}))
+    return bool(text)
 
 
 def watch_ask(data: dict, m: Match, sid: str) -> str:
@@ -370,7 +372,7 @@ def hook_prompt(data: dict) -> None:
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
-    ids = [t.id for t in m.focus] or entry.get("seen_for") or []  # with none open now, the ones that just ended
+    ids = entry.get("seen_for") or [t.id for t in m.focus]  # the tickets `news` reports on
     told = news(sid, m)
     fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []
@@ -539,8 +541,9 @@ def run_hook(*events: str) -> None:
             if event == "session-end" and not data.get("agent_id"):
                 session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
             try:  # a watch request writes nothing to the tracker: `stop` ends the watch on a refused one too
-                if not (event == "prompt" and watch_request(data)) and not refusal_told(data, event):
-                    HOOKS[event](data)
+                if not (event == "prompt" and watch_request(data)) and not refusal_told(data, event) \
+                        and HOOKS[event](data) is True:
+                    status = None  # a turn the Stop hook held goes on: the session stays busy
             except OtherFormat as exc:  # the guard stopped the first tracker write; session_activity below still runs
                 tell_refusal(data, event, exc.root)
             # A subagent's turn is not the session's, but its wait on the user is.
