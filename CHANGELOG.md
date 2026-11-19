@@ -32,6 +32,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ### Fixed
 
+- The watch no longer reports an agent session that waits on its own watch as idle and waiting on you, or as busy with nothing recorded: its first lines show it as `watching`. One that asks you for a permission or an answer is still reported.
 - A session that still runs an older plugin version no longer writes its format into a tracker that a newer version migrated. Its commands refuse and say to use the newer version: update the plugin, then reload it or restart the session. Its hooks write nothing, say so once (again after compaction or /clear) and neither offer nor make a new link to such a tracker. 0.32.0 and earlier do not refuse: restart sessions that run them.
 - A write to a tracker whose folder is a link now ends with what it unblocked and whether `check` found new problems, as in any other tracker.
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.

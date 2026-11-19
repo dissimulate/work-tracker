@@ -4944,6 +4944,80 @@ class WatchAsk(unittest.TestCase):
         self.assertIn("terminal work", (store.HOME / self.s / "log.md").read_text())
 
 
+class WatchingAgents(unittest.TestCase):
+    """A session that waits on its own watch is not idle and waiting on you, nor stuck while busy, in a watch's lines
+    and its first summary: it is woken by that watch. Session A is on T-1; a terminal watches the tracker."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Watching")
+        run(*self.t, "new", "T-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "set", "T-1", "status=in-progress")
+        self.work = repo("f1")
+        self.a = f"wg{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.a)
+        self.addCleanup(watcher.set_grant, self.a, False)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            run("start", self.s, cwd=self.work)
+        self.now = time.time()
+
+    def own_watch(self) -> watcher.Watcher:
+        """A's watch of its own tickets, running in this process."""
+        w = watcher.Watcher(model.tracker_at(self.s), self.a, "session wg", mine=True)
+        w.claim(self.now)
+        return w
+
+    def terminal(self, at: float | None = None, sid: str = "") -> tuple[watcher.Watcher, list[str]]:
+        """A new watch of the tracker (a terminal's, or another session's), and its first lines."""
+        w = watcher.Watcher(model.tracker_at(self.s), sid)
+        self.addCleanup(watcher.set_grant, sid, False)
+        return w, w.claim(self.now if at is None else at)
+
+    def test_a_watching_session_is_not_said_to_wait_on_you(self):
+        for watching in (True, False):
+            with self.subTest(watching=watching):
+                self.setUp()
+                hook("stop", self.a, self.work, env=no_gh())  # its turn ended: idle from now
+                if watching:
+                    self.own_watch()
+                late = self.now + watcher.IDLE_S + 90
+                [t1] = [x for x in self.terminal(late, "observer")[1] if " T-1 " in x]
+                if watching:
+                    self.assertRegex(t1, rf"^\d\d:\d\d T-1 in-progress · .* · agent {self.a[:8]} watching$")
+                else:
+                    self.assertRegex(t1, rf"^\d\d:\d\d ! T-1 in-progress · .* · agent {self.a[:8]} idle \d+ min$")
+                w = self.terminal()[0]  # one that started before: its later look
+                said = "\n".join(w.poll(late))
+                (self.assertNotIn if watching else self.assertIn)(f"! agent {self.a[:8]}: idle", said)
+
+    def test_a_session_that_waits_on_its_watch_once_is_not_said_to_be_stuck(self):
+        for watching in (True, False):
+            with self.subTest(watching=watching):
+                self.setUp()
+                hook("prompt", self.a, self.work, env=no_gh(), prompt="go")  # busy: a host that waits in a turn
+                if watching:
+                    self.own_watch()
+                w = self.terminal()[0]
+                said = "\n".join(w.poll(self.now + watcher.BUSY_S + 90))
+                (self.assertNotIn if watching else self.assertIn)(f"agent {self.a[:8]}: busy", said)
+
+    def test_a_watching_session_that_asks_for_a_permission_is_still_said(self):
+        self.own_watch()
+        hook("waiting", self.a, self.work, env=no_gh(), tool_name="Bash")
+        w = self.terminal()[0]
+        self.assertIn(f"! agent {self.a[:8]}: asks for a permission or an answer on T-1",
+                      "\n".join(w.poll(time.time() + watcher.ASKING_S)))
+
+    def test_once_its_watch_ends_it_is_said_idle_again(self):
+        hook("stop", self.a, self.work, env=no_gh())
+        late = self.now + watcher.IDLE_S + 90
+        own = self.own_watch()
+        own.release(self.now)  # between two runs (`--once`): it still watches
+        w = self.terminal()[0]
+        self.assertEqual([x for x in w.poll(late) if "waits on you" in x], [])
+        own.release(self.now - session.REARM_S - 1)  # it ended long ago and was not started again
+        self.assertIn(f"! agent {self.a[:8]}: idle", "\n".join(w.poll(late + 1)))
+
+
 class Delete(unittest.TestCase):
     """`tracker archive` and `delete`, and a UI's tracker menu: an archived tracker leaves every list and lookup but a
     UI's; a deleted one goes to the system's trash, only by the user; neither while a session or a watch

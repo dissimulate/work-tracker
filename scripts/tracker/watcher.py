@@ -121,9 +121,18 @@ def needs_you(fact: dict) -> bool:
     return bool(fact.get("human")) or bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
 
 
-def waits(x: Live, now: float) -> bool:
-    """An agent that waits on the user: it has asked for a while, or been idle for long."""
-    return x.status != "busy" and bool(x.since) and now - x.since >= (ASKING_S if x.status == "waiting" else IDLE_S)
+def waits(x: Live, now: float, watching: bool = False) -> bool:
+    """An agent that waits on the user: it has asked for a while, or been idle for long and is not `watching`."""
+    if x.status == "busy" or not x.since:
+        return False
+    return now - x.since >= ASKING_S if x.status == "waiting" else not watching and now - x.since >= IDLE_S
+
+
+def watching(slug: str, live: list[Live]) -> set[str]:
+    """Of the live sessions, those whose own watch of the tracker runs: one that waits on it is woken by it, so it is
+    neither idle and waiting on the user (`waits`) nor stuck while busy (a host that waits inside a turn), though one
+    that asks the user still is."""
+    return {x.sid for x in live if watch_running(load_state(slug, x.sid))}
 
 
 def ticket_events(old: dict, new: dict) -> list[Event]:
@@ -231,9 +240,11 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     on = {x.sid: agent_tickets(tr, x.cwd, x.sid) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]
+    watched = watching(tr.slug, live)
 
     def agent(x: Live) -> str:
-        return f"agent {agent_state(x, now)}"
+        idle = x.status not in ("busy", "waiting")
+        return f"agent {x.name} watching" if idle and x.sid in watched else f"agent {agent_state(x, now)}"
 
     def line(urgent: bool, text: str) -> str:
         return short(f"{clock} {'! ' * urgent}{text}", LINE_MAX)
@@ -247,9 +258,9 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     for t in flight:
         agents = [x for x in live if t.id in on[x.sid]]
         move = [f"move: {facts[t.id]['move']}"] if facts[t.id].get("move") else []
-        out.append(line(needs_you(facts[t.id]) or any(waits(x, now) for x in agents),
+        out.append(line(needs_you(facts[t.id]) or any(waits(x, now, x.sid in watched) for x in agents),
                         " · ".join([f"{t.id} {t.stage}", *move, *map(agent, agents)])))
-    out += [line(waits(x, now), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
+    out += [line(waits(x, now, x.sid in watched), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
     ready = [t.id for t, _ in tr.startable()]
     return out + ([line(False, f"can start: {', '.join(ready)}")] if ready else [])
 
@@ -517,11 +528,13 @@ class Watcher:
 
     def agents(self, tr: Tracker, now: float) -> list[Event]:
         """The agent sessions on the tracker: each that starts, ends its turn or ends; each that waits on the user
-        (`waits`), or is busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
+        (`waits`), or is busy so long with nothing recorded for its tickets (once per spell), but for one that waits on
+        its own watch (`watching`); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})
-        agents, out = {}, []
-        for x in self.others():
+        agents, out, live = {}, [], self.others()
+        watched = watching(self.slug, live)
+        for x in live:
             on = agent_tickets(tr, x.cwd, x.sid)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
@@ -538,11 +551,11 @@ class Watcher:
             quiet = now - max(x.since, activity.get(x.sid, 0))
             if told.get(spell) == x.since:
                 continue
-            if waits(x, now):
+            if waits(x, now, x.sid in watched):
                 told[spell] = x.since
                 out.append(Event("agent", key, True, f"asks for a permission or an answer{where}"
                                  if x.status == "waiting" else f"idle {mins} min{where}: waits on you"))
-            elif x.status == "busy" and on and quiet >= BUSY_S:
+            elif x.status == "busy" and on and quiet >= BUSY_S and x.sid not in watched:
                 told[spell] = x.since
                 out.append(Event("agent", key, False, f"busy {mins} min; nothing recorded for {', '.join(on)} in "
                                                       f"{int(quiet // 60)} min"))
