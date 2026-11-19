@@ -7,6 +7,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Added
 
 - `tracker check` reports a damaged event file.
+- `tracker check` warns about an open decision a human must answer that has fewer than two options or none recommended, with the command that adds what is missing.
 - `tracker watch --as coordinator`: a session takes the coordinator role for a tracker. An open decision with no owner is then the coordinator's move, and a human's again when no coordinator is watching.
 
 ### Changed

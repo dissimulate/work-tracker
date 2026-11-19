@@ -1212,7 +1212,8 @@ class Upgrade(unittest.TestCase):
             self.assertEqual(markdown.section(d.body, "Notes"), "- 2026-01-02: a fact\n  - its detail\n"
                              "- 2026-01-03: Evidence: [f.txt](evidence/f.txt)\n\nSome prose")
         self.assertEqual(markdown.headings(tr.lookup("D-02").body), ["Question", "Options", "Notes", "Resolution"])
-        self.assertNotIn("D-0", run(*t, "check"))
+        found = [x for x in run(*t, "check").splitlines() if "a decision for a human" not in x]  # none recommended
+        self.assertNotIn("D-0", "\n".join(found))
 
     OLD_LOG = ("# Log — Old\n\nAppend-only. Newest at the bottom.\n\n"
                "- 2026-01-02 [T-1 T-2] A plain line\n"
@@ -3982,6 +3983,51 @@ class DecisionOptions(unittest.TestCase):
         run(*t, "add", "D-1", "options", "Kafka")
         self.assertIn("- Kafka", self.options(s))
 
+    def warned(self, s: str) -> list[str]:
+        return [w for w in contract.check(model.tracker_at(s))[1] if "a decision for a human" in w]
+
+    def test_check_warns_on_a_bare_question_for_a_human(self):
+        s, t = new_tracker("Bare")
+        said = run(*t, "decide", "Which store")
+        self.assertEqual(self.warned(s), ['D-01: a decision for a human needs its choices, each with its cost, and one '
+                                          'recommended: `tracker decide D-01 --option "<choice> — <cost>" '
+                                          '--recommend "<choice>"`'])
+        self.assertIn("D-01: a decision for a human needs its choices", said)  # the write that left it bare says so
+        run(*t, "decide", "D-1", "--option", "Postgres — a migration", "--option", "SQLite")
+        self.assertEqual(self.warned(s), ['D-01: a decision for a human needs its choices, each with its cost, and one '
+                                          'recommended: `tracker decide D-01 --recommend "<choice>"`'])
+        run(*t, "decide", "Which queue", "--owner", "Sam", "--option", "SQS", "--recommend", "SQS")
+        self.assertEqual([w.split(":")[0] for w in self.warned(s)], ["D-01", "D-02"])  # one recommended, alone
+        self.assertIn('`tracker decide D-02 --option "<choice> — <cost>"`', self.warned(s)[1])
+
+    def test_a_complete_question_is_not_warned(self):
+        s, t = new_tracker("Complete")
+        run(*t, "decide", "Which store", "--option", "Postgres — a migration", "--option", "SQLite — no joins",
+            "--recommend", "SQLite")
+        self.assertEqual(self.warned(s), [])
+
+    def test_a_coordinators_question_is_not_warned(self):
+        s, t = new_tracker("Triage")
+        run(*t, "new", "T-1", "--title", "One")
+        run(*t, "set", "T-1", "status=in-progress")
+        for title, owner in (("Which store", ""), ("Auth scheme", "coordinator"), ("Queue depth", "T-1")):
+            run(*t, "decide", title, *(["--owner", owner] if owner else []))
+        sid = f"qb{time.monotonic_ns()}"
+        watcher.set_grant(sid, True)
+        session.WATCH_DIR.joinpath(s).mkdir(parents=True, exist_ok=True)
+        store.write_json(watcher.state_path(s, sid), {"who": "session qb", "sid": sid, "pid": os.getpid(),
+                                                      "role": "coordinator"})
+        self.assertEqual(self.warned(s), [])  # triage comes first; the session on T-1 answers its own
+        watcher.set_grant(sid, False)
+        store.write_json(watcher.state_path(s, sid), {"who": "session qb", "sid": sid, "pid": 0, "role": "coordinator",
+                                                      "ended": 1})
+        self.assertEqual([w.split(":")[0] for w in self.warned(s)], ["D-01", "D-02"])  # no coordinator: a human's
+
+    def test_a_closed_decision_is_not_warned(self):
+        s, t = new_tracker("Closed")
+        run(*t, "decide", "Which store", "--resolve", "S3")
+        self.assertEqual(self.warned(s), [])
+
     def test_check_names_a_line_that_is_no_choice(self):
         s, t = new_tracker("Options")
         run(*t, "decide", "Which store", "--option", "Postgres")
@@ -3989,6 +4035,7 @@ class DecisionOptions(unittest.TestCase):
         d.rewrite(d.path.read_text().replace("- Postgres", "- Postgres\nSome prose"))
         errors, _ = contract.check(model.tracker_at(s))
         self.assertTrue(any("D-01 ## Options: 'Some prose' is no choice" in x for x in errors), errors)
+        self.assertEqual(self.warned(s), [])  # its fix would be refused until the line is fixed: the error says it
         before = tree(store.HOME / s)
         self.assertIn("fix it first", run(*t, "decide", "D-1", "--option", "SQLite", "--owner", "Sam", code=2))
         self.assertEqual(tree(store.HOME / s), before)  # refused before it wrote the owner
@@ -4075,7 +4122,10 @@ class Coordinator(unittest.TestCase):
 
     def test_a_restarted_watch_drops_a_role_it_was_not_given(self):
         self.watch("--as", "coordinator")
-        self.watch()
+        again, now = watcher.Watcher(self.tr(), self.sid), time.time()  # the same session, given no role
+        again.claim(now)
+        self.assertNotIn("role", watcher.load_state(self.s, self.sid))  # from its claim on
+        again.release(now)
         self.assertEqual([w["role"] for w in watcher.watches_of(self.tr())], [""])
         self.assertNotIn("role", watcher.load_state(self.s, self.sid))
         self.assertFalse(session.coordinated(self.tr()))

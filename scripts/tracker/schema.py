@@ -514,6 +514,9 @@ DECISION_BAR = (
     "with "
     f"{RESOLVE} when it is answered, including an answer given in chat (a choice made on the spot is one command: "
     f"{DECIDED}). "
+    "A decision a human will answer asks one thing in plain words, lists one option per choice with what it costs, "
+    "recommends one, and keeps detail for agents in its notes; a question that picking one option cannot settle is "
+    "split. "
     "A choice inside one ticket's build (implementation detail, review fix, naming, styling) is not a decision: "
     "it goes in that ticket's Plan, `next` or PR.")
 # A decision's ## Options holds only its choices, one line each, so a UI can offer each one as an answer; what is said

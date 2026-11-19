@@ -20,7 +20,8 @@ from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS
     kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
 from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, event_lines,
     level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
-from .moves import MOVE_RULE
+from .moves import MOVE_RULE, decision_move
+from .session import coordinated
 
 # ---------------------------------------------------------------- check
 
@@ -77,9 +78,12 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             errors.append(f"{t.id}: the tracker spans {len(tr.repos)} repos — set the ticket's repo")
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
+    live = coordinated(tr)
     for d in tr.decisions:
         if not d.closed and idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
+        if not d.closed and decision_move(tr, d, live).human:
+            warnings += unanswerable(d)
     errors += [f"dependency cycle: {' → '.join(c)}" for c in sequence(tr).cycles]
     open_t = [t.id for t in tr.tickets if not t.closed]
     work = tr.meta.get("status")
@@ -97,6 +101,19 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     if tokens > README_TOKEN_BUDGET:
         warnings.append(f"README.md ~{tokens} tokens > {README_TOKEN_BUDGET} limit — move detail to tickets or log")
     return errors, warnings
+
+
+def unanswerable(d: Record) -> list[str]:
+    """A decision a human must answer that does not offer its answer (DECISION_BAR): fewer than two choices, or none
+    recommended; with the command that adds what is missing. None while its ## Options holds a line that is no choice:
+    that is an error first."""
+    options, bad = parse_options(strip_comments(section(d.body, "Options")))
+    few, none = len(options) < 2, not any(o.recommended for o in options)
+    if bad or not (few or none):
+        return []
+    fix = " ".join([*(['--option "<choice> — <cost>"'] if few else []), *(['--recommend "<choice>"'] if none else [])])
+    return [f"{d.id}: a decision for a human needs its choices, each with its cost, and one recommended: "
+            f"`tracker decide {d.id} {fix}`"]
 
 
 def event_problems(tr: Tracker) -> list[str]:
