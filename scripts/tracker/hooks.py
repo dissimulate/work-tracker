@@ -446,7 +446,7 @@ def run_hook(*events: str) -> None:
             try:  # a watch request writes nothing to the tracker: `stop` ends the watch on a newer one too
                 if not (event == "prompt" and watch_request(data)) and not newer_told(data, event):
                     HOOKS[event](data)
-            except NewerFormat as exc:  # it wrote nothing to the tracker; the session's own files go on
+            except NewerFormat as exc:  # the guard stopped the first tracker write; session_activity below still runs
                 tell_newer(data, event, str(exc))
             # A subagent's turn is not the session's, but its wait on the user is.
             asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
