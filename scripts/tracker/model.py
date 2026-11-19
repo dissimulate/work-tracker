@@ -853,9 +853,28 @@ def event_lines(tr: Tracker) -> list[dict | None]:
         return []
 
 
+# Per tracker folder: the event file's size and modified time when `event_lines` last read it, and what it read.
+EVENTS_READ: dict[Path, tuple[tuple[int, int], list[dict | None]]] = {}
+
+
+def cached_event_lines(tr: Tracker) -> list[dict | None]:
+    """`event_lines`, read again only when the file's size or modified time changed: one read per process however
+    many views and tickets ask, also in a watch that runs on. The list is shared: do not change it.
+    ponytail: the whole event file is read when it changes; keep a tail index if a tracker's log outgrows that."""
+    try:
+        st = (tr.root / EVENTS_FILE).stat()
+    except FileNotFoundError:
+        return []
+    key = (st.st_size, st.st_mtime_ns)
+    hit = EVENTS_READ.get(tr.root)
+    if not hit or hit[0] != key:
+        hit = EVENTS_READ[tr.root] = (key, event_lines(tr))
+    return hit[1]
+
+
 def read_events(tr: Tracker, after: int = 0) -> list[dict]:
     """The events numbered past `after`, oldest first; a line that is no event is left out."""
-    return [e for e in event_lines(tr) if e and e["seq"] > after]
+    return [e for e in cached_event_lines(tr) if e and e["seq"] > after]
 
 
 def last_seq(tr: Tracker) -> int:

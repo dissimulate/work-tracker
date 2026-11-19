@@ -18,8 +18,9 @@ from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS
     README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES,
     STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since,
     kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
-from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, event_lines,
-    level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
+from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link,
+    cached_event_lines, level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record,
+    Tracker)
 from .moves import MOVE_RULE, decision_move
 from .session import coordinated
 
@@ -120,7 +121,7 @@ def event_problems(tr: Tracker) -> list[str]:
     """The event file's lines that are no event (`model.event_of`; a half-written line too), and each number that does
     not follow the event before it."""
     out, last = [], 0
-    for n, e in enumerate(event_lines(tr), 1):
+    for n, e in enumerate(cached_event_lines(tr), 1):
         if not e:
             out.append(f"{EVENTS_FILE}:{n}: not an event")
             continue

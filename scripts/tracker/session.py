@@ -8,6 +8,7 @@ import json
 import os
 import re
 import time
+import weakref
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,8 +17,8 @@ from .system import alive, descendants, die, session_id
 from .store import HOME, locked, read_json, write_json, OtherFormat
 from .schema import COORDINATOR, STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
-    put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
-from .moves import whose_move, Move
+    put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
+from .moves import open_items, whose_move, Item, Move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
 
@@ -535,9 +536,33 @@ def coordinated(tr: Tracker) -> bool:
                for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json")))
 
 
+# Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
+# move, and reading the live sessions each time made `tracker data` some eight times slower; a command, a hook or a
+# watch's look reads the tracker once, so it reads them once.
+AROUND: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str]]:
+    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions have under way, and
+    those sessions' names by id, as read once for this Tracker object (AROUND)."""
+    if tr not in AROUND:
+        live = live_sessions(tr.slug)
+        AROUND[tr] = (coordinated(tr), {i for x in live for i in agent_tickets(tr, x.cwd, x.sid)},
+                      {x.sid: x.name for x in live})
+    return AROUND[tr]
+
+
+def items_of(tr: Tracker, now: float | None = None) -> list[Item]:
+    """The tracker's open items at `now` (default: the time now), as `moves.open_items` works them out from the log
+    and who is around (`around`). The log comes from one read per process while the event file does not change
+    (`model.read_events`); the clock applies at each call, so nothing caches a verdict."""
+    return open_items(tr, read_events(tr), time.time() if now is None else now, *around(tr))
+
+
 def move_of(tr: Tracker, t: Record) -> Move | None:
-    """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker: what every view shows."""
-    return whose_move(tr, t, coordinated(tr))
+    """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker and the open items
+    (`items_of`): what every view shows."""
+    return whose_move(tr, t, around(tr)[0], items_of(tr))
 
 
 def ticket_facts(tr: Tracker, t: Record) -> dict:

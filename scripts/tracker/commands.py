@@ -23,7 +23,7 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
     names, put_section, read_events, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short,
     sort_key, tracker_at, unknown_dep, Record, Tracker)
-from .moves import READY, REVIEW_OF, finding_numbers, last_review, last_submission
+from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
     in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
@@ -988,12 +988,8 @@ def cmd_submit(args):
     """Hand a ticket's plan or built code to its reviewer: an event on the ticket, which its move then shows."""
     tr, t = open_ticket(args)
     note = f": {args.note}" if args.note else ""
-    append_event(tr, "submission", f"{t.id} {READY[args.what]}{note}", [t.id], what=args.what)
+    append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
     print(f"submitted {t.id}'s {args.what}")
-
-
-def count(n: int, word: str) -> str:
-    return f"{n} {word}{'s' * (n != 1)}"
 
 
 def cmd_review(args):
@@ -1010,7 +1006,7 @@ def cmd_review(args):
     if args.verdict == "pass" and args.finding:
         die("a finding is a change asked for: use --verdict changes, or leave the finding out")
     tr, t = open_ticket(args)
-    events, name = read_events(tr), REVIEW_OF[args.what]
+    events, name = read_events(tr), HANDED[args.what].review
     if args.fixed is not None:
         review = last_review(events, t.id, args.what) or die(f"{t.id} has no {name} whose findings to mark fixed")
         have = finding_numbers(review)

@@ -473,6 +473,11 @@ STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
+# How long an open item may wait for its reply, in seconds, before it is stuck (`moves.open_items`): a submission for
+# its review, a question for its answer, a wait on a human for its end. These values are still open (the spec "the
+# tracker as the channel", open question 2). The watch's "asks for a permission or an answer" line uses the wait's.
+DEADLINE_S = {"submission": env_int("TRACKER_DEADLINE_SUBMISSION", 1800),
+              "question": env_int("TRACKER_DEADLINE_QUESTION", 1800), "wait": 30}
 
 
 def dated(text: str) -> str:

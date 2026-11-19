@@ -16,7 +16,7 @@ from typing import NamedTuple
 from .system import alive, die, entered_via, env_int
 from .store import files_hash, locked, read_json, write_json
 from .git import forget
-from .schema import COORDINATOR, LIVE_SYNC_S, QUIET_KINDS, STATE_KEEP_DAYS
+from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEEP_DAYS
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
@@ -28,7 +28,7 @@ from .github import SKIPPED, budget, skipped, sync
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
-ASKING_S = 30  # an agent that asks this long gets no answer soon: a prompt the user is at needs no notification
+ASKING_S = DEADLINE_S["wait"]  # an agent that asks this long gets no answer soon: a prompt the user is at needs none
 BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing recorded: it may be stuck
 CHANGE_POLL_S = 1  # `await_change`: how often it looks at the files
 CHANGE_WAIT_S = 15  # when it ends with no change (ui/view.js AT_LEAST_MS): a UI that has gone leaves no process

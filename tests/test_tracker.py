@@ -335,6 +335,49 @@ class Moves(unittest.TestCase):
         m = self.move(False, prs={12: {"merge": "conflict"}})
         self.assertEqual((m.who, m.what, m.human), (moves.YOU, "merge conflicts", False))
 
+    def handed(self, *writes: list[str], prs: dict | None = None) -> tuple[model.Tracker, model.Record]:
+        """A tracker whose T-1 is under way, after these commands; with `prs`, its open PRs and their facts."""
+        s, t = new_tracker("Handed")
+        run(*t, "new", "T-1", "--title", "One")
+        run(*t, "set", "T-1", "status=in-progress")
+        for args in writes:
+            run(*t, *args)
+        tr = model.tracker_at(s)
+        if prs:
+            tr.lookup("T-1").save({"prs": [f"{n}:open" for n in prs]})
+            tr.save_state({**tr.raw_state(), "prs": {f"#{n}": r for n, r in prs.items()}})
+            tr = model.tracker_at(s)
+        return tr, tr.lookup("T-1")
+
+    def handed_move(self, tr: model.Tracker, t: model.Record, coordinated: bool) -> moves.Move:
+        items = moves.open_items(tr, model.read_events(tr), time.time(), coordinated, {"T-1"}, {})
+        return moves.whose_move(tr, t, coordinated, items)
+
+    def test_a_submitted_plan_is_the_reviewers_move(self):
+        tr, t = self.handed(["submit", "T-1", "--what", "plan"])
+        m = self.handed_move(tr, t, True)
+        self.assertEqual((m.who, m.what, m.human, m.mine), ("coordinator", "plan review", False, False))
+        m = self.handed_move(tr, t, False)
+        self.assertEqual((m.who, m.what, m.human), ("human", "plan review", True))
+        tr, t = self.handed(["submit", "T-1", "--what", "code"])
+        self.assertEqual(self.handed_move(tr, t, True).text(), "coordinator: plan conformance check")
+        self.assertEqual(session.move_of(tr, t).text(), "human: plan conformance check")  # no coordinator watches
+
+    def test_open_findings_are_yours(self):
+        tr, t = self.handed(["review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a",
+                             "--finding", "b"])
+        m = self.handed_move(tr, t, True)
+        self.assertEqual((m.who, m.what, m.human), (moves.YOU, "2 findings of the plan review open", False))
+        self.assertEqual(session.move_of(tr, t).text(), "you: 2 findings of the plan review open")
+
+    def test_a_requested_pr_review_still_comes_first(self):
+        tr, t = self.handed(["submit", "T-1", "--what", "code"], prs={12: {"requested": ["rev"]}})
+        self.assertEqual(self.handed_move(tr, t, True).text(), "rev: review requested")
+
+    def test_a_failing_check_still_comes_first(self):
+        tr, t = self.handed(["submit", "T-1", "--what", "code"], prs={12: {"checks": "failing"}})
+        self.assertEqual(self.handed_move(tr, t, True).text(), "you: checks failing")
+
     def test_sync_follows_every_pr_of_a_ticket(self):
         s, t = new_tracker("Work", "a/x")
         run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
@@ -2407,6 +2450,27 @@ class Hooks(unittest.TestCase):
         self.assertEqual((tr.lookup("B-1").get("next"), tr.lookup("B-2").get("next")), ("", "Ship it"))
         self.assertIn("[B-2] Built part 2", (tr.root / "log.md").read_text())
 
+    def test_one_process_reads_the_event_file_once(self):
+        (s, t), work = new_tracker("Once"), repo("feat/once")
+        for i in (1, 2, 3):
+            run(*t, "new", f"O-{i}", "--title", f"Part {i}", "--branch", "feat/once")
+            run(*t, "set", f"O-{i}", "status=in-progress", cwd=work)
+            run(*t, "submit", f"O-{i}", "--what", "plan")
+        m, reads = session.match_cwd(work, tracker=model.tracker_at(s)), []
+        self.assertEqual(len(m.focus), 3)
+        real = model.event_lines
+        model.EVENTS_READ.clear()  # this process's writes read it already
+        counted = mock.patch.object(model, "event_lines", lambda tr: reads.append(tr) or real(tr))
+        with counted:
+            views.brief(m, work)
+            views.brief(m, work)
+        self.assertEqual(len(reads), 1)
+        with store.locked():
+            model.append_event(m.tracker, "note", "A note", [])
+        with counted:
+            views.brief(m, work)
+        self.assertEqual(len(reads), 2)  # the cache follows the file
+
 
 class BriefSize(unittest.TestCase):
     """The brief goes into every session and comes back after each compaction: it says what this work needs, once and
@@ -4271,7 +4335,8 @@ class Coordinator(unittest.TestCase):
 
     def test_the_coordinators_first_summary_knows_its_role(self):
         line = next(x for x in self.watch("--as", "coordinator").splitlines() if "W-1 " in x)
-        self.assertRegex(line, r"^\d\d:\d\d W-1 in-progress · move: coordinator — D-01 open")
+        # The coordinator's question; `!`, as no session is on W-1, which makes it stuck at once (`moves.open_items`)
+        self.assertRegex(line, r"^\d\d:\d\d ! W-1 in-progress · move: coordinator — D-01 open")
         other = f"plain{time.monotonic_ns()}"
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": other}):
             watcher.set_grant(self.sid, False)  # the coordinator has stopped
@@ -4679,6 +4744,165 @@ class HumanWaits(unittest.TestCase):
                     mock.patch.object(hooks, "hook_input", return_value=data_):
                 hooks.run_hook(event)  # a failure would exit
         self.assertEqual([e["kind"] for e in self.waits()], ["human.wait", "human.wait.end"])
+
+
+NOW = 2_000_000_000.0
+
+
+def event(seq: int, kind: str, refs: list[str], age: float = 0, **data) -> dict:
+    """An event as the event file holds it, written `age` seconds before NOW."""
+    return {"seq": seq, "at": time.strftime(schema.TIME_FORMAT, time.gmtime(NOW - age)), "kind": kind,
+            "session": data.pop("session", "s0"), "refs": refs, "text": kind, **data}
+
+
+class OpenItems(unittest.TestCase):
+    """What waits for a reply (a submission, open findings, a question, a wait on a human), whose move each is, and
+    which are stuck: worked out from the log and the clock (`moves.open_items`), never stored."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Open")
+        for ident, status in (("T-1", "in-progress"), ("T-2", "todo"), ("T-3", "done")):
+            run(*self.t, "new", ident, "--title", ident)
+            run(*self.t, "set", ident, f"status={status}")
+        self.tr = model.tracker_at(self.s)
+
+    def items(self, events: list[dict], coordinated: bool = True, on: set | None = None, live: dict | None = None,
+              now: float = NOW) -> list[moves.Item]:
+        return moves.open_items(model.tracker_at(self.s), events, now, coordinated, {"T-1"} if on is None else on,
+                                live or {})
+
+    def keys(self, *args, **kw) -> list[str]:
+        return [i.key for i in self.items(*args, **kw)]
+
+    def test_a_submission_is_open_until_reviewed(self):
+        submitted = [event(1, "submission", ["T-1"], what="plan")]
+        (item,) = self.items(submitted)
+        self.assertEqual((item.kind, item.key, item.refs, item.what, item.at),
+                         ("submission", "submission:1", ["T-1"], "T-1 plan ready for review", NOW))
+        self.assertEqual(self.keys(submitted + [event(2, "review", ["T-1"], what="plan", verdict="pass", of=1)]), [])
+
+    def test_a_second_submission_replaces_the_first(self):
+        twice = [event(1, "submission", ["T-1"], what="code"), event(2, "submission", ["T-1"], what="code")]
+        self.assertEqual(self.keys(twice), ["submission:2"])
+        self.assertEqual(self.keys(twice + [event(3, "review", ["T-1"], what="code", verdict="pass", of=2)]), [])
+
+    def test_a_closed_ticket_has_no_open_submission_or_findings(self):
+        findings = [{"n": 1, "text": "a"}]
+        self.assertEqual(self.keys([event(1, "submission", ["T-3"], what="plan")]), [])
+        self.assertEqual(self.keys([event(1, "review", ["T-3"], what="plan", verdict="changes", findings=findings)]),
+                         [])
+
+    def test_findings_are_open_until_fixed_or_resubmitted(self):
+        review = event(1, "review", ["T-1"], what="plan", verdict="changes", of=0,
+                       findings=[{"n": 1, "text": "a"}, {"n": 2, "text": "b"}])
+        (item,) = self.items([review])
+        self.assertEqual((item.kind, item.key, item.what), ("findings", "findings:1", "T-1: 2 findings of the plan "
+                                                                                       "review open"))
+        one = event(2, "finding.fixed", ["T-1"], what="plan", of=1, findings=[1])
+        self.assertEqual([i.what for i in self.items([review, one])], ["T-1: 1 finding of the plan review open"])
+        self.assertEqual(self.keys([review, one, event(3, "finding.fixed", ["T-1"], what="plan", of=1,
+                                                       findings=[2])]), [])
+        self.assertEqual(self.keys([review, event(2, "finding.fixed", ["T-1"], what="code", of=1, findings=[1, 2])]),
+                         ["findings:1"])  # another kind's fix
+        self.assertEqual(self.keys([review, event(2, "submission", ["T-1"], what="plan")]), ["submission:2"])
+
+    def test_a_wait_is_open_until_its_end(self):
+        wait = event(1, "human.wait", ["T-1"], session="s1", asker="", why="Bash")
+        live = {"s1": "worker"}
+        (item,) = self.items([wait], live=live)
+        self.assertEqual((item.kind, item.key, item.session, item.asker, item.what),
+                         ("wait", "wait:1", "s1", "", "worker waits on a human: Bash"))
+        self.assertEqual(self.keys([wait, event(2, "human.wait.end", ["T-1"], session="s1", asker="", of=0)],
+                                   live=live), ["wait:1"])  # an end of no wait closes nothing
+        self.assertEqual(self.keys([wait, event(2, "human.wait.end", ["T-1"], session="s1", asker="", of=1)],
+                                   live=live), [])
+
+    def test_a_later_wait_from_the_same_asker_replaces_an_earlier_one(self):
+        waits = [event(1, "human.wait", [], session="s1", asker=""), event(2, "human.wait", [], session="s1",
+                                                                          asker="a1"),
+                 event(3, "human.wait", [], session="s1", asker="")]
+        self.assertEqual(sorted(self.keys(waits, live={"s1": "worker"})), ["wait:2", "wait:3"])
+
+    def test_a_wait_of_a_session_that_is_gone_is_not_open(self):
+        self.assertEqual(self.keys([event(1, "human.wait", [], session="s1", asker="")], live={}), [])
+
+    def test_an_open_decision_is_a_question(self):
+        run(*self.t, "decide", "Which store", "--refs", "T-1")
+        (item,) = self.items([], now=time.time())
+        self.assertEqual((item.kind, item.key, item.refs, item.what), ("question", "question:D-01", ["T-1"],
+                                                                       "D-01 open"))
+        self.assertEqual(item.move.text(), "coordinator: D-01 open")
+
+    def test_moves(self):
+        live = {"s1": "worker"}
+        events = [event(1, "submission", ["T-1"], what="plan"),
+                  event(2, "review", ["T-2"], what="code", verdict="changes", findings=[{"n": 1, "text": "a"}]),
+                  event(3, "human.wait", [], session="s1", asker="")]
+        got = {i.kind: i.move for i in self.items(events, live=live)}
+        self.assertEqual(got["submission"].text(), "coordinator: plan review")
+        self.assertEqual(got["findings"].text(), "you: 1 finding of the plan conformance check open")
+        self.assertTrue(got["wait"].human)
+        self.assertEqual(got["wait"].who, "human")
+        alone = {i.kind: i.move for i in self.items(events, coordinated=False, live=live)}
+        self.assertEqual((alone["submission"].who, alone["submission"].human), ("human", True))
+
+    def test_a_reply_not_given_in_time_is_stuck_and_a_humans(self):
+        (item,) = self.items([event(1, "submission", ["T-1"], 1801, what="plan")])
+        self.assertTrue(item.stuck)
+        self.assertTrue(item.move.human)
+        self.assertEqual(item.what, "coordinator has not reviewed T-1's plan for 30 min")
+        (item,) = self.items([event(1, "submission", ["T-1"], 1800, what="plan")])
+        self.assertEqual((item.stuck, item.move.human), (False, False))
+        run(*self.t, "decide", "Which store", "--refs", "T-1")
+        created = schema.utc_seconds(model.tracker_at(self.s).lookup("D-01").get("created_at"))
+        (item,) = self.items([], now=created + 1801)
+        self.assertEqual((item.stuck, item.move.human, item.what),
+                         (True, True, "coordinator has not answered D-01 for 30 min"))
+
+    def coordinator(self) -> None:
+        """A coordinator's watch of the tracker, running now."""
+        path = watcher.state_path(self.s, "qb")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        store.write_json(path, {"who": "session qb", "sid": "qb", "pid": os.getpid(), "role": "coordinator"})
+        self.addCleanup(path.unlink)
+
+    def test_a_stuck_question_is_a_humans_wherever_it_shows(self):
+        run(*self.t, "decide", "Which store", "--blocks", "T-1")
+        self.coordinator()
+        self.assertTrue(session.coordinated(model.tracker_at(self.s)))
+        got = data(self.s)  # no session is on T-1, which is under way: stuck at once
+        self.assertEqual(got["records"]["D-01"]["move"], got["records"]["T-1"]["move"])
+        self.assertEqual((got["records"]["D-01"]["move"]["text"], got["records"]["D-01"]["move"]["human"]),
+                         ("coordinator: D-01 open", True))
+
+    def test_a_humans_own_question_is_never_stuck(self):
+        run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")
+        (item,) = self.items([], now=time.time() + 2 * 86400, on=set())
+        self.assertEqual((item.stuck, item.move.who, item.what), (False, "Sam", "D-01 open"))
+
+    def test_a_wait_is_stuck_after_30_s(self):
+        live = {"s1": "worker"}
+        (item,) = self.items([event(1, "human.wait", [], 31, session="s1", asker="")], live=live)
+        self.assertEqual((item.stuck, item.what), (True, "worker has waited on a human for 31 s"))
+        (item,) = self.items([event(1, "human.wait", [], 30, session="s1", asker="")], live=live)
+        self.assertFalse(item.stuck)
+
+    def test_a_ticket_under_way_with_nobody_on_it_is_stuck_at_once(self):
+        fresh = [event(1, "submission", ["T-1"], what="plan")]
+        (item,) = self.items(fresh, on=set())
+        self.assertEqual((item.stuck, item.move.human), (True, True))
+        self.assertEqual(item.what, "T-1 plan ready for review, and no session is on T-1")
+        self.assertFalse(self.items(fresh, on={"T-1"})[0].stuck)
+
+    def test_a_ticket_not_started_is_not_stuck(self):
+        (item,) = self.items([event(1, "submission", ["T-2"], what="plan")], on=set())
+        self.assertFalse(item.stuck)
+
+    def test_stuck_first_then_oldest(self):
+        live = {"s1": "worker"}
+        events = [event(1, "submission", ["T-1"], 600, what="plan"), event(2, "submission", ["T-2"], 900, what="code"),
+                  event(3, "human.wait", [], 40, session="s1", asker="")]
+        self.assertEqual(self.keys(events, live=live), ["wait:3", "submission:2", "submission:1"])
 
 
 if __name__ == "__main__":
