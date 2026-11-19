@@ -381,9 +381,10 @@ HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": 
          "waiting": lambda data: None, "resumed": lambda data: None, "stop-failure": lambda data: None}
 
 
-# The handlers whose event can tell the model, and that event as emit_context names it.
+# The handlers whose event can tell the session's model, and that event as emit_context names it: not SubagentStart,
+# whose text reaches the subagent (`tell_newer`).
 CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit", "post-bash": "PostToolUse",
-                  "answered": "PostToolUse", "subagent-start": "SubagentStart"}
+                  "answered": "PostToolUse"}
 
 
 # What the model does on a tracker that takes no write from this code, after `contract.newer_format`'s sentence. A

@@ -1379,6 +1379,18 @@ class NewerFormat(unittest.TestCase):
         self.assertIn(f"TRACKER_SESSION={sid} {ROOT}/bin/tracker", compacted["additionalContext"])  # reads need it
         self.assertIsNone(hook("prompt", sid, work, env=env, prompt="again"))  # once per context
 
+    def test_a_subagent_start_leaves_the_telling_to_the_session(self):
+        s, _ = self.tracker()
+        sid, work = self.sid(), repo("feat/N-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        self.newer(s)
+        for extra in ({"agent_id": "a1"}, {}):  # a host that names no agent_id too
+            with self.subTest(**extra):
+                helper = said(hook("subagent-start", sid, work, **extra))
+                self.assertIn("do not write it", helper)  # it reads the tracker, as on any other
+                self.assertNotIn(self.why(s), helper)
+        self.assertEqual(hook("prompt", sid, work, prompt="go")["systemMessage"], f"[work-tracker] {self.why(s)}.")
+
     def test_watch_stop_ends_the_watch_at_once(self):
         s, _ = self.tracker()
         sid, work = self.sid(), repo("feat/N-1")
