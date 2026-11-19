@@ -5255,9 +5255,13 @@ class CitedWord(unittest.TestCase):
                "answers": {"Which store for the app?": "SQLite", "Which queue?": "SQS"}}
         tool("AskUserQuestion", self.sid, self.work, tool_input=two, tool_response=two)
         self.assertEqual(self.words()[-1]["excerpt"], "SQLite; SQS")
-        for response in ({}, {"tool_response": "Postgres"}, {"tool_response": {"answers": ["Postgres"]}}):
-            with self.subTest(response=response):  # another host's question tool: nothing to keep
-                tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, **response)
+        for name, response in (("AskUserQuestion", {}), ("AskUserQuestion", {"tool_response": "Postgres"}),
+                               ("AskUserQuestion", {"tool_response": {"answers": ["Postgres"]}}),
+                               ("AskUserQuestion", {"tool_response": {"answers": {"Store?": {"answers": ["Kafka"]}}}}),
+                               ("request_user_input", {"tool_response": {"answers": {"db": {"answers": ["Kafka"]}}}}),
+                               ("request_user_input", {"tool_response": {"answers": {"db": "Kafka"}}})):
+            with self.subTest(name=name, response=response):  # another shape, another host's tool: nothing to keep
+                tool(name, self.sid, self.work, tool_input=self.STORE, **response)
                 self.assertEqual(len(self.words()), 2)
 
     def test_a_slash_command_is_no_word(self):

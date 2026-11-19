@@ -389,7 +389,7 @@ def hook_answered(data: dict) -> None:
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
     cwd, sid = where(data)
-    kept = keep_word(sid, answer_text(data.get("tool_response")))
+    kept = keep_word(sid, answer_text(data))
     if match_cwd(cwd, sid):
         ask = (f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, or {DECIDED} for "
                "one made on the spot.")
@@ -397,11 +397,16 @@ def hook_answered(data: dict) -> None:
         emit_context("PostToolUse", ask if kept else ask.replace(f" {CITE}", ""))
 
 
-def answer_text(response) -> str:
-    """The human's answers in a question tool's result, joined by "; ", never the questions: Claude Code's
-    AskUserQuestion gives them as `answers`, question to answer. "" for another shape (another host's tool)."""
+def answer_text(data: dict) -> str:
+    """The human's answers in Claude Code's AskUserQuestion result, joined by "; ", never the questions: its
+    `answers` maps each question to its answer's text. "" for another shape, or another host's tool, whose result
+    this code has not seen."""
+    response = data.get("tool_response")
     answers = response.get("answers") if isinstance(response, dict) else None
-    return "; ".join(map(str, answers.values())) if isinstance(answers, dict) else ""
+    if data.get("tool_name") != "AskUserQuestion" or not isinstance(answers, dict):
+        return ""
+    texts = list(answers.values())
+    return "; ".join(texts) if all(isinstance(x, str) for x in texts) else ""
 
 
 def hook_subagent_start(data: dict) -> None:
