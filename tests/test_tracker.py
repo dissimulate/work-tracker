@@ -2919,6 +2919,29 @@ class SessionNews(unittest.TestCase):
         run(*self.t, "log", "--ref", "T-1", "from a terminal")
         self.assertIn("T-1: from a terminal", self.told())
 
+    def test_news_survives_a_ticket_of_mine_closing(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_a("start", self.s)  # on T-1 and T-3
+        self.told()
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")  # A's focus is now T-1 alone
+        told = self.told()
+        self.assertIn("T-3 is now done", told)
+        self.assertIn("T-1: base branch moved", told)
+
+    def test_news_survives_another_ticket_starting_on_my_branch(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        self.told()
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.as_b(*self.t, "log", "--ref", "T-3", "before it started")
+        run(*self.t, "set", "T-3", "status=in-progress")  # A's focus is now T-1 and T-3
+        told = self.told()
+        self.assertIn("T-1: base branch moved", told)
+        self.assertNotIn("before it started", told)  # a ticket new to A starts from now
+        self.as_b(*self.t, "log", "--ref", "T-3", "after it started")
+        self.assertIn("T-3: after it started", self.told())
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.told()
         file = store.HOME / self.s / schema.EVENTS_FILE
@@ -4718,6 +4741,16 @@ class MineWatch(unittest.TestCase):
         self.assertEqual(self.texts(self.look(w)), ["T-2: about two"])
         self.as_b(*self.t, "log", "--ref", "T-1", "about one")
         self.assertEqual(self.look(w), [])
+
+    def test_a_note_survives_a_ticket_of_mine_closing(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_a("start", self.s)  # on T-1 and T-3
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")
+        self.assertEqual(sorted(self.texts(self.look(w))), ["T-1: base branch moved", "T-3 is now done"])
 
     def ended(self, out: str) -> list[str]:
         return [x for x in out.splitlines()

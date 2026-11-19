@@ -370,7 +370,7 @@ def hook_prompt(data: dict) -> None:
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
-    ids = [t.id for t in m.focus]
+    ids = [t.id for t in m.focus] or entry.get("seen_for") or []  # with none open now, the ones that just ended
     told = news(sid, m)
     fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []

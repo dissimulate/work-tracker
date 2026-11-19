@@ -767,35 +767,35 @@ NEWS_MAX = 5  # events a session's news names; the older ones as a count
 GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, whichever session's sync read it
 
 
-def news(sid: str, m: Match, tickets: list[Record] | None = None) -> list[str]:
-    """What the session has not been told yet about its tickets (`tickets`, default `m.focus`), one line each, and now
-    counts as told: what `changes_since` finds since the baseline (`seen`), then each event on those tickets since
-    `seen_seq` that another session, a terminal or GitHub wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX. A session
-    whose tickets changed since its baseline, or that has no `seen_seq` yet, gets none: its baseline starts from now.
-    The prompt hook and the session's own watch (`tracker watch --mine`) both call it, against the one baseline it
-    saves, so each thing is told once, by whichever comes first."""
-    tickets = m.focus if tickets is None else tickets
-    ids = [t.id for t in tickets]
+def news(sid: str, m: Match) -> list[str]:
+    """What the session has not been told yet about its tickets, one line each, and now counts as told: of the tickets
+    its baseline was taken for (`seen_for`, set by the brief and by each call), what `changes_since` finds since then
+    (`seen`), and each event on them since `seen_seq` that another session, a terminal or GitHub wrote (not of
+    NEWS_LEFT_OUT), the newest NEWS_MAX. A ticket that left the session's focus (it closed) is told of this once more;
+    one that joined it starts from now. The baseline then becomes `m.focus` now. A session with no `seen_seq` yet gets
+    no event lines: its event baseline starts from now. The prompt hook and the session's own watch (`tracker watch
+    --mine`) both call it, so each thing is told once, by whichever comes first."""
+    tr, ids = m.tracker, [t.id for t in m.focus]
     with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
         entry = load_session(sid)
-        now, last = watch(m.tracker, tickets), last_seq(m.tracker)
-        same = bool(ids) and entry.get("seen_for") == ids
-        lines = changes_since(m.tracker, entry["seen"], now) if same else []
-        base = entry.get("seen_seq")
-        if same and type(base) is int:
+        was = [t for t in map(tr.lookup, entry.get("seen_for") or []) if t and t.kind == "ticket"]
+        known = [t.id for t in was]
+        lines = changes_since(tr, entry.get("seen") or {}, watch(tr, was))
+        base, last = entry.get("seen_seq"), last_seq(tr)
+        if type(base) is int:
             # An event file shorter than the baseline (restored from a backup) numbers its new events again: what it
             # holds now counts as told, as the watch does.
-            told = [(next(i for i in e["refs"] if i in ids), e) for e in read_events(m.tracker, min(base, last))
-                    if e["kind"] not in NEWS_LEFT_OUT and any(i in ids for i in e["refs"])
-                    and (e["kind"] in GITHUB_KINDS or e.get("session") != sid)]
-            cut = told[:-NEWS_MAX]
+            fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))
+                     if e["kind"] not in NEWS_LEFT_OUT and any(i in known for i in e["refs"])
+                     and (e["kind"] in GITHUB_KINDS or e.get("session") != sid)]
+            cut = dict(fresh[:-NEWS_MAX])
             if cut:
-                first = next(i for i in ids if any(i == key for key, _ in cut))
-                lines.append(f"(+{len(cut)} earlier: `tracker history --ref {first}`)")
-            for key, e in told[-NEWS_MAX:]:
+                lines.append(f"(+{len(fresh) - NEWS_MAX} earlier: `tracker history --ref "
+                             f"{next(i for i in known if i in cut)}`)")
+            for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
                 lines.append(text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}")
-        save_session(sid, seen=now, seen_for=ids, seen_seq=last)
+        save_session(sid, seen=watch(tr, m.focus), seen_for=ids, seen_seq=last)
     return lines
 
 

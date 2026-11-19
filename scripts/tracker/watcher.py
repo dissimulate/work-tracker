@@ -488,10 +488,8 @@ class Watcher:
         entry = load_session(self.sid)
         m = match_cwd(entry.get("cwd") or work_dir(), self.sid, tr)
         if not m.active:
-            self.ended = True
-            # A closed ticket is in no Match's focus: tell of the tickets the session was last told of.
-            told = [t for t in map(tr.lookup, entry.get("seen_for") or []) if t and t.kind == "ticket"]
-            return [Event("log", "", False, x) for x in news(self.sid, m, told)]
+            self.ended = True  # at once, with the news of the ticket that ended: `news` tells it before the end
+            return [Event("log", "", False, x) for x in news(self.sid, m)]
         if not settled:
             return []
         self.sig, self.changed = sig, 0.0
