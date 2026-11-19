@@ -235,7 +235,7 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         *(line for kind in KINDS for line in files(kind)),
         f"  {EVENTS_FILE}: the log, one event per line in JSON with its time, kind, session and plugin version. Only "
         "the tool writes it: each write logs what the history needs; `tracker log` adds a note no other write holds. "
-        "The hooks add the branch's new commits (`" + LOG["commits"].text(branch="<branch>", commits="...")
+        "The hooks add the branch's new commits (`" + LOG["commits"].format(branch="<branch>", commits="...")
         + "`), `step --pause` the handoff's first words.",
         "  log.md: the log for people, one dated line per event, written with it. Editing it changes nothing the views "
         "show.",

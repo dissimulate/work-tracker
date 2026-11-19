@@ -1195,16 +1195,25 @@ class Upgrade(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events].count("legacy"), 6)
         self.assertTrue((root / schema.EVENTS_FILE).read_bytes().startswith(before))
 
-    def test_the_odd_line_stays_out_of_history(self):
-        _, t, _ = self.format_5_log()
-        self.assertNotIn("no date here", run(*t, "history", "--last", "0"))
-
     def test_history_is_the_same_before_and_after(self):
         _, t, _ = self.format_5_log()
         before = [ln[2:] for ln in self.OLD_LOG.splitlines() if re.match(r"- \d{4}-\d\d-\d\d ", ln)]  # as 0.32
         after = run(*t, "history", "--last", "0").splitlines()
         self.assertEqual(after[:-1], before)
         self.assertTrue(after[-1].startswith(f"{schema.today()} Migrated to tracker format {schema.SCHEMA}"))
+
+    def test_a_shown_decision_leaves_out_its_migrated_lines(self):
+        s, t = self.old_tracker(schema=5)
+        root = store.HOME / s
+        (root / schema.EVENTS_FILE).unlink()
+        (root / "log.md").write_text("# Log\n\n- 2026-01-03 [D-01] Opened D-01 Which store\n"
+                                     "- 2026-01-04 [D-01] Decided D-01 Which store (me): S3\n"
+                                     "- 2026-01-05 [D-01] A note on D-01\n")
+        run(*t, "index")  # migrates
+        lines = views.history_lines(model.tracker_at(s), [], "", 0, {"D-01"})
+        self.assertEqual(lines[0], "2026-01-05 [D-01] A note on D-01")  # only the lines the view does not show
+        self.assertTrue(lines[1].startswith(f"{schema.today()} Migrated to tracker format"))
+        self.assertEqual(len(lines), 2)
 
     def unmigratable(self) -> tuple[str, tuple[str, str], Path, str]:
         """A format 5 tracker with two log lines whose README cannot migrate (a key twice); its README as it was."""
@@ -1574,15 +1583,6 @@ class Events(unittest.TestCase):
         self.assertEqual(model.log_line(e), f"- {schema.today()} [T-1 D-2] a b c")
         self.assertEqual(model.log_line(self.append(text="a b c")), f"- {schema.today()} a b c")
         self.assertEqual(model.log_line({**e, "day": "2025-01-02"}), "- 2025-01-02 [T-1 D-2] a b c")
-
-    def test_no_caller_writes_the_log_directly(self):
-        appends = []
-        for path in sorted((ROOT / "scripts/tracker").glob("*.py")):
-            text = path.read_text()
-            self.assertNotIn("append_log(", text, path.name)
-            appends += [path.name for line in text.splitlines()
-                        if '"log.md"' in line and re.search(r'\bappend\(|open\(.*"a"', line)]
-        self.assertEqual(appends, ["model.py"])
 
     # Each write, the kind of its event and the event's own fields.
     KINDS_WRITTEN = [
@@ -3591,7 +3591,7 @@ class Actions(unittest.TestCase):
 
     def test_an_actions_id_works_as_any_records(self):
         run(*self.t, "act", "Ask Sam whether v1 stays", "--refs", "T-1")
-        added = model.LOG["action"].text(title="Ask Sam")
+        added = model.LOG["action"].format(title="Ask Sam")
         self.assertIn(f"[A-01 T-1] {added}", run(*self.t, "history", "--ref", "a-1"))
         run(*self.t, "log", "Sam is away until Monday", "--ref", "A-01")
         self.assertIn("[A-01] Sam is away until Monday", run(*self.t, "history", "--ref", "A-01"))

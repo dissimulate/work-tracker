@@ -340,8 +340,8 @@ def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> s
     who = f" ({by})" if by else ""
     rec.change(rec.status_update("closed"))
     append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_event(tr, "decision.decided", LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who,
-                                                             answer=short(answer)),
+    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=who,
+                                                               answer=short(answer)),
                  [rec.id, *tr.touched_by(rec)], decision=rec.id)
     return f"{rec.id} closed"
 
@@ -774,7 +774,7 @@ def cmd_decide(args):
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)
-        append_event(tr, "decision.opened", LOG["opened"].text(id=d.id, title=args.target)
+        append_event(tr, "decision.opened", LOG["opened"].format(id=d.id, title=args.target)
                      + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id)
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
@@ -821,7 +821,7 @@ def cmd_act(args):
     a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
     append_notes(a, notes)
     newly = block_tickets(tr, a.id, blocks)
-    append_event(tr, "action.added", LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
+    append_event(tr, "action.added", LOG["action"].format(title=args.target) + (f" (due {due})" if due else "")
                  + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly], action=a.id)
     print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
 

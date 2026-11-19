@@ -807,11 +807,9 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
     """Record a change as the next event of the tracker's event file (EVENTS_FILE), then as its line in log.md, and
-    return it: its number, the time in UTC, its kind (one of EVENTS), the session and plugin version that wrote it,
-    its repo, the records it concerns (`refs`), the text on one line, then `data`, the kind's own fields. The repo is
-    the first ticket's in `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number
-    is one past the file's last, so two writers at once would share it. ValueError for a kind not in EVENTS, or
-    `data` that names a field above."""
+    return it; `data` holds the kind's own fields. The repo is the first ticket's in `refs`, else the tracker's only
+    one, else "". The caller holds `store.locked()`: the number is one past the file's last, so two writers at once
+    would share it. ValueError for a kind not in EVENTS, or `data` that names an event's own field."""
     if kind not in EVENTS:
         raise ValueError(f"no event kind {kind!r} (EVENTS)")
     ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
@@ -904,20 +902,11 @@ def log_line(e: dict) -> str:
     return f"- {event_day(e)}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
 
 
-@dataclass(frozen=True)
-class LogForm:
-    """A log text from a template, which `text` fills in. A writer may add more after it."""
-    template: str
-
-    def text(self, **fields) -> str:
-        return self.template.format(**fields)
-
-
-LOG = {
-    "opened": LogForm("Opened {id} {title}"),
-    "decided": LogForm("Decided {id} {title}{who}: {answer}"),
-    "action": LogForm("Action for the user: {title}"),
-    "commits": LogForm("Commits on {branch}: {commits}"),
+LOG = {  # log texts to fill in with str.format; a writer may add more after one
+    "opened": "Opened {id} {title}",
+    "decided": "Decided {id} {title}{who}: {answer}",
+    "action": "Action for the user: {title}",
+    "commits": "Commits on {branch}: {commits}",
 }
 COMMITS_LOGGED_MAX = 8  # the commits a log line names; the rest as a count
 
@@ -926,7 +915,7 @@ def commits_text(branch: str, commits: list[tuple[str, str]]) -> str:
     """`Commits on <branch>: <sha> <subject>; ...; and 3 more`."""
     shown = "; ".join(f"{sha} {subject}" for sha, subject in commits[:COMMITS_LOGGED_MAX])
     more = f"; and {len(commits) - COMMITS_LOGGED_MAX} more" if len(commits) > COMMITS_LOGGED_MAX else ""
-    return LOG["commits"].text(branch=branch, commits=shown + more)
+    return LOG["commits"].format(branch=branch, commits=shown + more)
 
 
 PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}

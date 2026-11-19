@@ -177,9 +177,8 @@ KEYS = {
     },
 }
 SCHEMA = 6  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
-# The log's one home: one event per line, as JSON (`model.append_event`); log.md is its rendering for people. Each
-# event has a kind, here with what it means and its own fields. The list is versioned by SCHEMA: a new kind is a
-# format change, as an older version would not know it.
+# The kinds of event (`model.append_event`), each with what it means and its own fields. The list is versioned by
+# SCHEMA: a new kind is a format change, as an older version would not know it.
 EVENTS_FILE = "events.jsonl"
 EVENTS = {
     "note": "a note `tracker log` adds",
