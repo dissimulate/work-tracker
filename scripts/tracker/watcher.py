@@ -133,10 +133,10 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
 def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", sid: str = "") -> list[Event]:
     """One per new event of the log (`model.read_events`), keyed by the first record it names; the commits the hooks
     logged, as a count. A new action for the user needs them, and so does a question opened or changed while still
-    open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's, so a
-    worker's question reaches it at once. A question the watching session (`sid`) wrote itself is news to no one.
-    With no `tr`, no decision is looked up. A legacy event is the log from before the event file, which a migration
-    writes all at once: none is new."""
+    open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's that
+    another session wrote (`sid`: the watch's own), so a worker's question reaches it at once (`asks`). With no `tr`,
+    no decision is looked up. A legacy event is the log from before the event file, which a migration writes all at
+    once: none is new."""
     out, commits = [], {}
     live = coordinated(tr) if tr else False
     for e in events:
@@ -146,19 +146,21 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
         if e["kind"] == "commits":
             commits[key] = commits.get(key, 0) + e["count"]
         else:
-            ask = asks(tr, e, live, role) and not (sid and e.get("session") == sid)
-            out.append(Event("log", key, e["kind"] == "action.added" or ask, short(e["text"], 120)))
+            out.append(Event("log", key, e["kind"] == "action.added" or asks(tr, e, live, role, sid),
+                             short(e["text"], 120)))
     return out + [Event("log", key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
 
 
-def asks(tr: Tracker | None, e: dict, live: bool, role: str) -> bool:
+def asks(tr: Tracker | None, e: dict, live: bool, role: str, sid: str = "") -> bool:
     """A question opened or changed (the event `e`) that is still open, and whose move (`decision_move`; `live`: a
-    coordinator watches) is a human's, or the coordinator's to the coordinator's own watch (`role`)."""
+    coordinator watches) is a human's, or the coordinator's to the coordinator's own watch (`role`) when another
+    session (not `sid`, the watch's own) wrote it: its own triage is no news to it."""
     d = tr.lookup(str(e.get("decision") or "")) if tr and e["kind"] in ("decision.opened", "decision.updated") else None
     if not d or d.kind != "decision" or d.closed:
         return False
     move = decision_move(tr, d, live)
-    return move.human or role == COORDINATOR and move.who == COORDINATOR
+    own = bool(sid) and e.get("session") == sid  # a terminal's watch has no session: nothing is its own
+    return move.human or (role == COORDINATOR and move.who == COORDINATOR and not own)
 
 
 def agent_tickets(tr: Tracker, x: Live) -> list[str]:

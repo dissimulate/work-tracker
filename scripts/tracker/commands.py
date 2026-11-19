@@ -780,6 +780,9 @@ def cmd_decide(args):
     if (args.by or args.source) and not args.resolve:
         die("--by and --source say who settled it: pass them with --resolve")
     settled = who_settled(args.by, args.source) if args.resolve else ("", {})
+    owner = resolution_who(args.owner)  # the view answers as the owner it names (`--by`)
+    if owner is None:
+        die('--owner takes no ": " or ")": the view gives the owner as who decided, in "<day> (<who>): <answer>"')
     refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
@@ -787,8 +790,12 @@ def cmd_decide(args):
     pick = choice(args.recommend) if args.recommend else None
     d = existing(tr, "decision", args.target)
     if d:
-        owner = args.owner if args.owner and args.owner != str(d.get("owner") or "") else ""
-        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or owner or args.question):
+        others = args.note or given or pick or args.resolve or refs or unrefs or blocks or args.question
+        if owner and owner == str(d.get("owner") or "").strip():
+            if not others:
+                die(f"{d.id}'s owner is {owner} already")
+            owner = ""  # no change to write or log
+        if not (others or owner):
             die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
                 "or --question")
         if given or pick:
@@ -813,7 +820,7 @@ def cmd_decide(args):
     if unrefs:
         die("--unref changes an existing decision; pass its D-id")
     refuse_similar(tr, "decision", args.target, args.force)
-    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
+    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=owner)
     append_to_section(d, "Question", args.question or args.target)
     if given or pick:
         add_choices(d, given, pick)
@@ -826,7 +833,7 @@ def cmd_decide(args):
         newly = block_tickets(tr, d.id, blocks)
         append_event(tr, "decision.opened", LOG["opened"].format(id=d.id, title=args.target)
                      + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id,
-                     **({"owner": args.owner} if args.owner else {}))
+                     **({"owner": owner} if owner else {}))
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 

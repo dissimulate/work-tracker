@@ -3308,6 +3308,15 @@ class Watch(unittest.TestCase):
         own = [{**e, "session": "qb"} if e["kind"] == "decision.updated" else e for e in events]
         self.assertEqual([e.urgent for e in watcher.log_events(own, tr, "coordinator", "qb")], [True, False])
 
+    def test_a_question_for_a_human_is_urgent_to_the_session_that_wrote_it(self):
+        self.coordinator()
+        run(*self.t, "decide", "Pick a store", "--owner", "Kim")  # passed to a person, by the coordinator itself
+        events = [{**e, "session": "qb"} for e in model.read_events(model.Tracker(self.root))
+                  if e.get("decision") == "D-01"]
+        tr = model.Tracker(self.root)
+        for role in ("coordinator", ""):
+            self.assertEqual([e.urgent for e in watcher.log_events(events, tr, role, "qb")], [True])
+
     def test_a_settled_question_is_not_urgent(self):
         events = self.opened()
         run(*self.t, "decide", "D-1", "--resolve", "S3")
@@ -4092,7 +4101,8 @@ class Coordinator(unittest.TestCase):
         try:
             watcher.state_path(self.s, self.sid).parent.mkdir(parents=True, exist_ok=True)
             store.write_json(watcher.state_path(self.s, self.sid), {"who": "session co", "sid": self.sid,
-                                                                    "pid": other.pid, "role": "coordinator"})
+                                                                    "pid": other.pid, "role": "coordinator",
+                                                                    "ended": time.time()})
             self.watch(code=watcher.REFUSED)  # watched already: its first watch runs on
             self.assertFalse(watcher.granted(self.sid))
         finally:
@@ -4153,7 +4163,7 @@ class Coordinator(unittest.TestCase):
                                 ("W-2", "user", "W-2's session: D-01 open"), ("W-3", "user", "human: D-01 open"),
                                 ("Sam (PM)", "user", "Sam (PM): D-01 open"), ("Sam", "Sam", "Sam: D-01 open")):
             with self.subTest(owner=owner):
-                run(*self.t, "decide", "D-1", "--owner", owner)
+                model.tracker_at(self.s).lookup("D-01").save({"owner": owner})  # "Sam (PM)": `decide` refuses it
                 d = data(self.s)["records"]["D-01"]
                 self.assertEqual(d["answer"]["by"], by)
                 self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, owner != "W-2"))
@@ -4166,9 +4176,16 @@ class Coordinator(unittest.TestCase):
         updated = [e for e in model.read_events(self.tr()) if e["kind"] == "decision.updated"]
         self.assertEqual([(e["owner"], e["text"]) for e in updated], [("Sam", "Updated D-01: owner Sam")])
         before = tree(store.HOME / self.s)
-        self.assertIn("nothing to change", run(*self.t, "decide", "D-1", "--owner", "Sam", code=2))
+        for same in ("Sam", " Sam "):
+            self.assertIn("D-01's owner is Sam already", run(*self.t, "decide", "D-1", "--owner", same, code=2))
+        for bad in ("Sam (PM)", "Sam: PM"):  # the view answers as the owner: `--by` must hold it
+            self.assertIn('--owner takes no ": " or ")"', run(*self.t, "decide", "D-1", "--owner", bad, code=2))
+            self.assertIn('--owner takes no ": " or ")"', run(*self.t, "decide", "New one", "--owner", bad, code=2))
         self.assertEqual(tree(store.HOME / self.s), before)
         self.assertEqual(len([e for e in model.read_events(self.tr()) if e["kind"] == "decision.updated"]), 1)
+        run(*self.t, "decide", "D-1", "--owner", "Sam", "--note", "asked")
+        self.assertEqual(model.read_events(self.tr())[-1]["text"], "Updated D-01: asked")  # the owner did not change
+        self.assertNotIn("owner", model.read_events(self.tr())[-1])
         run(*self.t, "decide", "Which queue", "--owner", "Kim")
         self.assertEqual(model.read_events(self.tr())[-1]["owner"], "Kim")
         before = tree(store.HOME / self.s)  # one way to pass it on, and it is logged
