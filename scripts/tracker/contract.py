@@ -46,9 +46,11 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         warnings.append("README.md: issue_updates is on, but .state.json has no record of what its issues show, so "
                         "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
                         "so far count as written, and each linked ticket out of todo is due once for its status")
-    if tr.schema < SCHEMA:
+    if tr.schema < SCHEMA:  # a README with problems stops `upgrade` before it can raise
+        why = ("its README errors say why" if tr.readme_problems else
+               "the next command tries again, and says why on stderr")
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate, so "
-                        f"nothing writes to it — the next command tries again, and says why on stderr")
+                        f"nothing writes to it — {why}")
     elif tr.schema > SCHEMA:
         errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
                       f"plugin")
@@ -502,9 +504,11 @@ def other_format(root: Path) -> str:
                 f"this one writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the "
                 "session")
     if tr.schema < SCHEMA and tr.readme.path.exists():
+        fix = (f"`tracker check --tracker {root.name}` says what is wrong in its README.md, which the user, not an "
+               "agent, fixes by hand" if tr.readme_problems else
+               f"run `tracker check --tracker {root.name}` and fix what it reports")
         return (f"{root.name} could not be brought to this version's tracker format (it is in format {tr.schema}; "
-                f"this one writes {SCHEMA}), so this one writes nothing to it: run `tracker check --tracker "
-                f"{root.name}` and fix what it reports")
+                f"this one writes {SCHEMA}), so this one writes nothing to it: {fix}")
     return ""
 
 

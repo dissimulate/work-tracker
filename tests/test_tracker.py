@@ -1094,7 +1094,8 @@ class Upgrade(unittest.TestCase):
 
         with mock.patch.object(contract, "migrate", fails_on_one):
             said = run("list")
-            self.assertIn("it could not migrate", run(*t, "check"))
+            self.assertIn("it could not migrate, so nothing writes to it — the next command tries again, and says "
+                          "why on stderr", run(*t, "check"))  # this one did, before its report
         self.assertIn("Old", said)
         self.assertIn(f"could not migrate {s} to format {schema.SCHEMA}: disk full", said)
         self.assertEqual(model.tracker_at(healthy).schema, schema.SCHEMA)
@@ -1231,7 +1232,10 @@ class Upgrade(unittest.TestCase):
         said = run(*t, "log", "A note", code=watcher.REFUSED)
         self.assertRegex(said, rf"\Atracker: {s} {OLDER}[^\n]*`tracker check --tracker {s}`[^\n]*\n\Z")
         self.assertEqual(tree(root), before)  # no event
-        self.assertIn("appears twice", run(*t, "check", code=1))  # what the refusal says to run reports it
+        report = run(*t, "check", code=1)  # what the refusal says to run reports it
+        self.assertIn("appears twice", report)
+        self.assertIn("it could not migrate, so nothing writes to it — its README errors say why", report)
+        self.assertNotIn("stderr", report)  # a README that cannot be read stops the migration with no message
         (root / "README.md").write_text(readme)  # fixed
         run(*t, "index")  # migrates
         self.assertEqual(run(*t, "history", "--last", "0").splitlines()[:2],
@@ -1243,6 +1247,7 @@ class Upgrade(unittest.TestCase):
             said = run(*t, "log", "A note", code=watcher.REFUSED)  # the same run: the guard is back on
         self.assertIn(f"could not migrate {s}", said)
         self.assertIn(OLDER, said)
+        self.assertNotIn(FIX, said)  # its README is fine
 
     def test_start_on_a_tracker_that_cannot_migrate_changes_nothing(self):
         s, _, root, _ = self.unmigratable()
@@ -1289,7 +1294,7 @@ def tree(root: Path) -> dict[str, bytes | None]:
 NEWER = "was written by a newer version of the work-tracker plugin"
 RELOAD = "reload the plugin or restart the session"
 OLDER = "could not be brought to this version's tracker format"
-FIX = "fix what it reports"
+FIX = "which the user, not an agent, fixes by hand"  # an agent never edits frontmatter
 
 
 class NewerFormat(unittest.TestCase):
