@@ -145,7 +145,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 - `tracker watch [name]` prints each change as one line; `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. Several sessions can watch one tracker: one watch per session.
 - `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
 - `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
-- `--as coordinator`, in an agent session: the session takes the tracker's coordinator role while its watch runs. A decision with no owner (or the owner `coordinator`) is then the coordinator's move, to answer from the spec, a settled decision or the code, or to pass to a person with `tracker decide D-<n> --owner <name>`; when no coordinator is watching, it is yours. A decision's owner can also be a ticket, meaning the session on it while it is under way.
+- `--as coordinator`, in an agent session: the session takes the tracker's coordinator role while its watch runs. A decision with no owner (or the owner `coordinator`) is then the coordinator's move, to answer from the spec, a settled decision or the code, or to pass to a person with `tracker decide D-<n> --owner <name>`; when no coordinator is watching, it is yours. On the coordinator's own watch, `!` also marks a question that is the coordinator's to triage. A decision's owner can also be a ticket, meaning the session on it while it is under way.
 - In an agent session, the watch skill starts it ([Usage](#usage) step 5): when you invoke it, or when a skill or instruction of yours tells the agent to watch. The agent never starts it on its own. The watching session writes to the tracker, and can be on one, as any session. `tracker watch --stop`, or the skill with `stop`, ends it.
 
 ### Upgrading a tracker
@@ -182,11 +182,11 @@ Environment variables. All are optional.
 5. `model`: records, the `Tracker`, dependencies, the log (its events, and log.md written from them), body edits
 6. `moves`: whose move a ticket under way waits on
 7. `git`
-8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
+8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now, the watches' state and grants, and whether a coordinator watches (`coordinated`)
 9. `contract`: `check`, `rules`, `migrate`, and no write into another format
 10. `views`: text views and the brief
 11. `github`: the GitHub adapter: `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). Another forge is another adapter
-12. `watcher`: `tracker watch` and the watching sessions' grants; `tracker agents`; `tracker await-change`
+12. `watcher`: `tracker watch`, and giving or ending a session's grant; `tracker agents`; `tracker await-change`
 13. `lifecycle`: archiving and deleting a tracker
 14. `viewmodel`: what a UI shows, as data: `tracker data` and `tracker list --json`
 15. `ui`: where the UI in `ui/` runs: `tracker open`, `tracker install-window`, `tracker install-mod`, and an installed mod kept at this version

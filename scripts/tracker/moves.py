@@ -53,25 +53,28 @@ class Move:
         return self.who + (sep + self.what if self.what else "")
 
 
-def owner_kind(tr: Tracker, d: Record) -> str:
-    """Who a decision's owner names: "coordinator" (also for none), "ticket" (the session on a ticket under way) or
-    "human" (a person's name, or a ticket that is not under way, which no session works on)."""
+def owner_kind(tr: Tracker, d: Record) -> tuple[str, str]:
+    """Who a decision's owner names, and its name: ("coordinator", "") also for none; ("ticket", its id) for the
+    session on a ticket under way; ("human", the name) for a person; ("human", "") for any other record of the
+    tracker, such as a ticket no session works on, which names no person."""
     owner = str(d.get("owner") or "").strip()
     if not owner or owner.lower() == COORDINATOR:
-        return "coordinator"
+        return "coordinator", ""
     rec = tr.lookup(owner)
-    return "ticket" if rec and rec.kind == "ticket" and rec.in_flight else "human"
+    if rec and rec.kind == "ticket" and rec.in_flight:
+        return "ticket", rec.id
+    return "human", "" if rec else owner
 
 
 def decision_move(tr: Tracker, d: Record, coordinated: bool) -> Move:
     """An open decision's move (MOVE_RULE): its owner's, the coordinator's while one watches the tracker
     (`session.coordinated`), else a human's."""
-    kind, owner = owner_kind(tr, d), str(d.get("owner") or "").strip()
+    (kind, name), what = owner_kind(tr, d), f"{d.id} open"
     if kind == "ticket":
-        return Move(f"{tr.lookup(owner).id}'s session", f"{d.id} open", 5)
+        return Move(f"{name}'s session", what, 5)
     if kind == "coordinator" and coordinated:
-        return Move(COORDINATOR, f"{d.id} open", 5)
-    return Move(owner if kind == "human" else "human", f"{d.id} open", 5, human=True)
+        return Move(COORDINATOR, what, 5)
+    return Move(name or "human", what, 5, human=True)
 
 
 def whose_move(tr: Tracker, t: Record, coordinated: bool = False) -> Move | None:
@@ -121,7 +124,7 @@ def unread_link_move(tr: Tracker, t: Record) -> Move | None:
     return Move(YOU, "PR not synced" if here else f"PR in {unread[0].repo}", 10, quiet=True)
 
 
-def pr_move(tr: Tracker, t: Record, r: dict, coordinated: bool = False) -> Move:
+def pr_move(tr: Tracker, t: Record, r: dict, coordinated: bool) -> Move:
     """A ticket's move as one open PR's facts make it; empty facts, for a ticket with no open PR."""
     is_open = bool(tr.open_prs(t))
     threads = r.get("threads", 0)

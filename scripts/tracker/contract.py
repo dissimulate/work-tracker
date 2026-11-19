@@ -80,9 +80,11 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
     live = coordinated(tr)
     for d in tr.decisions:
-        if not d.closed and idle_days(d) > STALE_DECISION_DAYS:
+        if d.closed:
+            continue
+        if idle_days(d) > STALE_DECISION_DAYS:
             warnings.append(f"{d.id}: open, no update for {idle_days(d)} days")
-        if not d.closed and decision_move(tr, d, live).human:
+        if decision_move(tr, d, live).human:
             warnings += unanswerable(d)
     errors += [f"dependency cycle: {' → '.join(c)}" for c in sequence(tr).cycles]
     open_t = [t.id for t in tr.tickets if not t.closed]
@@ -108,12 +110,16 @@ def unanswerable(d: Record) -> list[str]:
     recommended; with the command that adds what is missing. None while its ## Options holds a line that is no choice:
     that is an error first."""
     options, bad = parse_options(strip_comments(section(d.body, "Options")))
-    few, none = len(options) < 2, not any(o.recommended for o in options)
-    if bad or not (few or none):
+    few, unrecommended = len(options) < 2, not any(o.recommended for o in options)
+    if bad or not (few or unrecommended):
         return []
-    fix = " ".join([*(['--option "<choice> — <cost>"'] if few else []), *(['--recommend "<choice>"'] if none else [])])
+    fix = []
+    if few:
+        fix.append('--option "<choice> — <cost>"')
+    if unrecommended:
+        fix.append('--recommend "<choice>"')
     return [f"{d.id}: a decision for a human needs its choices, each with its cost, and one recommended: "
-            f"`tracker decide {d.id} {fix}`"]
+            f"`tracker decide {d.id} {' '.join(fix)}`"]
 
 
 def event_problems(tr: Tracker) -> list[str]:

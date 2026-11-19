@@ -19,8 +19,8 @@ from .git import forget
 from .schema import COORDINATOR, LIVE_SYNC_S, STATE_KEEP_DAYS
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
-from .session import (GRANTS, REARM_S, SESSIONS_DIR, WATCH_DIR, claude_sessions, coordinated, grant_path,  # noqa: F401
-    granted, live_sessions, match_cwd, session_id, ticket_facts, watch_running, Live)  # REARM_S: a name kept here
+from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, claude_sessions, coordinated, grant_path, granted,
+    live_sessions, match_cwd, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -130,12 +130,13 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
     return out
 
 
-def log_events(events: list[dict], tr: Tracker | None = None, role: str = "") -> list[Event]:
+def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", sid: str = "") -> list[Event]:
     """One per new event of the log (`model.read_events`), keyed by the first record it names; the commits the hooks
     logged, as a count. A new action for the user needs them, and so does a question opened or changed while still
     open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's, so a
-    worker's question reaches it at once. With no `tr`, no decision is looked up. A legacy event is the log from
-    before the event file, which a migration writes all at once: none is new."""
+    worker's question reaches it at once. A question the watching session (`sid`) wrote itself is news to no one.
+    With no `tr`, no decision is looked up. A legacy event is the log from before the event file, which a migration
+    writes all at once: none is new."""
     out, commits = [], {}
     live = coordinated(tr) if tr else False
     for e in events:
@@ -145,7 +146,8 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "") ->
         if e["kind"] == "commits":
             commits[key] = commits.get(key, 0) + e["count"]
         else:
-            out.append(Event("log", key, e["kind"] == "action.added" or asks(tr, e, live, role), short(e["text"], 120)))
+            ask = asks(tr, e, live, role) and not (sid and e.get("session") == sid)
+            out.append(Event("log", key, e["kind"] == "action.added" or ask, short(e["text"], 120)))
     return out + [Event("log", key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
 
 
@@ -333,6 +335,7 @@ class Watcher:
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
+            set_grant(self.sid, True)  # a session's watch holds it; a watch refused above gives none
             write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid()}))
         again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
         if again:
@@ -399,7 +402,7 @@ class Watcher:
             logged = read_events(tr, self.st["seq"])
             if logged:
                 self.st["seq"] = logged[-1]["seq"]
-            events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role)
+            events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role, self.sid)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
         named = {e.key for e in events}

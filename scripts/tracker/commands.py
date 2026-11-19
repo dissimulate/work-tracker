@@ -18,7 +18,7 @@ from .store import HOME, atomic_file, atomic_write, create, locked, make_folder,
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS,
     LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES,
     SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
-    parse_options, read_value, stage_of, today, utc_now, Option)
+    parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
     names, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
@@ -348,12 +348,11 @@ def who_settled(by: str | None, source: str | None) -> tuple[str, dict]:
     agent, the human it names (not cited yet) or the source it names, and one of them it must name; at a terminal,
     unattributed, with what it names kept as said. Dies on flags that cannot say it: the caller writes nothing
     before."""
-    by, source = (" ".join((x or "").split()) for x in (by, source))  # one line: the resolution line holds it
+    by, source = resolution_who(by), resolution_who(source)
+    if by is None or source is None:
+        die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
     if by and source:
         die("--by and --source: a human decided or a source did, not both")
-    if any(bad in x for x in (by, source) for bad in (": ", ")")):
-        # model.answer reads the answer from the first ": ", after `(<who>)`
-        die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
     via = entered_via()
     if via == "view":
         by = by or "human"
@@ -364,9 +363,12 @@ def who_settled(by: str | None, source: str | None) -> tuple[str, dict]:
         if source:
             return f"from {source}, entered by an agent", {"decided": "source", "source": source}
         die(SAY_WHO)
-    said = f", said {by}" if by else f", from {source}" if source else ""
-    return f"unattributed{said}", {"decided": "unattributed", **({"by": by} if by else {}),
-                                   **({"source": source} if source else {})}
+    data, said = {"decided": "unattributed"}, ""
+    if by:
+        data["by"], said = by, f", said {by}"
+    elif source:
+        data["source"], said = source, f", from {source}"
+    return f"unattributed{said}", data
 
 
 def resolve_decision(tr: Tracker, rec: Record, answer: str, settled: tuple[str, dict]) -> str:
@@ -785,14 +787,15 @@ def cmd_decide(args):
     pick = choice(args.recommend) if args.recommend else None
     d = existing(tr, "decision", args.target)
     if d:
-        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or args.owner or args.question):
+        owner = args.owner if args.owner and args.owner != str(d.get("owner") or "") else ""
+        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or owner or args.question):
             die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
                 "or --question")
         if given or pick:
             options_of(d)  # a refusal writes nothing: before the first write
         upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
-        owner = args.owner if args.owner and args.owner != str(d.get("owner") or "") else ""
-        d.change({**upd, **({"owner": owner} if owner else {})})
+        owned = {"owner": owner} if owner else {}
+        d.change({**upd, **owned})
         if args.question:
             append_to_section(d, "Question", dated(args.question))
         said = [f"owner {owner}"] if owner else []  # whose move it is changes: a watch reads it from the event
@@ -802,7 +805,7 @@ def cmd_decide(args):
             said.append(short(args.note))
         if said:
             append_event(tr, "decision.updated", f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)],
-                         decision=d.id, **({"owner": owner} if owner else {}))
+                         decision=d.id, **owned)
         if msg := blocks_line(tr, d, blocks):
             print(msg)
         print(resolve_decision(tr, d, args.resolve, settled) if args.resolve else f"{d.id} updated")
@@ -1119,8 +1122,6 @@ def cmd_watch(args):
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
     tr = named_tracker(args, "watch")
-    if inside:
-        set_grant(sid, True)
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
             args.hold, args.role or "").run(args.once)
 

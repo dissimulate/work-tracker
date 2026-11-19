@@ -147,8 +147,8 @@ KEYS = {
         "title": ("set", "short name of the decision"),
         "status": ("decide", "open until `decide --resolve` closes it; the answer is ## Resolution"),
         "refs": ("decide", "tickets it touches but does not block; a block is the ticket's depends_on"),
-        "owner": ("set", "who must decide: a person's name, a ticket id (the session on it), or coordinator; none: the "
-                         "coordinator when one is watching, else a human"),
+        "owner": ("decide", "who must decide: a person's name, a ticket id (the session on it), or coordinator; none: "
+                            "the coordinator when one is watching, else a human"),
         "due": ("set", DUE),
         "created_at": ("auto", "when it was opened"),
         "updated_at": ("auto", UPDATED),
@@ -499,6 +499,13 @@ README_INSTRUCTIONS = "Instructions"
 README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required frontmatter; repo may be empty
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
 OPEN_DECISIONS_WARN = 12  # more open than this and the list is carrying ticket-level questions
+
+def resolution_who(text: str | None) -> str | None:
+    """A name or source as a resolution line's `(<who>)` holds it, on one line; None when it holds ": " or ")", which
+    would end the `(<who>)` early (`model.answer` reads the answer from the first ": "). "" for none."""
+    who = " ".join((text or "").split())
+    return None if ": " in who or ")" in who else who
+
 
 # A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
 COORDINATOR = "coordinator"

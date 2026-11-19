@@ -97,8 +97,8 @@ def spawn(*args: str) -> None:
                      **DETACH)
 
 
-# How a UI starts the CLI (cli_for_ui), to fill in with the environment it takes as its default
-UI_START = "import os; os.environ.update({{**{env!r}, **os.environ, " + repr(VIA_ENV) + ": 'view'}}); " + CLI_START
+# How a UI starts the CLI (cli_for_ui): ENV becomes the environment it takes as its default
+UI_START = "import os; os.environ.update({**ENV, **os.environ, " + repr(VIA_ENV) + ": 'view'}); " + CLI_START
 
 
 def cli_for_ui() -> list[str]:
@@ -106,7 +106,7 @@ def cli_for_ui() -> list[str]:
     the view's (VIA_ENV) whatever it finds. Never a secret: CLI_ENV names none, and `gh` keeps its login in its own
     config."""
     env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
-    return [*PYTHON, "-c", UI_START.format(env=env), str(PACKAGE.parent)]
+    return [*PYTHON, "-c", UI_START.replace("ENV", repr(env), 1), str(PACKAGE.parent)]
 
 
 def open_with_system(path: Path, reveal: bool = False) -> None:

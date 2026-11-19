@@ -7,7 +7,8 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
+from .schema import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+    resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
     read_events, sequence, sort_key, span, Dep, Record, Tracker)
 from .moves import decision_move, is_pr_link, linked_prs, owner_kind, Move
@@ -129,7 +130,7 @@ def record_view(tr: Tracker, r: Record) -> dict:
     """What a record shows when it opens: its lead line (its next or summary), what it waits on and what waits on it
     (dep_facts, as the text views give them), its facts and links, then its body in Markdown. An open decision gives
     its move, and its choices apart (`answer`), for the UI to offer each as the answer, with the name its answer is
-    given by: its owner when that is a person's, else `user` (a coordinator or a ticket's session is not who
+    given by: its owner when that names a person, else `user` (a coordinator or a ticket's session is not who
     clicked)."""
     g = tr.gate(r)
     deps = [{"label": label, "text": v} if isinstance(v, str) else {"label": label, "items": [dep_view(d) for d in v]}
@@ -139,7 +140,15 @@ def record_view(tr: Tracker, r: Record) -> dict:
             {"id": d.id, "done": d.closed, "tone": "done" if d.closed else "blocked", "ref": True, "title": ""}
             for d in tr.decisions_for(r)]})
     asks = r.kind == "decision" and not r.closed
-    move = move_of(tr, r) if r.kind == "ticket" else decision_move(tr, r, coordinated(tr)) if asks else None
+    if r.kind == "ticket":
+        move = move_of(tr, r)
+    elif asks:
+        move = decision_move(tr, r, coordinated(tr))
+    else:
+        move = None
+    # The view's answer goes as `--by`: a person the owner names, else `user`, never what would be refused
+    kind, name = owner_kind(tr, r) if asks else ("", "")
+    by = (kind == "human" and resolution_who(name)) or "user"
     word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     options = parse_options(strip_comments(section(r.body, "Options")))[0] if asks else []
     body = without_section(r.body, "Links")
@@ -156,7 +165,7 @@ def record_view(tr: Tracker, r: Record) -> dict:
                   for k in FACTS if r.get(k)],
         "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
         "answer": {"options": [{"text": o.text, "cost": o.cost, "recommended": o.recommended} for o in options],
-                   "by": str(r.get("owner")).strip() if owner_kind(tr, r) == "human" else "user"} if asks else None,
+                   "by": by} if asks else None,
         "body": strip_comments(without_section(body, "Options") if options else body).strip(),
     }
 
