@@ -1011,10 +1011,10 @@ def cmd_start(args):
         why = newer_format(m.tracker.root)
         # A session told of a newer tracker got that line in place of its brief (hooks.tell_newer), so it has no
         # protocol: the first brief once this code may write the tracker brings it.
-        told = bool(load_session(sid).get("told_newer")) and not why
+        told = bool(load_session(sid).get("told_refusal")) and not why
         print(brief(m, cwd, with_protocol=told))
         if told:
-            save_session(sid, told_newer=None)
+            save_session(sid, told_refusal=None)
         if why:  # the brief asks for writes that refuse_newer refuses
             print(f"{why}.")
         tell_updates(m.tracker)
