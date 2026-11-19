@@ -1176,10 +1176,6 @@ def tree(root: Path) -> dict[str, bytes | None]:
     return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None for p in sorted(root.rglob("*"))}
 
 
-NEWER = "was written by a newer version of the work-tracker plugin"
-RELOAD = "reload the plugin or restart the session"
-
-
 class NewerFormat(unittest.TestCase):
     """A tracker in a newer format than this code's: a newer plugin version wrote it, and this one, still running in
     a session, writes nothing to it."""
@@ -1199,6 +1195,10 @@ class NewerFormat(unittest.TestCase):
     def newer(self, s: str) -> None:
         model.tracker_at(s).readme.save({"schema": schema.SCHEMA + 1})
 
+    def why(self, s: str) -> str:
+        """The sentence every reader gets for tracker `s`: a command, a hook, a UI, `check`."""
+        return contract.newer_format(store.HOME / s)
+
     def sid(self) -> str:
         """A new session id. Its file goes at the test's end: a later test would see a live session on a tracker."""
         x = f"new{time.monotonic_ns()}"
@@ -1214,7 +1214,7 @@ class NewerFormat(unittest.TestCase):
         for args in (*self.WRITES, ["attach", str(evidence), "--ref", "N-1"], ["refresh"]):  # a UI's write too
             with self.subTest(args=args):
                 said = run(*t, *args, code=watcher.REFUSED)
-                self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")  # one sentence, nothing else
+                self.assertEqual(said, f"tracker: {self.why(s)}\n")  # one sentence, nothing else
         self.assertEqual(tree(store.HOME / s), before)
 
     def test_a_linked_tracker_folder_counts_as_any_other(self):
@@ -1227,7 +1227,7 @@ class NewerFormat(unittest.TestCase):
         before = tree(target)
         for args in (["set", "N-1", "next=More"], ["log", "A note"], ["act", "Ask Sam"]):
             with self.subTest(args=args):
-                self.assertIn(RELOAD, run(*t, *args, code=watcher.REFUSED))
+                self.assertIn(self.why(s), run(*t, *args, code=watcher.REFUSED))
         self.assertEqual(tree(target), before)
 
     def test_attach_to_a_linked_tracker_folder_writes_nothing(self):
@@ -1244,7 +1244,7 @@ class NewerFormat(unittest.TestCase):
         for args in ([str(src / "run.log"), "--ref", "N-1"], ["kept.log", "--append", "more"],
                      [str(target / schema.EVIDENCE_DIR / "kept.log"), "--append", "more"]):  # named by its target
             with self.subTest(args=args):
-                self.assertIn(RELOAD, run(*t, "attach", *args, code=watcher.REFUSED))
+                self.assertIn(self.why(s), run(*t, "attach", *args, code=watcher.REFUSED))
         self.assertEqual(tree(target), before)
 
     def test_use_clear_refused_in_one_tracker_clears_none(self):
@@ -1255,7 +1255,7 @@ class NewerFormat(unittest.TestCase):
         self.newer(b)
         before = {s: tree(store.HOME / s) for s in (a, b)}
         said = run("use", "--clear", cwd=work, code=watcher.REFUSED)
-        self.assertRegex(said, rf"\Atracker: {b} {NEWER}[^\n]*: {RELOAD}\n\Z")  # and no "cleared the choice"
+        self.assertEqual(said, f"tracker: {self.why(b)}\n")  # and no "cleared the choice"
         self.assertEqual({s: tree(store.HOME / s) for s in (a, b)}, before)
 
     def test_start_on_a_newer_tracker_changes_nothing(self):
@@ -1267,7 +1267,7 @@ class NewerFormat(unittest.TestCase):
             self.newer(s)
             before, held = tree(store.HOME / s), own.read_bytes()
             said = run("start", s, cwd=work, code=watcher.REFUSED)
-        self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")
+        self.assertEqual(said, f"tracker: {self.why(s)}\n")
         self.assertEqual(own.read_bytes(), held)  # still on its tracker: it was not moved
         self.assertEqual(tree(store.HOME / s), before)
 
@@ -1282,10 +1282,9 @@ class NewerFormat(unittest.TestCase):
         self.assertIsNone(hook("stop", sid, work))  # refused: a Stop hook cannot tell the model
         told = hook("prompt", sid, work, prompt="go")
         self.assertEqual(told["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertEqual(told["hookSpecificOutput"]["additionalContext"],
-                         f"[work-tracker] {s} {NEWER} (tracker format {schema.SCHEMA + 1}; this one writes "
-                         f"{schema.SCHEMA}), so this one writes nothing to it: {RELOAD}.")  # no step to record
-        self.assertIn(RELOAD, told["systemMessage"])
+        notice = f"[work-tracker] {self.why(s)}."
+        self.assertEqual(told["systemMessage"], notice)  # the user, who reloads
+        self.assertEqual(told["hookSpecificOutput"]["additionalContext"], f"{notice} {hooks.NEWER_REQUEST}")  # no step
         self.assertIsNone(hook("prompt", sid, work, prompt="again"))  # once per context
         self.assertEqual(tree(store.HOME / s), before)
 
@@ -1299,7 +1298,7 @@ class NewerFormat(unittest.TestCase):
         hook("session-end", sid, work, reason="clear")  # /clear: the next session takes the tracker over
         new = self.sid()
         cleared = hook("session-start", new, work, source="clear")
-        self.assertIn(RELOAD, cleared["hookSpecificOutput"]["additionalContext"])
+        self.assertIn(self.why(s), cleared["hookSpecificOutput"]["additionalContext"])
         self.assertNotIn("Tracker protocol", said(cleared))  # no brief, which asks for writes
         self.assertEqual(session.load_session(new)["tracker"], s)
         self.assertEqual(session.load_session(new)["cwd"], str(work))  # `tracker agents` and the UI show its folder
@@ -1323,8 +1322,7 @@ class NewerFormat(unittest.TestCase):
         self.assertIn("One", run(*t, "show", "N-1"))
         self.assertIn("One", run(*t, "context", "N-1"))
         self.assertEqual(data(s)["slug"], s)
-        self.assertIn(f"tracker format {schema.SCHEMA + 1} is newer than this plugin's {schema.SCHEMA}",
-                      run(*t, "check", code=1))
+        self.assertIn(f"README.md: {self.why(s)}\n", run(*t, "check", code=1))  # as a refused write says it
         self.assertEqual(tree(store.HOME / s), before)
         self.assertEqual(list((store.HOME / ".backups").glob(f"{s}-*")), [])  # and no migration
 
@@ -1338,8 +1336,8 @@ class NewerFormat(unittest.TestCase):
             job = watcher.SyncJob(model.tracker_at(s))
             job.run()
         self.assertEqual(len(fake.queries), 2)  # each read GitHub: the write is what refused
-        self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")
-        self.assertIn(RELOAD, job.changes[0])
+        self.assertEqual(said, f"tracker: {self.why(s)}\n")
+        self.assertIn(self.why(s), job.changes[0])
         self.assertEqual(tree(store.HOME / s), before)
 
     def test_a_hook_writes_nothing_and_tells_each_context_once(self):
@@ -1357,15 +1355,15 @@ class NewerFormat(unittest.TestCase):
         commit(work, "on a newer tracker")
         told = tool("Bash", sid, work, **committed)  # exits 0: `hook` checks
         self.assertEqual(told["hookSpecificOutput"]["hookEventName"], "PostToolUse")
-        self.assertIn(f"[work-tracker] {s} {NEWER}", told["hookSpecificOutput"]["additionalContext"])
-        self.assertIn(RELOAD, told["systemMessage"])  # the user, who reloads, sees it too
+        self.assertIn(f"[work-tracker] {self.why(s)}.", told["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(told["systemMessage"], f"[work-tracker] {self.why(s)}.")  # the user, who reloads, sees it too
         commit(work, "again")
         self.assertIsNone(tool("Bash", sid, work, **committed))  # once per context
         hook("prompt", sid, work, prompt="go")
         self.assertIsNone(hook("stop", sid, work))
         other = hook("session-start", second, work, source="startup")  # another session is told too
         self.assertEqual(other["hookSpecificOutput"]["hookEventName"], "SessionStart")
-        self.assertIn(RELOAD, other["hookSpecificOutput"]["additionalContext"])
+        self.assertIn(self.why(s), other["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(tree(store.HOME / s), before)
         self.assertEqual(session.load_session(sid)["activity"]["status"], "idle")  # its own files go on
 
@@ -1375,9 +1373,9 @@ class NewerFormat(unittest.TestCase):
         session.save_session(sid, tracker=s, cwd=str(work))
         hook("session-start", sid, work, env=env, source="startup")
         self.newer(s)
-        self.assertIn(RELOAD, said(hook("prompt", sid, work, env=env, prompt="go")))
+        self.assertIn(self.why(s), hook("prompt", sid, work, env=env, prompt="go")["systemMessage"])
         compacted = hook("session-start", sid, work, env=env, source="compact")["hookSpecificOutput"]
-        self.assertIn(f"[work-tracker] {s} {NEWER}", compacted["additionalContext"])
+        self.assertIn(f"[work-tracker] {self.why(s)}.", compacted["additionalContext"])
         self.assertIn(f"TRACKER_SESSION={sid} {ROOT}/bin/tracker", compacted["additionalContext"])  # reads need it
         self.assertIsNone(hook("prompt", sid, work, env=env, prompt="again"))  # once per context
 
@@ -1395,16 +1393,16 @@ class NewerFormat(unittest.TestCase):
         (old, _), (s, _) = self.tracker(branch=branch), self.tracker(branch=branch)  # two matches: not sure, so asked
         sid, work = self.sid(), repo(branch)
         self.newer(s)
-        offered = said(hook("session-start", sid, work, source="startup"))
+        offered = hook("session-start", sid, work, source="startup")["hookSpecificOutput"]["additionalContext"]
         self.assertIn(f"`tracker start {old}`", offered)
         self.assertNotIn(f"`tracker start {s}`", offered)  # it would refuse
-        self.assertIn(f"[work-tracker] {s} {NEWER}", offered)
+        self.assertIn(f"[work-tracker] {self.why(s)}.", offered)
         self.newer(old)
         told = hook("session-start", self.sid(), work, source="startup")
         self.assertNotIn("host's question tool", said(told))  # nothing to link
         for x in (old, s):
-            self.assertIn(f"[work-tracker] {x} {NEWER}", told["hookSpecificOutput"]["additionalContext"])
-            self.assertIn(f"[work-tracker] {x} {NEWER}", told["systemMessage"])
+            self.assertIn(f"[work-tracker] {self.why(x)}.", told["hookSpecificOutput"]["additionalContext"])
+            self.assertIn(f"[work-tracker] {self.why(x)}.", told["systemMessage"])
 
     def test_a_sure_match_on_a_newer_tracker_is_told_not_linked(self):
         s, t = new_tracker("Newer sure", "acme/sure")
@@ -1417,7 +1415,7 @@ class NewerFormat(unittest.TestCase):
         self.newer(s)
         sid, before = self.sid(), tree(store.HOME / s)
         told = hook("session-start", sid, work, nogh, source="startup")
-        self.assertEqual(told["systemMessage"], f"[work-tracker] {contract.newer_format(store.HOME / s)}.")
+        self.assertEqual(told["systemMessage"], f"[work-tracker] {self.why(s)}.")
         self.assertNotIn("Linked", said(told))
         self.assertNotIn("Tracker protocol", said(told))
         self.assertNotIn("tracker", session.load_session(sid))  # not linked: on no tracker, as before
@@ -1432,7 +1430,7 @@ class NewerFormat(unittest.TestCase):
             before = tree(store.HOME / s)
             out = run("start", cwd=work)  # a read: exits 0
         self.assertIn("N-1", out)
-        self.assertRegex(out, rf"\n{s} {NEWER}[^\n]*: {RELOAD}\.\n\Z")
+        self.assertTrue(out.endswith(f"\n{self.why(s)}.\n"), out)
         self.assertEqual(tree(store.HOME / s), before)
 
     def test_here_on_a_newer_tracker_briefs_and_says_so(self):
@@ -1444,7 +1442,7 @@ class NewerFormat(unittest.TestCase):
             before = tree(store.HOME / s)
             out = run("here", cwd=work)  # a read: exits 0
         self.assertIn("N-1", out)
-        self.assertRegex(out, rf"\n{s} {NEWER}[^\n]*: {RELOAD}\.\n\Z")
+        self.assertTrue(out.endswith(f"\n{self.why(s)}.\n"), out)
         self.assertEqual(tree(store.HOME / s), before)
 
 

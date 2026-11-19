@@ -386,19 +386,26 @@ CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
                   "answered": "PostToolUse", "subagent-start": "SubagentStart"}
 
 
+# What the model does on a tracker that takes no write from this code, after `contract.newer_format`'s sentence. A
+# plugin reload may start no new session, so no SessionStart brings the brief: `tracker start` prints it.
+NEWER_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
+                 "plugin or restart the session, then run `tracker start`, which prints the brief.")
+
+
 def tell_newer(data: dict, event: str, why: str) -> None:
-    """The session's tracker takes no write from this code (`contract.newer_format` says `why`): tell the model and the
-    user, once per context, at the first handler that can tell the model. A session start is a new context, after
-    compaction too: it is told again, with the command prefix (`emit_context`). Not a subagent's: the session reloads,
-    not it."""
+    """The session's tracker takes no write from this code (`contract.newer_format` says `why`): tell the user why, and
+    the model what to do until the user acts (NEWER_REQUEST), once per context, at the first handler that can tell
+    the model. A session start is a new context, after compaction too: it is told again, with the command prefix
+    (`emit_context`). Not a subagent's: the session reloads, not it."""
     sid = where(data)[1]
-    text = f"[work-tracker] {why}."
+    notice = f"[work-tracker] {why}."
+    text = f"{notice} {NEWER_REQUEST}"
     told = event != "session-start" and load_session(sid).get("told_newer") == text
     if event not in CONTEXT_EVENTS or data.get("agent_id") or told:
         warn(f"hook {event}: {why}")
         return
     save_session(sid, told_newer=text)
-    emit_context(CONTEXT_EVENTS[event], text, text)
+    emit_context(CONTEXT_EVENTS[event], text, notice)
 
 
 def newer_told(data: dict, event: str) -> bool:

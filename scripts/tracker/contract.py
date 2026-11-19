@@ -50,8 +50,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate — the "
                         f"next command tries again, and says why on stderr")
     elif tr.schema > SCHEMA:
-        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
-                      f"plugin")
+        errors.append(f"README.md: {newer_format(tr.root)}")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
     aliases: dict[str, str] = {}
     for t in tr.tickets:
@@ -440,13 +439,15 @@ class NewerFormat(Exception):
 
 
 def newer_format(root: Path) -> str:
-    """Why this code writes nothing to the tracker at `root`, in one sentence: its format is newer than SCHEMA. A
-    session runs the plugin version it loaded until it reloads, and the newer version that migrated the tracker never
-    migrates it again: what this one wrote there would stay in the older format. Empty when this code may write it."""
+    """Why this code writes nothing to the tracker at `root`, and what to do, in one sentence that holds for every
+    reader: a refused command in a session or a terminal, the hooks' user notice, a UI, the watch, `check`. Its format
+    is newer than SCHEMA. A session runs the plugin version it loaded until it reloads, and the newer version that
+    migrated the tracker never migrates it again: what this one wrote there would stay in the older format. Empty when
+    this code may write it."""
     newer = Tracker(root).schema
     return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {newer}; this one "
-            f"writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the session"
-            if newer > SCHEMA else "")
+            f"writes {SCHEMA}), so this one writes nothing to it: use the newer version (update the plugin, then "
+            f"reload it or restart each session that still runs this one)" if newer > SCHEMA else "")
 
 
 def refuse_newer(root: Path) -> None:
