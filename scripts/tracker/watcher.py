@@ -265,7 +265,7 @@ def watches_of(tr: Tracker) -> list[dict]:
     for f in (WATCH_DIR / tr.slug).glob("*.json"):
         st = read_json(f)
         ended = st.get("ended") or 0
-        if not st.get("who") or not isinstance(ended, (int, float)):  # not a watch's state, or a damaged one
+        if not st.get("who") or not (ended == 0 or is_time(ended)):  # not a watch's state, or a damaged one
             continue
         running = watch_running(st)
         if running or time.time() - ended <= 86400:
@@ -493,8 +493,8 @@ class Watcher:
 
     def stuck(self, tr: Tracker, now: float) -> list[Event]:
         """Each open item that is stuck (`items_of`, with the clock at each look and the log read only when it
-        changed), said once each time it turns stuck: its key stays in the state while it is stuck, so one that comes
-        back, or turns stuck anew, is said again.
+        changed), said once each time it turns stuck, and in a new watch's first lines: its key stays in the state
+        while it is stuck, so one that comes back, or turns stuck anew, is said again.
         Nothing is written to the tracker. A wait whose session the agent line already shows waiting is that line's
         to say, and the watch's own session's waits are not news to it."""
         items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]

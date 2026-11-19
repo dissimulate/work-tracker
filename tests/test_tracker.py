@@ -3613,6 +3613,12 @@ class Watch(unittest.TestCase):
         before = {**facts, "move": "coordinator — plan review", "stuck_from": "", "human": False}
         new = {"tickets": {"W-1": {**facts, "start": ""}}, "errors": []}
         self.assertEqual(watcher.ticket_events({"tickets": {"W-1": {**before, "start": ""}}}, new), [])
+        tr = model.Tracker(self.root)  # with several open PRs, the move names the PR, before it turned stuck too
+        tr.lookup("W-1").save({"prs": ["12:open", "13:open"]})
+        tr.save_state({**tr.raw_state(), "prs": {"#12": {}, "#13": {}}})
+        facts = session.ticket_facts(model.Tracker(self.root), model.Tracker(self.root).lookup("W-1"))
+        self.assertEqual((facts["move"], facts["stuck_from"]),
+                         ("human — #12 plan review, stuck with coordinator", "coordinator — #12 plan review"))
 
     def test_a_ticket_whose_move_becomes_a_stuck_item_is_said(self):
         self.coordinator()
@@ -5108,6 +5114,17 @@ class OpenItems(unittest.TestCase):
                 self.assertTrue(session.coordinated(model.tracker_at(self.s)))
                 run(*self.t, "check")
                 data(self.s)
+        path.unlink()  # no watch running: the view says when the last one ended
+        ended = watcher.state_path(self.s, "old")  # a watch that ended, with no grant: its end damaged
+        for bad in ("1e400", "-1e400"):
+            with self.subTest(ended=bad):
+                ended.write_text(f'{{"who": "session old", "sid": "old", "pid": 0, "started": 5, "ended": {bad}}}')
+                self.addCleanup(ended.unlink, True)
+                data(self.s)
+        watcher.set_grant("old", True)  # one that holds the grant: an end of infinity is no watch that runs on
+        self.addCleanup(watcher.set_grant, "old", False)
+        ended.write_text('{"who": "session old", "sid": "old", "pid": 0, "role": "coordinator", "ended": 1e400}')
+        self.assertFalse(session.coordinated(model.tracker_at(self.s)))
 
     def test_a_humans_own_question_is_never_stuck(self):
         run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")

@@ -272,7 +272,12 @@ def whose_move(tr: Tracker, t: Record, coordinated: bool = False, items: list[It
     if not moves:
         return None
     number, move = min(moves, key=lambda x: (not x[1].mine, x[1].rank))
-    return replace(move, what=f"#{number} {move.what}".strip()) if len(open_prs) > 1 else move
+    if len(open_prs) == 1:
+        return move
+
+    def named(m: Move) -> Move:  # the PR it is about; the move it was before it turned stuck too
+        return replace(m, what=f"#{number} {m.what}".strip())
+    return replace(named(move), stuck_from=move.stuck_from and named(move.stuck_from))
 
 
 PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number

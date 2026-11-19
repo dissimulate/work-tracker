@@ -524,7 +524,7 @@ def watch_running(st: dict) -> bool:
     grant and ended within REARM_S, so it starts again. A state that is damaged runs none: no view stops for it."""
     try:
         return alive(int(st.get("pid") or 0)) or (
-            granted(str(st.get("sid") or "")) and time.time() - float(st.get("ended") or 0) < REARM_S)
+            granted(str(st.get("sid") or "")) and is_time(st.get("ended")) and time.time() - st["ended"] < REARM_S)
     except (TypeError, ValueError):
         return False
 
