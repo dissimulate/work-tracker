@@ -146,13 +146,16 @@ def unlink_session(sid: str) -> None:
         write_json(path, {k: v for k, v in kept.items() if v is not None})
 
 
+COMMAND_CALL = re.compile(r"[/$][A-Za-z][\w.:-]*(\s|$)")  # `/compact`, `/work-tracker:tracker index`, `$skill`
+
+
 def keep_word(sid: str, text: str) -> bool:
     """Keep a message or answer the human sent a session on a tracker (`context_tracker`), as its `words`
     (WORDS_KEPT of them, the newest last): a fingerprint of the whole text, when it was kept and its start
     (WORD_EXCERPT_MAX characters, on one line). None of it reaches the log unless `decide --cite` copies it there. A
     slash command or a skill call is no ruling, and keeps nothing. Whether it kept the text."""
     excerpt = " ".join(text.split())[:WORD_EXCERPT_MAX]
-    if not excerpt or excerpt[0] in "/$" or not session_path(sid):
+    if not excerpt or COMMAND_CALL.match(excerpt) or not session_path(sid):
         return False
     with locked():
         if not context_tracker(sid):
