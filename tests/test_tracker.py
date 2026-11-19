@@ -1626,6 +1626,21 @@ class NewerFormat(unittest.TestCase):
             model.append_event(model.tracker_at(s), "note", "A note", [])
         self.assertEqual(tree(store.HOME / s), before)
 
+    def test_a_bare_start_after_the_reload_brings_the_protocol_once(self):
+        s, _ = self.tracker()
+        sid, work = self.sid(), repo("feat/N-1")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", s, cwd=work)
+            self.newer(s)
+            hook("session-start", sid, work, source="resume")  # told in place of its brief: no protocol in this context
+            self.assertNotIn("Tracker protocol", run("start", cwd=work))  # still newer: the protocol asks for writes
+            readme = store.HOME / s / "README.md"  # by hand: the guard refuses this code's own write
+            readme.write_text(readme.read_text().replace(f"schema: {schema.SCHEMA + 1}", f"schema: {schema.SCHEMA}"))
+            self.assertFalse(self.why(s))  # as the reloaded version sees it
+            self.assertIn("Tracker protocol", run("start", cwd=work))  # what RELOAD_REQUEST asks for
+            self.assertNotIn("Tracker protocol", run("start", cwd=work))  # once: the session has it now
+        self.assertNotIn("told_refusal", session.load_session(sid))
+
 
 class Events(unittest.TestCase):
     """The event file: each change the tool writes, as one typed event per line."""
