@@ -96,6 +96,12 @@ def work_dir(cwd: str | Path | None = None) -> Path:
     return Path(seen) if seen and Path(seen).is_dir() else cwd
 
 
+def cwd_field(cwd: str | Path) -> dict:
+    """The session's `cwd`, the folder `work_dir` and `tracker agents` show, as a session file field: none for a cwd
+    inside HOME, which is no project."""
+    return {} if inside_home(cwd) else {"cwd": str(cwd)}
+
+
 def session_path(sid: str) -> Path | None:
     return SESSIONS_DIR / f"{sid}.json" if sid and SAFE_NAME.fullmatch(sid) else None
 
@@ -177,15 +183,16 @@ def hand_over(sid: str, cwd: str | Path) -> None:
 
 
 def take_over(sid: str, cwd: str | Path) -> str:
-    """A session that `/clear` started: link the tracker the cleared session in this directory was on. Its slug, or
-    "" when none waits."""
+    """A session that `/clear` started: link the tracker the cleared session in this directory was on, and keep its
+    folder (`cwd_field`), also when the tracker then refuses the brief (`contract.refuse_newer`). Its slug, or "" when
+    none waits."""
     with locked():
         entries = cleared_entries(time.time())
         got = entries.pop(str(Path(cwd).resolve()), None)
         save_cleared(entries)
     if not got or not tracker_at(got.get("tracker", "")):
         return ""
-    save_session(sid, tracker=got["tracker"], focus=got.get("focus"))
+    save_session(sid, tracker=got["tracker"], focus=got.get("focus"), **cwd_field(cwd))
     return got["tracker"]
 
 
@@ -595,7 +602,7 @@ def lag(m: Match, cwd: str | Path) -> Lag:
 def remember(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed about its tickets (the commits past `next` too, so the hooks do not ask
     again), and the directory it works in (`work_dir`)."""
-    fields = {} if inside_home(cwd) else {"cwd": str(cwd)}
+    fields = cwd_field(cwd)
     if m.focus:
         fields.update(seen=watch(m.tracker, m.focus), seen_for=[t.id for t in m.focus])
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch and m.active else None

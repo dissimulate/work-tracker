@@ -1199,6 +1199,12 @@ class NewerFormat(unittest.TestCase):
     def newer(self, s: str) -> None:
         model.tracker_at(s).readme.save({"schema": schema.SCHEMA + 1})
 
+    def sid(self) -> str:
+        """A new session id. Its file goes at the test's end: a later test would see a live session on a tracker."""
+        x = f"new{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, x)
+        return x
+
     def test_a_write_refuses_and_changes_nothing(self):
         s, t = self.tracker()
         self.newer(s)
@@ -1254,7 +1260,7 @@ class NewerFormat(unittest.TestCase):
 
     def test_start_on_a_newer_tracker_changes_nothing(self):
         (old, _), (s, _) = self.tracker(), self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")  # a branch s has not seen: its first mark
+        sid, work = self.sid(), repo("feat/N-1")  # a branch s has not seen: its first mark
         own = session.session_path(sid)
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             run("start", old, cwd=work)
@@ -1267,7 +1273,7 @@ class NewerFormat(unittest.TestCase):
 
     def test_a_refusal_at_stop_is_told_at_the_next_prompt_which_asks_for_no_write(self):
         s, _ = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        sid, work = self.sid(), repo("feat/N-1")
         session.save_session(sid, tracker=s, cwd=str(work))
         hook("session-start", sid, work, source="startup")  # the branch's mark
         self.newer(s)
@@ -1283,18 +1289,20 @@ class NewerFormat(unittest.TestCase):
         self.assertIsNone(hook("prompt", sid, work, prompt="again"))  # once per context
         self.assertEqual(tree(store.HOME / s), before)
 
-    def test_a_session_that_links_a_newer_tracker_at_its_start_is_told_not_briefed(self):
+    def test_a_session_that_takes_a_newer_tracker_over_after_clear_is_told_and_keeps_its_folder(self):
         s, _ = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        sid, work = self.sid(), repo("feat/N-1")
         session.save_session(sid, tracker=s, cwd=str(work))
         hook("session-start", sid, work, source="startup")  # the branch's mark: no commit waits to be logged
         self.newer(s)
         before = tree(store.HOME / s)
         hook("session-end", sid, work, reason="clear")  # /clear: the next session takes the tracker over
-        cleared = hook("session-start", f"{sid}b", work, source="clear")
+        new = self.sid()
+        cleared = hook("session-start", new, work, source="clear")
         self.assertIn(RELOAD, cleared["hookSpecificOutput"]["additionalContext"])
         self.assertNotIn("Tracker protocol", said(cleared))  # no brief, which asks for writes
-        self.assertEqual(session.load_session(f"{sid}b")["tracker"], s)
+        self.assertEqual(session.load_session(new)["tracker"], s)
+        self.assertEqual(session.load_session(new)["cwd"], str(work))  # `tracker agents` and the UI show its folder
         self.assertEqual(tree(store.HOME / s), before)
 
     def test_an_equal_or_older_format_writes_and_an_older_one_migrates_first(self):
@@ -1336,8 +1344,9 @@ class NewerFormat(unittest.TestCase):
 
     def test_a_hook_writes_nothing_and_tells_each_context_once(self):
         s, t = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
-        for x in (sid, f"{sid}b"):
+        sid, work = self.sid(), repo("feat/N-1")
+        second = self.sid()
+        for x in (sid, second):
             session.save_session(x, tracker=s, cwd=str(work))
         self.assertIn("Tracker protocol", said(hook("session-start", sid, work, source="startup")))  # the mark
         self.newer(s)
@@ -1354,7 +1363,7 @@ class NewerFormat(unittest.TestCase):
         self.assertIsNone(tool("Bash", sid, work, **committed))  # once per context
         hook("prompt", sid, work, prompt="go")
         self.assertIsNone(hook("stop", sid, work))
-        other = hook("session-start", f"{sid}b", work, source="startup")  # another session is told too
+        other = hook("session-start", second, work, source="startup")  # another session is told too
         self.assertEqual(other["hookSpecificOutput"]["hookEventName"], "SessionStart")
         self.assertIn(RELOAD, other["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(tree(store.HOME / s), before)
@@ -1362,7 +1371,7 @@ class NewerFormat(unittest.TestCase):
 
     def test_a_compacted_context_is_told_again_with_the_command_prefix(self):
         s, _ = self.tracker()
-        sid, work, env = f"new{time.monotonic_ns()}", repo("feat/N-1"), {"PLUGIN_ROOT": str(ROOT)}  # no env file
+        sid, work, env = self.sid(), repo("feat/N-1"), {"PLUGIN_ROOT": str(ROOT)}  # no env file
         session.save_session(sid, tracker=s, cwd=str(work))
         hook("session-start", sid, work, env=env, source="startup")
         self.newer(s)
@@ -1374,7 +1383,7 @@ class NewerFormat(unittest.TestCase):
 
     def test_watch_stop_ends_the_watch_at_once(self):
         s, _ = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        sid, work = self.sid(), repo("feat/N-1")
         session.save_session(sid, tracker=s, cwd=str(work))
         self.newer(s)
         watcher.set_grant(sid, True)
@@ -1384,22 +1393,39 @@ class NewerFormat(unittest.TestCase):
     def test_a_session_on_no_tracker_is_told_of_a_newer_match_not_offered_it(self):
         branch = f"feat/only-{time.monotonic_ns()}"  # no other test's tracker matches it
         (old, _), (s, _) = self.tracker(branch=branch), self.tracker(branch=branch)  # two matches: not sure, so asked
-        sid, work = f"new{time.monotonic_ns()}", repo(branch)
+        sid, work = self.sid(), repo(branch)
         self.newer(s)
         offered = said(hook("session-start", sid, work, source="startup"))
         self.assertIn(f"`tracker start {old}`", offered)
         self.assertNotIn(f"`tracker start {s}`", offered)  # it would refuse
         self.assertIn(f"[work-tracker] {s} {NEWER}", offered)
         self.newer(old)
-        told = hook("session-start", f"{sid}b", work, source="startup")
+        told = hook("session-start", self.sid(), work, source="startup")
         self.assertNotIn("host's question tool", said(told))  # nothing to link
         for x in (old, s):
             self.assertIn(f"[work-tracker] {x} {NEWER}", told["hookSpecificOutput"]["additionalContext"])
             self.assertIn(f"[work-tracker] {x} {NEWER}", told["systemMessage"])
 
+    def test_a_sure_match_on_a_newer_tracker_is_told_not_linked(self):
+        s, t = new_tracker("Newer sure", "acme/sure")
+        branch, nogh = f"feat/{s}", {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"}
+        work = repo(branch)  # in the repo the tracker names, on the branch its one ticket names: a sure match
+        subprocess.run(["git", "-C", str(work), "remote", "add", "origin", "git@github.com:acme/sure.git"], check=True)
+        with mock.patch.object(github, "gh", lambda *args, **kw: None):
+            run(*t, "new", "N-1", "--title", "One", "--branch", branch)
+            run(*t, "set", "N-1", "status=in-progress", cwd=work)
+        self.newer(s)
+        sid, before = self.sid(), tree(store.HOME / s)
+        told = hook("session-start", sid, work, nogh, source="startup")
+        self.assertEqual(told["systemMessage"], f"[work-tracker] {contract.newer_format(store.HOME / s)}.")
+        self.assertNotIn("Linked", said(told))
+        self.assertNotIn("Tracker protocol", said(told))
+        self.assertNotIn("tracker", session.load_session(sid))  # not linked: on no tracker, as before
+        self.assertEqual(tree(store.HOME / s), before)
+
     def test_a_bare_start_on_a_newer_tracker_briefs_and_says_so(self):
         s, _ = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        sid, work = self.sid(), repo("feat/N-1")
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             run("start", s, cwd=work)
             self.newer(s)
@@ -1411,7 +1437,7 @@ class NewerFormat(unittest.TestCase):
 
     def test_here_on_a_newer_tracker_briefs_and_says_so(self):
         s, _ = self.tracker()
-        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        sid, work = self.sid(), repo("feat/N-1")
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
             run("start", s, cwd=work)
             self.newer(s)

@@ -16,8 +16,8 @@ from .store import locked, record_cli
 from .schema import DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, changes_since, context_tracker, declined, drop_session, get_mark,
-    hand_over, in_repos, inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
+from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, drop_session,
+    get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
     session_activity, take_over, watch, work_dir, Lag, Match)
 from .contract import newer_format, prune_backups, refuse_newer, upgrade_trackers, NewerFormat
 from .views import brief, issue_request, issue_update_request, updates_told
@@ -94,13 +94,14 @@ def offer(found: list[Match]) -> tuple[str, str]:
 def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
     """The match a session with no tracker links at its start without asking the user: one tracker only, and a
     ticket's `branch` names this branch, which is not a default branch (where many works share a branch, the user
-    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos)."""
+    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos).
+    None for a tracker in a newer format: the session stays on no tracker, and `offer` tells it."""
     if len(found) != 1 or found[0].how != "branch" or not sid:
         return None
     m, slug = found[0], cwd_repo(cwd)
     if not slug or any(m.tracker.repo_of(t).lower() != slug for t in m.tickets):
         return None
-    return m if m.branch not in default_branches(cwd) else None
+    return m if m.branch not in default_branches(cwd) and not newer_format(m.tracker.root) else None
 
 
 AUTO_LINKED = ("Linked at session start: this branch is the branch of {ids}. If the user says this session is not "
@@ -131,7 +132,7 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    refuse_newer(m.tracker.root)  # a tracker linked just now: its brief would ask for writes that are refused
+    refuse_newer(m.tracker.root)  # the tracker /clear kept (take_over): its brief would ask for writes that are refused
     record_version()
     m, found = match_pr(m, cwd)
     record_commits(m, cwd)  # made since the last session, as in the terminal
@@ -302,7 +303,7 @@ def hook_prompt(data: dict) -> None:
     now = watch(m.tracker, m.focus)
     # A brief on other tickets (the branch changed) is no baseline: start again from now.
     news = changes_since(m.tracker, entry["seen"], now) if entry.get("seen_for") == ids and ids else []
-    fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | ({} if inside_home(cwd) else {"cwd": str(cwd)})
+    fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | cwd_field(cwd)
     lines = []
     if news and not granted(sid):  # a watching session has them from its watch
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
