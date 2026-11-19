@@ -1490,7 +1490,7 @@ class NewerFormat(unittest.TestCase):
             readme.write_text(readme.read_text().replace(f"schema: {schema.SCHEMA + 1}", f"schema: {schema.SCHEMA}"))
             self.assertIn("Tracker protocol", said(hook("session-start", sid, work, source="resume")))  # the restart
             self.assertNotIn("told_refusal", session.load_session(sid))  # that brief had the protocol
-            self.assertNotIn("Tracker protocol", run("start", cwd=work))  # so the start the model was asked for adds none
+            self.assertNotIn("Tracker protocol", run("start", cwd=work))  # so the start it was asked for adds none
 
     def test_here_on_a_newer_tracker_briefs_and_says_so(self):
         s, _ = self.tracker()
