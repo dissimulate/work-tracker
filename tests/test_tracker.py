@@ -1248,6 +1248,7 @@ class Upgrade(unittest.TestCase):
         self.assertIn(f"could not migrate {s}", said)
         self.assertIn(OLDER, said)
         self.assertNotIn(FIX, said)  # its README is fine
+        self.assertIn(f"run `tracker check --tracker {s}` and fix what it reports", said)
 
     def test_start_on_a_tracker_that_cannot_migrate_changes_nothing(self):
         s, _, root, _ = self.unmigratable()
