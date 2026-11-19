@@ -1205,6 +1205,22 @@ class NewerFormat(unittest.TestCase):
         self.addCleanup(session.drop_session, x)
         return x
 
+    def test_a_write_names_its_tracker_through_home_or_what_it_resolves_to(self):
+        # The guard and the first_writes report see a path's tracker by `tracker_root`; HOME can be a link.
+        real = Path(tempfile.mkdtemp(dir=BASE))
+        home = Path(tempfile.mkdtemp(dir=BASE)) / "home"
+        home.symlink_to(real, target_is_directory=True)
+        elsewhere = Path(tempfile.mkdtemp(dir=BASE)) / "linked"
+        elsewhere.mkdir()
+        (real / "linked").symlink_to(elsewhere, target_is_directory=True)  # a tracker folder that is a link
+        with mock.patch.object(store, "HOME", home):
+            for path, root in ((home / "a/README.md", home / "a"), (real / "a/tickets/A-1.md", home / "a"),
+                               (home / ".archive/a/README.md", None), (real / ".archive/a/README.md", None),
+                               (home / "a", None),  # the folder itself is one of HOME's own entries
+                               (home / "linked/log.md", home / "linked"), (elsewhere / "log.md", None)):
+                with self.subTest(path=path):
+                    self.assertEqual(store.tracker_root(path), root)
+
     def test_a_write_refuses_and_changes_nothing(self):
         s, t = self.tracker()
         self.newer(s)
@@ -1248,15 +1264,18 @@ class NewerFormat(unittest.TestCase):
         self.assertEqual(tree(target), before)
 
     def test_use_clear_refused_in_one_tracker_clears_none(self):
-        work = repo("main")
-        (a, ta), (b, tb) = sorted((self.tracker(), self.tracker()))  # `use --clear` reaches a first
-        for t in (ta, tb):
-            run(*t, "use", "N-1", cwd=work)
-        self.newer(b)
-        before = {s: tree(store.HOME / s) for s in (a, b)}
-        said = run("use", "--clear", cwd=work, code=watcher.REFUSED)
-        self.assertEqual(said, f"tracker: {self.why(b)}\n")  # and no "cleared the choice"
-        self.assertEqual({s: tree(store.HOME / s) for s in (a, b)}, before)
+        for newer_first in (True, False):  # `use --clear` reaches the trackers in folder-name order: either may refuse
+            with self.subTest(newer_first=newer_first):
+                work = repo("main")
+                a, b = sorted((self.tracker()[0], self.tracker()[0]))
+                for x in (a, b):
+                    run("--tracker", x, "use", "N-1", cwd=work)
+                newer = a if newer_first else b
+                self.newer(newer)
+                before = {x: tree(store.HOME / x) for x in (a, b)}
+                said = run("use", "--clear", cwd=work, code=watcher.REFUSED)
+                self.assertEqual(said, f"tracker: {self.why(newer)}\n")  # and no "cleared the choice"
+                self.assertEqual({x: tree(store.HOME / x) for x in (a, b)}, before)
 
     def test_start_on_a_newer_tracker_changes_nothing(self):
         (old, _), (s, _) = self.tracker(), self.tracker()
