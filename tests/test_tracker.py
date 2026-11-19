@@ -1409,6 +1409,18 @@ class NewerFormat(unittest.TestCase):
         self.assertRegex(out, rf"\n{s} {NEWER}[^\n]*: {RELOAD}\.\n\Z")
         self.assertEqual(tree(store.HOME / s), before)
 
+    def test_here_on_a_newer_tracker_briefs_and_says_so(self):
+        s, _ = self.tracker()
+        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", s, cwd=work)
+            self.newer(s)
+            before = tree(store.HOME / s)
+            out = run("here", cwd=work)  # a read: exits 0
+        self.assertIn("N-1", out)
+        self.assertRegex(out, rf"\n{s} {NEWER}[^\n]*: {RELOAD}\.\n\Z")
+        self.assertEqual(tree(store.HOME / s), before)
+
 
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""

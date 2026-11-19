@@ -133,6 +133,8 @@ def cmd_here(args):
               + ". `tracker start <name>` ties this session to a tracker.")
         return
     print(brief(m, cwd, full=args.full, with_protocol=False))
+    if why := newer_format(m.tracker.root):  # as a bare `start` says it (cmd_start)
+        print(f"{why}.")
 
 
 def cmd_context(args):
