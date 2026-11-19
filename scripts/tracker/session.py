@@ -531,9 +531,16 @@ def watch_running(st: dict) -> bool:
 def coordinated(tr: Tracker) -> bool:
     """A session watches the tracker as its coordinator (`tracker watch --as coordinator`), now. Read from the watches'
     state each time, never stored: a coordinator that stops hands its decisions back to a human by itself."""
+    return bool(coordinator_since(tr))
+
+
+def coordinator_since(tr: Tracker) -> float:
+    """Since when a coordinator has watched the tracker (`coordinated`), as its running watch's start (epoch s); 0
+    with none."""
     # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
-    return any(st.get("role") == COORDINATOR and watch_running(st)
-               for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json")))
+    starts = [float(st.get("started") or 0) or 1.0 for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
+              if st.get("role") == COORDINATOR and watch_running(st)]
+    return min(starts, default=0.0)
 
 
 # Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
@@ -542,13 +549,13 @@ def coordinated(tr: Tracker) -> bool:
 AROUND: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
-def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str]]:
-    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions have under way, and
-    those sessions' names by id, as read once for this Tracker object (AROUND)."""
+def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str], float]:
+    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions have under way, those
+    sessions' names by id, and since when the coordinator watches, as read once for this Tracker object (AROUND)."""
     if tr not in AROUND:
-        live = live_sessions(tr.slug)
-        AROUND[tr] = (coordinated(tr), {i for x in live for i in agent_tickets(tr, x.cwd, x.sid)},
-                      {x.sid: x.name for x in live})
+        live, since = live_sessions(tr.slug), coordinator_since(tr)
+        AROUND[tr] = (bool(since), {i for x in live for i in agent_tickets(tr, x.cwd, x.sid)},
+                      {x.sid: x.name for x in live}, since)
     return AROUND[tr]
 
 
@@ -562,7 +569,7 @@ def items_of(tr: Tracker, now: float | None = None) -> list[Item]:
 def move_of(tr: Tracker, t: Record) -> Move | None:
     """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker and the open items
     (`items_of`): what every view shows."""
-    return whose_move(tr, t, around(tr)[0], items_of(tr))
+    return whose_move(tr, t, around(tr)[0], items_of(tr)) if t.in_flight else None
 
 
 def ticket_facts(tr: Tracker, t: Record) -> dict:
@@ -747,8 +754,9 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
     transcript's file (an empty one keeps the last), and `terminal`, its Herdr terminal (none: it left Herdr).
     `asker`: for a wait on a human that starts or ends, the agent it concerns ("" for the session's own). The session
     stays `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait. Each
-    wait is logged at its start and its end (`log_waits`; `tool`, what it asks about; `failed`, the error of a tool
-    the human refused). One lock around the whole: two hooks of one session do not interleave."""
+    wait is logged at its start and its end (`log_waits`; `tool`, what it asks about; `failed`, the error of the tool
+    it asked about, when that failed: a refused permission or a tool that failed once allowed, which the hook cannot
+    tell apart). One lock around the whole: two hooks of one session do not interleave."""
     with locked():
         entry = load_session(sid)
         if not entry.get("tracker"):
@@ -795,10 +803,10 @@ def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: l
     for who in ending:
         seq, at = waits.pop(who)
         seconds = max(0, int(now - at))
-        refused = {"refused": short(failed)} if failed else {}
+        error = {"failed": short(failed)} if failed else {}
         if seq:
-            logged("human.wait.end", f"Waited {seconds} s on a human" + (": refused" if failed else ""), asker=who,
-                   of=seq, seconds=seconds, **refused)
+            logged("human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
+                   asker=who, of=seq, seconds=seconds, **error)
     for who in starting:
         waits[who] = [logged("human.wait", "Waiting on a human" + (f": {tool}" if tool else ""), asker=who, why=tool),
                       now]

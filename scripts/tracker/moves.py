@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 from .markdown import Link
-from .schema import COORDINATOR, DEADLINE_S, day_of, utc_seconds
+from .schema import COORDINATOR, DEADLINE_S, parse_day, utc_seconds
 from .model import link_title, short, Record, Tracker
 
 # What a move reads of an open PR, in the tracker's own words: a forge's adapter (github.py) maps its own words onto
@@ -150,7 +150,7 @@ class Item:
     kind: str  # "submission", "findings", "question" or "wait"
     key: str  # stable while it is open: "submission:<seq>", "findings:<review seq>", "question:<D-id>", "wait:<seq>"
     refs: list[str]  # the tickets it concerns
-    at: float  # when it was written (epoch s)
+    at: float  # since when it has waited on its move's party (epoch s): its writing, or a later hand-over
     what: str  # one line for a person
     move: Move  # whose turn it is
     stuck: bool = False  # nobody whose turn it is has acted in time: a human's move now
@@ -165,20 +165,30 @@ def count(n: int, word: str) -> str:
 
 def created(r: Record, now: float) -> float:
     """When a record was made: its `created_at`, a date alone as that day's start; `now` with neither."""
-    at, day = utc_seconds(r.get("created_at")), day_of(r.get("created_at"))
-    return at if at is not None else time.mktime(day.timetuple()) if day else now
+    at = utc_seconds(r.get("created_at"))
+    if at is not None:
+        return at
+    day = parse_day(r.get("created_at"))
+    return time.mktime(day.timetuple()) if day else now
+
+
+def question_key(ident: str) -> str:
+    """An open decision's Item key."""
+    return f"question:{ident}"
 
 
 def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, on: set[str],
-               live: dict[str, str]) -> list[Item]:
+               live: dict[str, str], coordinator_since: float = 0) -> list[Item]:
     """The items open at `now`, stuck first, then the oldest first, from one pass over `events` (the log, oldest
-    first). `coordinated`: a coordinator watches the tracker; `on`: the tickets the live sessions have under way;
-    `live`: the sessions running now, each with its name. A submission is open until a review answers it, a review's
-    findings until each is marked fixed or the next submission comes, both while the ticket is open; a question while
-    its decision is open; a wait until its end, while its session runs.
+    first). `coordinated`: a coordinator watches the tracker, since `coordinator_since`; `on`: the tickets the live
+    sessions have under way; `live`: the sessions running now, each with its name. A submission is open until a
+    review answers it, a review's findings until each is marked fixed or the next submission comes, both while the
+    ticket is open; a question while its decision is open; a wait until its end, while its session runs.
     Stuck: a wait past its deadline; a submission or a question whose move is not a human's past its deadline, or at
     once when it concerns a ticket under way that no live session is on, and its move is then a human's. One whose
-    move is a human's already is simply theirs; findings never are; a ticket not yet started makes nothing stuck."""
+    move is a human's already is simply theirs; findings never are; a ticket not yet started makes nothing stuck. A
+    deadline runs from when the item became its party's move: a coordinator that starts watching, a question passed
+    to a new owner or a ticket that starts is not blamed for the time before."""
     def judged(item: Item, late: str) -> Item:
         if item.move.human:
             return item
@@ -189,7 +199,8 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
             what = f"{item.what}, and no session is on {', '.join(alone)}"
         else:
             return item
-        return replace(item, stuck=True, what=what, move=replace(item.move, human=True))
+        move = Move("human", f"{item.move.what}, stuck with {item.move.who}", item.move.rank, human=True)
+        return replace(item, stuck=True, what=what, move=move)
 
     def minutes(at: float) -> str:
         return f"{int((now - at) // 60)} min"
@@ -201,7 +212,10 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
             continue
         if h.submission:
             at = utc_seconds(h.submission.get("at")) or now
-            move = Move(COORDINATOR, handed.review, 5) if coordinated else Move("human", handed.review, 5, human=True)
+            if coordinated:
+                at, move = max(at, coordinator_since), Move(COORDINATOR, handed.review, 5)
+            else:
+                move = Move("human", handed.review, 5, human=True)
             items.append(judged(Item("submission", f"submission:{h.submission['seq']}", [t.id], at,
                                      f"{t.id} {handed.ready}", move),
                                 f"{move.who} has not reviewed {t.id}'s {handed.noun} for {minutes(at)}"))
@@ -211,11 +225,16 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
             if left:
                 items.append(Item("findings", f"findings:{h.review['seq']}", [t.id],
                                   utc_seconds(h.review.get("at")) or now, f"{t.id}: {said}", Move(YOU, said, 5)))
+    owned = {e.get("decision"): utc_seconds(e.get("at")) or 0 for e in events
+             if e["kind"] == "decision.updated" and "owner" in e}  # each decision's last change of owner
     for d in tr.open_decisions():
         kind, name = owner_kind(tr, d)
         refs = sorted(set(tr.touched_by(d)) | ({name} if kind == "ticket" else set()))
-        at, move = created(d, now), decision_move(tr, d, coordinated)
-        items.append(judged(Item("question", f"question:{d.id}", refs, at, f"{d.id} open", move),
+        move = decision_move(tr, d, coordinated)
+        at = max(created(d, now), owned.get(d.id, 0),
+                 coordinator_since if move.who == COORDINATOR else 0,
+                 utc_seconds(tr.lookup(name).get("started_at")) or 0 if kind == "ticket" else 0)
+        items.append(judged(Item("question", question_key(d.id), refs, at, f"{d.id} open", move),
                             f"{move.who} has not answered {d.id} for {minutes(at)}"))
     waits, ended = {}, set()
     for e in events:
@@ -309,7 +328,7 @@ def pr_move(tr: Tracker, t: Record, r: dict, coordinated: bool, items: list[Item
         return handed.move
     for d in tr.blockers(t):
         if d.kind == "decision":
-            asked = next((i for i in items if i.key == f"question:{d.rec.id}"), None)
+            asked = next((i for i in items if i.key == question_key(d.rec.id)), None)
             return asked.move if asked else decision_move(tr, d.rec, coordinated)
         if d.kind == "action":  # the user's to do: this side's
             return Move(YOU, f"{d.ident} open", 5, human=True)

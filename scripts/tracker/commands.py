@@ -1014,6 +1014,8 @@ def cmd_review(args):
         die("a review that asks for changes lists them: one --finding per change")
     if args.verdict == "pass" and args.finding:
         die("a finding is a change asked for: use --verdict changes, or leave the finding out")
+    if empty := [str(i) for i, x in enumerate(args.finding or [], 1) if not x.strip()]:
+        die(f"a finding says what to change: finding {', '.join(empty)} is empty")
     tr, t = open_ticket(args)
     events, name = read_events(tr), HANDED[args.what].review
     if args.fixed is not None:
@@ -1024,10 +1026,10 @@ def cmd_review(args):
             die(f"{t.id}'s latest {name} has " + (f"findings {', '.join(map(str, have))}: --fixed takes those numbers"
                                                     if have else "no findings"))
         fixed = list(dict.fromkeys(int(x) for x in given))
-        listed = ", ".join(map(str, fixed))
-        append_event(tr, "finding.fixed", f"{t.id} fixed findings {listed} of the {name}", [t.id], what=args.what,
+        listed = f"finding{'s' * (len(fixed) > 1)} {', '.join(map(str, fixed))}"
+        append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
                      of=review["seq"], findings=fixed)
-        print(f"marked findings {listed} of {t.id}'s {name} fixed")
+        print(f"marked {listed} of {t.id}'s {name} fixed")
         return
     findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
     said = f"{args.verdict}, {count(len(findings), 'finding')}" if findings else args.verdict

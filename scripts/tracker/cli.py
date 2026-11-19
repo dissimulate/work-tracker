@@ -11,12 +11,12 @@ import sys
 from pathlib import Path
 
 from .system import die
-from .store import first_writes, locked, Busy
+from .store import first_writes, locked, Busy, OtherFormat
 from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
     SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
-from .contract import upgrade_trackers, OtherFormat
+from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
 from .watcher import EVENT_KINDS, REFUSED, URGENT
@@ -202,7 +202,8 @@ def build_parser():
     add("ready", cmd_ready, "the todo tickets that can start now, the most urgent first: nothing blocks them (from "
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
-    add("check", cmd_check, "validate the tracker; exit 1 on errors")
+    add("check", cmd_check, "validate the tracker, then list what is stuck (a submission, a question or a wait on a "
+                            "human left too long); exit 1 on errors")
     sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
                                "base, reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
@@ -232,7 +233,7 @@ def build_parser():
     sp.add_argument("--pause", metavar="HANDOFF", help="stopping mid-work: what is done, what is half-done and "
                                                        "uncommitted, and the next step")
     sp = add("submit", cmd_submit, "hand a ticket's plan, or its built code, to its reviewer (the coordinator, else "
-                                   "a human): the ticket's move is theirs until `tracker review` answers it")
+                                   "a human), whose review it waits on until `tracker review` answers it")
     sp.add_argument("id", help="the ticket")
     sp.add_argument("--what", required=True, choices=SUBMIT_WHAT, help="plan: its plan is ready for review; code: "
                                                                       "its built code is ready for the plan "
@@ -268,9 +269,9 @@ def build_parser():
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
     sp = add("watch", cmd_watch, "print each change to a tracker, one line per ticket or agent (`!` marks what needs "
                                  "a human), until stopped: a move, a step, a decision, a PR event, an agent that ends "
-                                 "its turn or waits on the user, a `check` error. One watch per session and tracker. "
-                                 "In an agent session, run it only when the user, or a skill or instruction from "
-                                 "them, tells you to watch: never on your own")
+                                 "its turn or waits on the user, a `check` error, a stuck item. One watch per session "
+                                 "and tracker. In an agent session, run it only when the user, or a skill or "
+                                 "instruction from them, tells you to watch: never on your own")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")

@@ -499,7 +499,10 @@ class Watcher:
                 continue
             told.add(i.key)
             if i.kind != "wait" or agents.get(i.session, {}).get("status") != "waiting":
-                about = i.key.split(":", 1)[1] if i.kind == "question" else i.refs[0] if i.refs else ""
+                if i.kind == "question":
+                    about = i.key.split(":", 1)[1]  # its decision
+                else:
+                    about = i.refs[0] if i.refs else ""
                 out.append(Event("stuck", f"stuck {about}".strip(), True, i.what))  # a line of its own
         self.st["stuck"] = sorted(told & {i.key for i in items})
         return out

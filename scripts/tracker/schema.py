@@ -207,8 +207,8 @@ EVENTS = {
     "finding.fixed": "findings of a review marked fixed (`what`; `of`: the review's seq; `findings`: their numbers)",
     "human.wait": "an agent of a session began to wait on a human for a permission or an answer (`asker`: \"\" for the "
                   "session itself, else its subagent's id; `why`: the tool it asked about, else \"\")",
-    "human.wait.end": "that wait ended (`asker`; `of`: the wait's seq; `seconds`: how long it lasted; `refused`: the "
-                      "error, when the human refused the permission)",
+    "human.wait.end": "that wait ended (`asker`; `of`: the wait's seq; `seconds`: how long it lasted; `failed`: the "
+                      "tool's error, when it failed: a refused permission, or a tool that failed once allowed)",
     "migrated": "the tracker brought to a newer format (`schema`)",
     "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",

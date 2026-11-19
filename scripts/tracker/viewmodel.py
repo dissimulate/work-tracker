@@ -11,7 +11,7 @@ from .schema import (FACTS, LIVE_SYNC_S, QUIET_KINDS, README_SECTIONS, SCALES, S
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
     read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import is_pr_link, linked_prs, owner_kind, Move
+from .moves import is_pr_link, linked_prs, owner_kind, question_key, Move
 from .session import ago, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
@@ -143,7 +143,7 @@ def record_view(tr: Tracker, r: Record) -> dict:
     if r.kind == "ticket":
         move = move_of(tr, r)
     elif asks:  # as an open item: a stuck question is a human's
-        move = next(i.move for i in items_of(tr) if i.key == f"question:{r.id}")
+        move = next(i.move for i in items_of(tr) if i.key == question_key(r.id))
     else:
         move = None
     # The view's answer goes as `--by`: a person the owner names, else `user`, never what would be refused

@@ -4360,6 +4360,11 @@ class Coordinator(unittest.TestCase):
         run(*self.t, "set", "W-1", "status=in-progress")
         run(*self.t, "decide", "Which store", "--blocks", "W-1")
         self.sid = f"co{time.monotonic_ns()}"
+        # A worker session on W-1 and W-2, so that a question on them is no one's stuck item (`moves.open_items`)
+        worker, now = f"wk{time.monotonic_ns()}", time.time()
+        session.save_session(worker, tracker=self.s, focus=["W-1", "W-2"], cwd=BASE,
+                             activity={"status": "busy", "since": now, "at": now})
+        self.addCleanup(session.drop_session, worker)
 
     def tr(self) -> model.Tracker:
         return model.tracker_at(self.s)
@@ -4417,8 +4422,7 @@ class Coordinator(unittest.TestCase):
 
     def test_the_coordinators_first_summary_knows_its_role(self):
         line = next(x for x in self.watch("--as", "coordinator").splitlines() if "W-1 " in x)
-        # The coordinator's question; `!`, as no session is on W-1, which makes it stuck at once (`moves.open_items`)
-        self.assertRegex(line, r"^\d\d:\d\d ! W-1 in-progress · move: coordinator — D-01 open")
+        self.assertRegex(line, r"^\d\d:\d\d W-1 in-progress · move: coordinator — D-01 open")
         other = f"plain{time.monotonic_ns()}"
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": other}):
             watcher.set_grant(self.sid, False)  # the coordinator has stopped
@@ -4446,8 +4450,7 @@ class Coordinator(unittest.TestCase):
                 model.tracker_at(self.s).lookup("D-01").save({"owner": owner})  # "Sam (PM)": `decide` refuses it
                 d = data(self.s)["records"]["D-01"]
                 self.assertEqual(d["answer"]["by"], by)
-                # W-2's session's too: no session is on W-2, so its question is stuck at once (`moves.open_items`)
-                self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, True))
+                self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, owner != "W-2"))
                 with mock.patch.dict(os.environ, {"TRACKER_VIA": "view"}):  # the view's answer is never refused
                     run(*self.t, "decide", "D-1", "--resolve", "x", f"--by={by}")
                 model.tracker_at(self.s).lookup("D-01").change({"status": "open", "closed_at": None})
@@ -4685,6 +4688,8 @@ class Handoffs(unittest.TestCase):
              "T-2 is closed: a closed ticket takes no submission or review"),
             (["review", "T-1", "--what", "plan", "--verdict", "changes"],
              "a review that asks for changes lists them: one --finding per change"),
+            (["review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a", "--finding", "  "],
+             "a finding says what to change: finding 2 is empty"),
             (["review", "T-1", "--what", "plan", "--verdict", "pass", "--finding", "a"],
              "a finding is a change asked for: use --verdict changes, or leave the finding out"),
             (["review", "T-1", "--what", "code", "--fixed", "1", "--verdict", "pass"], "--fixed"),
@@ -4706,7 +4711,7 @@ class Handoffs(unittest.TestCase):
         lines = run(*self.t, "history", "--ref", "T-1").splitlines()[-3:]
         self.assertEqual([x.split(" ", 2)[2] for x in lines],
                          ["T-1 plan ready for review", "T-1 plan review: changes, 1 finding: 1. a",
-                          "T-1 fixed findings 1 of the plan review"])
+                          "T-1 fixed finding 1 of the plan review"])
 
 
 class HumanWaits(unittest.TestCase):
@@ -4769,11 +4774,15 @@ class HumanWaits(unittest.TestCase):
         hook("waiting", self.sid, self.work, tool_name="Bash")
         self.assertEqual([e["kind"] for e in self.waits()], ["human.wait"])
 
-    def test_a_refused_permission_is_recorded(self):
+    def test_a_failed_tool_after_a_wait_is_recorded_as_failed(self):
+        # The hook cannot tell a refused permission from an approved tool that then failed: it says what it knows.
         hook("waiting", self.sid, self.work, tool_name="Bash")
-        hook("resumed", self.sid, self.work, tool_name="Bash", hook_event_name="PostToolUseFailure", error="denied")
+        hook("resumed", self.sid, self.work, tool_name="Bash", hook_event_name="PostToolUseFailure",
+             error="Command failed with exit code 1")
         end = self.waits()[-1]
-        self.assertEqual((end["refused"], end["text"]), ("denied", f"Waited {end['seconds']} s on a human: refused"))
+        self.assertEqual((end["failed"], end["text"]),
+                         ("Command failed with exit code 1", f"Waited {end['seconds']} s on a human: the tool failed"))
+        self.assertNotIn("refused", end)
 
     def test_a_session_on_no_tracker_writes_nothing(self):
         session.save_session(self.sid, tracker=None)
@@ -4946,12 +4955,22 @@ class OpenItems(unittest.TestCase):
         self.assertEqual((item.stuck, item.move.human, item.what),
                          (True, True, "coordinator has not answered D-01 for 30 min"))
 
-    def coordinator(self) -> None:
-        """A coordinator's watch of the tracker, running now."""
+    def coordinator(self, started: float = 0) -> None:
+        """A coordinator's watch of the tracker, running now; started at `started`."""
         path = watcher.state_path(self.s, "qb")
         path.parent.mkdir(parents=True, exist_ok=True)
-        store.write_json(path, {"who": "session qb", "sid": "qb", "pid": os.getpid(), "role": "coordinator"})
-        self.addCleanup(path.unlink)
+        store.write_json(path, {"who": "session qb", "sid": "qb", "pid": os.getpid(), "role": "coordinator",
+                                **({"started": started} if started else {})})
+        self.addCleanup(path.unlink, True)
+
+    def test_the_coordinators_watch_says_when_its_clock_starts(self):
+        two_hours = time.strftime(schema.TIME_FORMAT, time.gmtime(time.time() - 7200))
+        with store.locked(), mock.patch.object(model, "utc_now", return_value=two_hours):
+            model.append_event(model.tracker_at(self.s), "submission", "T-2 plan ready for review", ["T-2"],
+                               what="plan")  # T-2 has not started: only its deadline can make it stuck
+        self.coordinator(started=time.time() - 60)
+        (item,) = session.items_of(model.tracker_at(self.s))
+        self.assertEqual((item.move.who, item.stuck), ("coordinator", False))
 
     def test_a_stuck_question_is_a_humans_wherever_it_shows(self):
         run(*self.t, "decide", "Which store", "--blocks", "T-1")
@@ -4960,7 +4979,27 @@ class OpenItems(unittest.TestCase):
         got = data(self.s)  # no session is on T-1, which is under way: stuck at once
         self.assertEqual(got["records"]["D-01"]["move"], got["records"]["T-1"]["move"])
         self.assertEqual((got["records"]["D-01"]["move"]["text"], got["records"]["D-01"]["move"]["human"]),
-                         ("coordinator: D-01 open", True))
+                         ("human: D-01 open, stuck with coordinator", True))  # said as a human's wherever it shows
+        self.assertIn("human: D-01 open, stuck with coordinator — T-1", run(*self.t, "index"))
+
+    def test_a_questions_clock_starts_when_it_became_that_partys(self):
+        run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")
+        later = schema.utc_seconds(model.tracker_at(self.s).lookup("D-01").get("created_at")) + 7200
+        with mock.patch.object(model, "utc_now", return_value=time.strftime(schema.TIME_FORMAT, time.gmtime(later))):
+            run(*self.t, "decide", "D-01", "--owner", "coordinator")  # passed on two hours after it opened
+        events = model.read_events(model.tracker_at(self.s))
+        (item,) = self.items(events, now=later + 60)
+        self.assertEqual((item.stuck, item.at), (False, later))
+        self.assertTrue(self.items(events, now=later + 1801)[0].stuck)
+
+    def test_a_coordinator_that_arrives_is_not_blamed_for_what_came_before(self):
+        run(*self.t, "decide", "Which store", "--refs", "T-1")
+        created = schema.utc_seconds(model.tracker_at(self.s).lookup("D-01").get("created_at"))
+        submitted = [event(1, "submission", ["T-1"], 7200, what="plan")]
+        arrived = NOW - 60
+        items = moves.open_items(model.tracker_at(self.s), submitted, NOW, True, {"T-1"}, {}, arrived)
+        self.assertEqual([(i.kind, i.stuck, i.at) for i in items],
+                         [("submission", False, arrived), ("question", False, max(created, arrived))])
 
     def test_a_humans_own_question_is_never_stuck(self):
         run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")
@@ -5019,9 +5058,9 @@ class OpenItems(unittest.TestCase):
         what = self.stuck()
         tr = model.tracker_at(self.s)
         brief = views.brief(session.Match(tr, [tr.lookup("T-1")], "feat/T-1", "branch"), Path(BASE))
-        self.assertIn("move: coordinator — plan review", brief)
+        self.assertIn("move: human — plan review, stuck with coordinator", brief)  # whose it is now, as a fact
         self.assertNotIn(what, brief)
-        self.assertNotIn("stuck", brief)
+        self.assertNotIn("stuck:", brief)  # and no request to fix it
 
     def test_history_filters_by_kind(self):
         run(*self.t, "log", "A note", "--ref", "T-1")
