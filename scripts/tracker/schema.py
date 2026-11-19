@@ -171,6 +171,8 @@ KEYS = {
         "owner": ("set", "who owns the work"),
         "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
+        "issues": ("set", "required: every open ticket has an Issue link, and `check` reports one with none as an "
+                          "error; optional or empty: a warning, only while some ticket has an Issue link"),
         "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
                                  "decisions settled on it to the ticket's issue, with the issue tracker's tool "
                                  "(`tracker issue` says what is due); off or empty: the tracker never asks"),
@@ -193,11 +195,17 @@ EVENTS = {
     "decision.opened": "a decision opened (`decision`, its id)",
     "decision.updated": "a decision's notes, choices or recommendation changed (`decision`)",
     "decision.decided": "a decision settled (`decision`; `decided`: human, source or unattributed; `by`, the human "
-                        "named; `source`, where the answer was; `cited`: false while no human's word is cited)",
+                        "named; `source`, where the answer was; `cited`: whether a human's word is cited; `word`: the "
+                        "cited message's `fingerprint`, `at` and `excerpt`, as the session kept it)",
     "action.added": "an action for the user added (`action`, its id)",
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
-    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`)",
+    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`)",
+    "pr.opened": "a PR a session on the tracker opened (`gh pr create`), once (`pr`); `check` warns while no ticket "
+                 "claims it",
+    "pr.review": "a review of a PR that approved it or requested changes, as `sync` read it, once each (`pr`; "
+                 "`review`: the forge's id for it; `by`; `result`: approved or changes; `submitted_at`: the forge's "
+                 "time for it; `bot`: whether a bot wrote it)",
     "branch.set": "the branch a ticket is built on (`branch`)",
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
@@ -224,6 +232,7 @@ RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_crea
                 "action": {"opened": "created_at", "updated": "updated_at"},
                 "tracker": {"created": "created_at"}}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
+ISSUES = ("optional", "required")  # README `issues`: whether each open ticket must have an Issue link (`check`)
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
@@ -243,8 +252,8 @@ STATE_RULES = {
                "session; the brief shows it first; the next `step` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
-    "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
-           "tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
+    "prs": "per open PR (`owner/name#n`), what `sync` last read of its title, reviews, checks and merge state, in "
+           "the tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
               "UI's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
@@ -275,7 +284,7 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
 LIST_KEYS = {"depends_on", "refs", "labels", "prs"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
-CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
+CHOICES = {"issue_updates": ISSUE_UPDATES, "issues": ISSUES}  # a key that holds one of a few words
 
 
 class Form:
@@ -528,9 +537,16 @@ def resolution_who(text: str | None) -> str | None:
 # A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
 COORDINATOR = "coordinator"
 # A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
-RESOLVE = ('`tracker decide D-<n> --resolve "..." --by <who decided>` (`--source "<where>"` when the spec, a settled '
-           'decision or the code already answered it)')
-DECIDED = '`tracker decide "<title>" --resolve "..." --by <who decided>`'  # a choice made on the spot, in one command
+# The human's message a resolution rests on: optional, as only a message this session kept can be cited
+CITE = '[--cite "<a few words from the start of what they said in this session>"]'
+RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` instead, when the '
+           'spec, a settled decision or the code already answered it)')
+DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
+# A session keeps the human's last WORDS_KEPT messages and answers, each as a fingerprint and its first
+# WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. These
+# values are first guesses (the spec "the tracker as the channel", open question 3).
+WORDS_KEPT = 5
+WORD_EXCERPT_MAX = 200
 DECISION_BAR = (
     "A decision is a direction choice: it changes the Goal or Scope, a ticket's plan, order or split, a contract "
     "between tickets, a product, design or architecture rule, or it needs someone else's sign-off. Record it with "

@@ -91,9 +91,11 @@ def link_url(link: Link) -> str:
     return (m[1] if m.lastindex else m[0]) if m else link.text
 
 
-def link_title(link: Link) -> str:
-    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`."""
-    return re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+def link_title(link: Link, note: bool = True) -> str:
+    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`; with no `note`,
+    `title`."""
+    text = re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+    return text if note else text.split(" — ")[0]
 
 
 def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0,
@@ -102,7 +104,7 @@ def link_lines(items: list[Link], root: Path | None = None, titles: bool = False
     keeps the label, title and why, without the URL. `width` (a brief) cuts each line to that many characters and
     leaves out the nested detail lines."""
     if titles:
-        return [f"  {x.label}: {link_title(x).split(' — ')[0]}" for x in items]
+        return [f"  {x.label}: {link_title(x, note=False)}" for x in items]
     if not urls:
         return [f"  {cut(f'{x.label}: {link_title(x)}', width)}" for x in items]
     out = []
@@ -790,6 +792,12 @@ def pr_key(repo: str, pr) -> str:
     return f"{repo.lower()}#{pr}"
 
 
+def pr_name(tr: Tracker, repo: str, pr) -> str:
+    """A PR as a log line names it: `#n` in a tracker of one repo, else `owner/name#n` as the tracker spells it."""
+    ours = next((r for r in tr.repos if r.lower() == repo.lower()), None)
+    return f"#{pr}" if ours and len(tr.repos) == 1 else f"{ours or repo}#{pr}"
+
+
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
     """A line naming the unfinished tickets in `blocked` that nothing blocks now."""
     free = [t.id for t in tr.tickets if t.id in blocked and not tr.blockers(t) and not t.closed]
@@ -940,13 +948,18 @@ def commits_text(branch: str, commits: list[tuple[str, str]]) -> str:
 
 
 PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}
+REVIEW_EVENT = {"approved": "approved", "changes": "changes requested"}  # a review's result, as its log line says it
 
 
-def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None) -> list[str]:
+def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None,
+              reviews: dict[str, list[dict]]) -> list[str]:
     """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PRs (each with `number`;
-    `state`: one of PR_EVENT; `merged_at`, UTC), each PR's new state an event; and the open PRs' PR_FACTS by pr_key
-    (None: the forge did not answer, so the last ones stay). Returns the change lines."""
+    `state`: one of PR_EVENT; `title`; `merged_at`, UTC), each PR's new state an event; the open PRs' PR_FACTS by
+    pr_key (None: the forge did not answer, so the last ones stay); and by pr_key each PR's reviews, oldest first
+    (each with the forge's `id`, `by`, `result`: one of REVIEW_EVENT, `submitted_at`, `bot`), an event for each one
+    the log does not hold yet: the log, not this machine's state, says which it holds. Returns the change lines."""
     changes, events = [], {}
+    named: dict[str, tuple[str, list[str]]] = {}  # per PR read, its name in a log line and its tickets
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     for t in tr.tickets:
         if t.id not in found:
@@ -965,11 +978,19 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
         if "prs" in updates:
             changes.append(f"{t.id}: PRs " + ", ".join(written))
         for x in now:
+            key = pr_key(repo, x["number"])
+            named.setdefault(key, (pr_name(tr, repo, x["number"]), []))[1].append(t.id)
             if old.get(str(x["number"])) != x["state"]:
-                name = f"{repo}#{x['number']}" if len(tr.repos) > 1 else f"#{x['number']}"
-                events.setdefault((pr_key(repo, x["number"]), x["state"]), (name, []))[1].append(t.id)
-    for (pr, pr_state), (name, ids) in events.items():
-        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state)
+                events.setdefault((key, x["state"]), (named[key][0], x.get("title", ""), []))[2].append(t.id)
+    for (pr, pr_state), (name, title, ids) in events.items():
+        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state, title=title)
+    logged = {(e.get("pr"), e.get("review")) for e in read_events(tr) if e["kind"] == "pr.review"}
+    for pr, (name, ids) in named.items():
+        for r in reviews.get(pr, []):
+            if (pr, r["id"]) not in logged:
+                append_event(tr, "pr.review", f"PR {name} review by {r['by']}: {REVIEW_EVENT[r['result']]}", ids,
+                             pr=pr, review=r["id"], by=r["by"], result=r["result"], submitted_at=r["submitted_at"],
+                             bot=r["bot"])
     changes += unblocked(tr, blocked)
     state = tr.state()
     state["last_sync"] = time.time()

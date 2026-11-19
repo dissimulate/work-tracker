@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .system import alive, descendants, die, session_id
 from .store import HOME, locked, read_json, write_json, OtherFormat
-from .schema import COORDINATOR, STAGES, stage_of
+from .schema import COORDINATOR, STAGES, WORD_EXCERPT_MAX, WORDS_KEPT, stage_of, utc_now
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
     put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
 from .moves import open_items, whose_move, Item, Move
@@ -144,6 +144,47 @@ def unlink_session(sid: str) -> None:
         now = time.time()
         kept = {"waits": waits, "activity": {"status": "waiting", "since": now, "at": now}, "cwd": entry.get("cwd")}
         write_json(path, {k: v for k, v in kept.items() if v is not None})
+
+
+# `/compact`, `/work-tracker:tracker index`, a skill `$work-tracker:watch` (a skill's name is lower case: not `$HOME`)
+COMMAND_CALL = re.compile(r"(/[A-Za-z]|\$[a-z])[\w.:-]*(\s|$)")
+
+
+def keep_word(sid: str, text: str) -> bool:
+    """Keep a message or answer the human sent a session on a tracker (`context_tracker`), as its `words`
+    (WORDS_KEPT of them, the newest last): a fingerprint of the whole text, when it was kept and its start
+    (WORD_EXCERPT_MAX characters, on one line). None of it reaches the log unless `decide --cite` copies it there. A
+    slash command or a skill call is no ruling, and keeps nothing. Whether it kept the text."""
+    # A lone surrogate (half an emoji) can come in JSON: hashed as sent, shown as "?" in UTF-8, which the log holds.
+    raw = text.encode("utf-8", "surrogatepass")
+    excerpt = " ".join(text.encode("utf-8", "replace").decode().split())[:WORD_EXCERPT_MAX]
+    if not excerpt or COMMAND_CALL.match(excerpt) or not session_path(sid):
+        return False
+    with locked():
+        if not context_tracker(sid):
+            return False
+        word = {"fingerprint": hashlib.sha256(raw).hexdigest()[:12], "at": utc_now(), "excerpt": excerpt}
+        save_session(sid, words=[*kept_words(load_session(sid)), word][-WORDS_KEPT:])
+    return True
+
+
+def cited_word(sid: str, quote: str) -> dict | None:
+    """The newest word the session kept (`keep_word`) whose excerpt holds the quote, case and runs of whitespace aside;
+    None when none does, or the quote is empty."""
+    def plain(s: str) -> str:
+        return " ".join(str(s).split()).casefold()
+
+    quote = plain(quote)
+    if not quote:
+        return None
+    return next((w for w in reversed(kept_words(load_session(sid))) if quote in plain(w["excerpt"])), None)
+
+
+def kept_words(entry: dict) -> list[dict]:
+    """A session entry's words (`keep_word`); a damaged one is none."""
+    words = entry.get("words")
+    return [w for w in words if isinstance(w, dict) and isinstance(w.get("excerpt"), str)] \
+        if isinstance(words, list) else []
 
 
 def open_waits(entry: dict) -> dict:

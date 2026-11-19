@@ -19,9 +19,9 @@ from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS
     STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since,
     kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
 from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link,
-    cached_event_lines, level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record,
-    Tracker)
-from .moves import MOVE_RULE, decision_move
+    cached_event_lines, level, names, norm_id, pr_key, put_section, read_events, relabel, resolution, sequence,
+    unknown_dep, Record, Tracker)
+from .moves import MOVE_RULE, decision_move, linked_prs
 from .session import coordinated
 
 # ---------------------------------------------------------------- check
@@ -73,6 +73,8 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
             errors.append(f"{t.id}: the tracker spans {len(tr.repos)} repos — set the ticket's repo")
         if t.get("repo") and t.get("repo") not in tr.repos:
             errors.append(f"{t.id}: repo {t.get('repo')} is not one of the tracker's repos ({', '.join(tr.repos)})")
+    no_issue(tr, errors, warnings)
+    warnings += unclaimed(tr)
     live = coordinated(tr)
     for d in tr.decisions:
         if d.closed:
@@ -98,6 +100,33 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     if tokens > README_TOKEN_BUDGET:
         warnings.append(f"README.md ~{tokens} tokens > {README_TOKEN_BUDGET} limit — move detail to tickets or log")
     return errors, warnings
+
+
+def no_issue(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
+    """Each open ticket with no Issue link (R11): an error when README `issues` is required; else a warning, while some
+    ticket has one (a tracker that uses no issue tracker is not asked for them). One line per ticket: a write reports
+    only the lines it adds (`cli.with_check`)."""
+    if tr.meta.get("issues") == "required":
+        out, why = errors, " (README issues: required)"
+    elif any(t.aliases for t in tr.tickets):
+        out, why = warnings, ""
+    else:
+        return
+    out += [f"{t.id}: no issue{why}" for t in tr.tickets if not t.closed and not t.aliases]
+
+
+def unclaimed(tr: Tracker) -> list[str]:
+    """Each PR a session on the tracker opened (`pr.opened`) that no ticket claims (R11): none names it now, by its
+    branch's PRs (`prs`) or a `PR:` link, and none ever held it (a `pr.state` event on a ticket: a later PR from the
+    branch replaced it, and `sync` dropped it from `prs`)."""
+    events = read_events(tr)
+    claimed = {pr_key(tr.repo_of(t), n) for t in tr.tickets for n in t.prs}
+    claimed |= {pr_key(x.repo, x.number) for t in tr.tickets for x in linked_prs(t)}
+    claimed |= {e.get("pr") for e in events if e["kind"] == "pr.state" and e["refs"]}
+    opened = dict.fromkeys(e.get("pr") for e in events if e["kind"] == "pr.opened")
+    return [f"PR {pr} was opened by a session on this tracker and no ticket claims it: add a PR: link to the "
+                 'ticket it is for, `tracker add <id> link "PR: [title](url) — why"`'
+                 for pr in opened if isinstance(pr, str) and pr not in claimed]
 
 
 def unanswerable(d: Record) -> list[str]:

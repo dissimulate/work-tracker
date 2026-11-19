@@ -25,6 +25,7 @@ PR_FACTS = {
     "merge": "what stops the merge: conflict, behind (its base) or blocked (by the repo's rules); none when it can",
     "threads": "how many review threads are unresolved",
     "draft": "the PR is a draft",
+    "title": "the PR's title, for the views; no move reads it",
     "base": "the branch the PR would merge into; a base that is other tickets' branch makes the ticket wait on them "
             "(computed; depends_on does not change)",
 }
@@ -83,12 +84,15 @@ class Handoff:
     fixed: set = field(default_factory=set)  # the numbers of that review's findings marked fixed since
 
 
+HANDOFF_KINDS = ("submission", "review", "finding.fixed")  # the events of a ticket's plan or code review cycle
+
+
 def handoffs(events: list[dict]) -> dict[tuple[str, str], Handoff]:
     """Per (ticket, what) the log holds a submission, review or fix of, where it stands, in one pass over the events:
     a review answers the submission before it, and a later submission replaces an earlier one."""
     out: dict[tuple[str, str], Handoff] = {}
     for e in events:
-        if e["kind"] not in ("submission", "review", "finding.fixed") or not e["refs"]:
+        if e["kind"] not in HANDOFF_KINDS or not e["refs"]:
             continue
         h = out.setdefault((e["refs"][0], str(e.get("what"))), Handoff())
         if e["kind"] == "submission":
@@ -280,7 +284,8 @@ def whose_move(tr: Tracker, t: Record, coordinated: bool = False, items: list[It
     return replace(named(move), stuck_from=move.stuck_from and named(move.stuck_from))
 
 
-PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
+PR_NUMBER = re.compile(r"[0-9]{1,9}")  # a PR's number: ASCII digits, as many as one can have
+PR_PAGE = re.compile(rf"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/({PR_NUMBER.pattern})(?![0-9])")  # owner/name, n
 
 
 @dataclass
@@ -294,7 +299,7 @@ class LinkedPr:
 def linked_prs(t: Record) -> list[LinkedPr]:
     """The PRs a ticket's `PR:` links point at."""
     pages = ((PR_PAGE.search(x.text), x.text) for x in t.links if x.label == "PR")
-    return [LinkedPr(m[0], m[1], m[2], text) for m, text in pages if m]
+    return [LinkedPr(m[0], m[1], str(int(m[2])), text) for m, text in pages if m]  # `/pull/012` is PR 12
 
 
 def is_pr_link(link: Link) -> bool:

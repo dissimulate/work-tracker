@@ -247,12 +247,19 @@ def pull(number: int, **facts) -> dict:
     return {"number": number, "headRefName": facts.get("branch", ""), "state": facts.get("state", "OPEN"),
             "mergedAt": facts.get("merged_at"), "baseRefName": "main", "isCrossRepository": False,
             "isDraft": facts.get("draft", False), "reviewDecision": facts.get("decision"),
+            "title": facts.get("title", f"Part {number}"), "reviews": {"nodes": facts.get("rounds", [])},
             "mergeStateStatus": facts.get("merge", "CLEAN"),
             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": x}} for x in facts.get("requested", [])]},
             "latestReviews": {"nodes": facts.get("reviews", [])},
             "reviewThreads": {"nodes": [{"isResolved": False}] * facts.get("threads", 0) + [{"isResolved": True}]},
             "commits": {"nodes": [{"commit": {"committedDate": facts.get("pushed", "2026-09-01T00:00:00Z"),
                                               "statusCheckRollup": {"state": facts.get("checks", "SUCCESS")}}}]}}
+
+
+def review_round(rid: int, by: str, state: str, at: str, bot: bool = False) -> dict:
+    """One review of a PR as sync's query answers it (`reviews` in github.PR_FRAGMENT)."""
+    return {"databaseId": rid, "author": {"__typename": "Bot" if bot else "User", "login": by}, "state": state,
+            "submittedAt": at}
 
 
 def answers(prs: list[dict]):
@@ -502,6 +509,19 @@ class Moves(unittest.TestCase):
         move = moves.whose_move(tr, one)
         self.assertEqual((move.text(), move.quiet), ("you: PR closed", False))
 
+    def test_sync_asks_github_for_no_damaged_pr_number(self):
+        s, t = new_tracker("Damaged", "a/x")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        path = store.HOME / s / "tickets" / "S-1.md"
+        damaged = "prs: [abc:open, \u0661\u0662:open, 0012:open, 99999999999:open, 7:open]"  # hand edits gone wrong
+        path.write_text(path.read_text().replace("depends_on: []", f"depends_on: []\n{damaged}"))
+        fake = answers([pull(7, branch="f1"), pull(12, branch="other")])
+        with mock.patch.object(github, "gh", fake):
+            run(*t, "sync")
+        self.assertEqual(sorted(re.findall(r"\bp(\S+): pullRequest\(number: (\S+)\)", fake.queries[0])),
+                         [("12", "12"), ("7", "7")])
+
     def test_review_facts(self):
         bot = {"author": {"__typename": "Bot", "login": "lint"}, "state": "CHANGES_REQUESTED",
                "submittedAt": "2026-09-02T00:00:00Z"}
@@ -598,6 +618,128 @@ class Moves(unittest.TestCase):
                             ["S-1 move now: you — checks failing"])):
             self.assertEqual(session.changes_since(tr, own, {"S-1": {"role": "own", **now}}), said_)
 
+
+    def reviewed(self, *tickets: str, repos: str = "a/x") -> tuple[str, tuple[str, str]]:
+        """A tracker of `repos` whose tickets are under way: the first on branch f1, each other with a `PR:` link to
+        PR 11 of the first repo."""
+        s, t = new_tracker("Reviews", repos)
+        first = repos.split(",")[0]
+        for i, ident in enumerate(tickets or ("S-1",)):
+            run(*t, "new", ident, "--title", ident, "--repo", first, *(["--branch", "f1"] if not i else []))
+            run(*t, "set", ident, "status=in-progress")
+            if i:
+                run(*t, "add", ident, "link", f"PR: [Part one](https://github.com/{first}/pull/11)")
+        return s, t
+
+    def synced(self, t: tuple[str, str], prs: list[dict], code: int = 0) -> str:
+        with mock.patch.object(github, "gh", answers(prs)):
+            return run(*t, "sync", code=code)
+
+    def review_events(self, s: str) -> list[dict]:
+        return [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.review"]
+
+    def test_a_review_is_logged_once(self):
+        s, t = self.reviewed()
+        prs = [pull(11, branch="f1", decision="CHANGES_REQUESTED",
+                    rounds=[review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")])]
+        self.synced(t, prs)
+        self.synced(t, prs)
+        model.EVENTS_READ.clear()  # as a new process reads it: the log says which reviews it holds
+        self.synced(t, prs)
+        [e] = self.review_events(s)
+        self.assertEqual({k: e[k] for k in ("text", "refs", "pr", "review", "by", "result", "submitted_at", "bot")},
+                         {"text": "PR #11 review by rev: changes requested", "refs": ["S-1"], "pr": "a/x#11",
+                          "review": 101, "by": "rev", "result": "changes", "submitted_at": "2026-09-02T01:02:03Z",
+                          "bot": False})
+        self.assertIn("PR #11 review by rev: changes requested", (store.HOME / s / "log.md").read_text())
+        # Another PR's review with the same id is another review
+        run(*t, "new", "S-2", "--title", "Two", "--branch", "f2")
+        run(*t, "set", "S-2", "status=in-progress")
+        prs.append(pull(12, branch="f2", rounds=[review_round(101, "rev", "APPROVED", "2026-09-03T00:00:00Z")]))
+        self.synced(t, prs)
+        self.assertEqual([(e["pr"], e["review"]) for e in self.review_events(s)], [("a/x#11", 101), ("a/x#12", 101)])
+
+    def test_a_later_review_is_logged_as_another(self):
+        s, t = self.reviewed()
+        first = review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", rounds=[first])])
+        later = review_round(102, "rev", "APPROVED", "2026-09-03T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", rounds=[first, later])])
+        self.assertEqual([(e["review"], e["result"], e["text"]) for e in self.review_events(s)],
+                         [(101, "changes", "PR #11 review by rev: changes requested"),
+                          (102, "approved", "PR #11 review by rev: approved")])
+        # The sync that sees the merge still logs the last review
+        last = review_round(103, "lead", "APPROVED", "2026-09-04T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", state="MERGED", merged_at="2026-09-04T01:00:00Z",
+                             rounds=[first, later, last])])
+        self.assertEqual([e["review"] for e in self.review_events(s)], [101, 102, 103])
+
+    def test_a_comment_pending_or_dismissed_review_is_not_logged(self):
+        s, t = self.reviewed()
+        at = "2026-09-02T00:00:00Z"
+        rounds = [review_round(101, "rev", "COMMENTED", at), review_round(102, "rev", "PENDING", at),
+                  review_round(103, "rev", "DISMISSED", at), {**review_round(104, "x", "APPROVED", at), "author": None},
+                  {**review_round(105, "rev", "APPROVED", at), "databaseId": None}]
+        self.synced(t, [pull(11, branch="f1", rounds=rounds)])
+        self.assertEqual(self.review_events(s), [])
+
+    def test_a_bots_review_is_logged_and_marked(self):
+        s, t = self.reviewed()
+        self.synced(t, [pull(11, branch="f1")])
+        tr = model.tracker_at(s)
+        before = moves.whose_move(tr, tr.lookup("S-1")).text()
+        bot = review_round(101, "lint", "CHANGES_REQUESTED", "2026-09-02T00:00:00Z", bot=True)
+        self.synced(t, [pull(11, branch="f1", rounds=[bot], reviews=[bot])])
+        [e] = self.review_events(s)
+        self.assertEqual((e["by"], e["result"], e["bot"]), ("lint", "changes", True))
+        tr = model.tracker_at(s)
+        self.assertEqual(moves.whose_move(tr, tr.lookup("S-1")).text(), before)  # a bot's review moves nothing
+
+    def test_a_review_on_a_pr_of_two_tickets_names_both(self):
+        s, t = self.reviewed("S-1", "S-2")
+        self.synced(t, [pull(11, branch="f1", rounds=[review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")])])
+        [e] = self.review_events(s)
+        self.assertEqual(e["refs"], ["S-1", "S-2"])
+
+    def test_a_review_in_a_tracker_of_two_repos_names_its_repo(self):
+        s, t = self.reviewed(repos="a/x,b/y")
+        self.synced(t, [pull(11, branch="f1", rounds=[review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")])])
+        self.assertEqual([e["text"] for e in self.review_events(s)], ["PR a/x#11 review by rev: approved"])
+
+    def test_reviews_already_there_come_as_one_watch_line(self):
+        s, t = self.reviewed()
+        rounds = [review_round(100 + i, "rev", "CHANGES_REQUESTED" if i < 4 else "APPROVED",
+                               f"2026-09-0{i + 1}T00:00:00Z") for i in range(5)]
+        prs = [pull(11, branch="f1", rounds=rounds)]
+        w, now = watcher.Watcher(model.tracker_at(s)), time.time()
+        w.claim(now)
+        w.synced = now  # the watch's own sync is not due: this test syncs
+        self.synced(t, prs)
+        self.assertEqual(w.poll(now), [])  # the change settles first
+        lines = w.poll(now + watcher.SETTLE_S)
+        self.assertEqual(len([x for x in lines if "review by" in x]), 1, lines)
+        self.assertEqual("".join(lines).count("review by"), 1, lines)
+        self.assertIn("S-1: ", lines[0])
+        self.assertIn("PR #11 review by rev: approved (+4 earlier)", lines[0])
+        self.assertEqual(len(self.review_events(s)), 5)
+
+    def test_a_sync_that_gh_fails_logs_no_review(self):
+        s, t = self.reviewed()
+        with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False: None):
+            self.assertIn("sync skipped", run(*t, "sync"))
+        self.assertEqual(self.review_events(s), [])
+
+    def test_the_title_is_kept_with_the_pr(self):
+        s, t = self.reviewed()
+        self.synced(t, [pull(11, branch="f1", title="Add the parser")])
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.raw_state()["prs"]["a/x#11"]["title"], "Add the parser")
+        [e] = [e for e in model.read_events(tr) if e["kind"] == "pr.state"]
+        self.assertEqual(e["title"], "Add the parser")
+        self.synced(t, [pull(11, branch="f1", title="Add the parser", state="MERGED",
+                             merged_at="2026-09-04T01:00:00Z")])
+        merged = [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.state"][-1]
+        self.assertEqual((merged["state"], merged["title"]), ("merged", "Add the parser"))
 
     def test_stale_sync_refreshes_in_the_background(self):
         (s, _), (local, _) = new_tracker("Fresh", "a/x"), new_tracker("Local")
@@ -1008,6 +1150,33 @@ class Writes(unittest.TestCase):
         for name in ("..", f"../{Path(store.HOME).name}/{s}"):  # a slug is a folder in TRACKER_HOME, not a path
             self.assertIn("no tracker", run("--tracker", name, "index", code=2))
             self.assertIn("no tracker", run("context", f"{name}:L-1", code=2))
+
+    def test_tickets_with_no_issue(self):
+        s, t = new_tracker("Issues")
+        run(*t, "new", "I-1", "--title", "One")
+        self.assertIn("`check`: no new problems", run(*t, "new", "I-2", "--title", "Two"))  # no issue tracker in use
+        self.assertNotIn("no issue", run(*t, "check"))
+        run(*t, "new", "I-3", "--title", "Three")
+        run(*t, "set", "I-3", "status=done")
+        said_ = run(*t, "add", "I-1", "link", "Issue: [PROJ-1 One](https://x.y/PROJ-1)")
+        self.assertIn("added `tracker check` problems:\n⚠ I-2: no issue\n`check`: fix the problems above", said_)
+        report = run(*t, "check")
+        self.assertIn("⚠ I-2: no issue", report.splitlines())
+        self.assertNotIn("I-1: no issue", report)
+        self.assertNotIn("I-3: no issue", report)  # closed
+        said_ = run(*t, "new", "I-4", "--title", "Four")
+        self.assertIn("added `tracker check` problems:\n⚠ I-4: no issue\n", said_)
+        self.assertNotIn("I-2", said_)  # said once, by the write that added it
+        self.assertIn("issues 'sometimes' is not one of optional|required",
+                      run(*t, "set", "tracker", "issues=sometimes", code=2))
+        run(*t, "set", "tracker", "issues=required")
+        report = run(*t, "check", code=1)
+        self.assertEqual([x for x in report.splitlines() if "no issue" in x],
+                         ["✗ I-2: no issue (README issues: required)", "✗ I-4: no issue (README issues: required)"])
+        run(*t, "drop", "I-1", "link", "PROJ-1")  # no ticket has an issue: still required
+        self.assertIn("✗ I-1: no issue (README issues: required)", run(*t, "check", code=1).splitlines())
+        run(*t, "set", "tracker", "issues=optional")
+        self.assertNotIn("no issue", run(*t, "check"))
 
     def test_templates_take_the_contract_limits(self):
         s, _ = new_tracker("Limits")
@@ -2061,6 +2230,164 @@ def said(out: dict | None) -> str:
     return json.dumps(out or {})
 
 
+def no_gh() -> dict:
+    """A PATH with git and the shell's tools but no `gh`, which a hook's sync then cannot run: no hook in a test asks
+    GitHub (`gh` may sit in /usr/bin)."""
+    path = Path(BASE) / "nogh"
+    if not path.exists():
+        path.mkdir()
+        for name in ("git", "cat", "sh"):
+            (path / name).symlink_to(shutil.which(name))
+    return {"PATH": f"{path}:{Path(sys.executable).parent}"}
+
+
+def opened_prs(s: str) -> list[dict]:
+    return [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.opened"]
+
+
+class PrsOpened(unittest.TestCase):
+    """A PR a session on a tracker opens with `gh pr create` is logged (`pr.opened`), and `tracker check` warns of one
+    that no ticket claims (R11)."""
+
+    CREATE = {"command": "gh pr create --fill --title 'Parser'"}
+    CREATED = {"stdout": "Creating pull request for f1 into main in a/x\n\nhttps://github.com/a/x/pull/12\n",
+               "stderr": "", "interrupted": False, "isImage": False}
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Opened", "a/x")
+        run(*self.t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "set", "S-1", "status=in-progress")
+        self.work = repo("f1")
+        self.sid = f"po{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.sid)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("start", self.s, cwd=self.work)
+
+    def bash(self, tool_input: dict, response: dict | None = None, **extra) -> dict | None:
+        return tool("Bash", self.sid, self.work, env=no_gh(), tool_input=tool_input,
+                    **({"tool_response": response} if response is not None else {}), **extra)
+
+    def test_a_pr_a_session_opens_is_logged_once(self):
+        self.bash(self.CREATE, self.CREATED)
+        self.bash(self.CREATE, self.CREATED)  # gh says the PR is there already: the same one
+        [e] = opened_prs(self.s)
+        self.assertEqual((e["text"], e["refs"], e["pr"], e["session"]), ("PR #12 opened by a session", [], "a/x#12",
+                                                                          self.sid))
+        self.assertNotIn("url", e)
+
+    def test_the_last_pr_address_is_the_one_opened(self):
+        out = {"stdout": "Warning: see https://github.com/a/x/pull/3\nhttps://github.com/a/x/pull/14\n"}
+        self.bash(self.CREATE, out)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#14"])
+
+    def fake_gh(self, answer: dict) -> dict:
+        """A PATH whose `gh` prints `answer`, as the hook's sync reads it."""
+        folder = Path(tempfile.mkdtemp(dir=BASE))
+        (folder / "answer.json").write_text(json.dumps(answer))
+        (folder / "gh").write_text(f"#!/bin/sh\ncat '{folder / 'answer.json'}'\n")
+        (folder / "gh").chmod(0o755)
+        return {"PATH": f"{folder}:{no_gh()['PATH']}"}
+
+    def test_the_opening_is_logged_before_the_sync_and_whatever_it_does(self):
+        env = self.fake_gh({"data": {"r0": {"b0": {"nodes": [pull(12, branch="f1")]}}}})
+        tool("Bash", self.sid, self.work, env=env, tool_input=self.CREATE, tool_response=self.CREATED)
+        kinds = [e["kind"] for e in model.read_events(model.tracker_at(self.s)) if e["kind"].startswith("pr.")]
+        self.assertEqual(kinds, ["pr.opened", "pr.state"])  # opened, then open for review
+        self.setUp()
+        broken = self.fake_gh({"data": {"r0": {"b0": {"nodes": [{"title": "no number"}]}}}})  # the sync raises
+        tool("Bash", self.sid, self.work, env=broken, tool_input=self.CREATE, tool_response=self.CREATED)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
+    def test_a_silent_pr_create_logs_nothing(self):
+        before = tree(store.HOME / self.s)
+        dry = {"stdout": "Would have created a Pull Request with:\nBody: closes https://github.com/a/x/pull/5\n"}
+        for response in ({"stdout": "", "stderr": "aborted"}, None, {"stdout": "see github.com/a/x"}, dry):
+            with self.subTest(response=response):
+                self.bash(self.CREATE, response)  # `hook` checks that it exits 0
+        failed = hook("resumed", self.sid, self.work, env=no_gh(), hook_event_name="PostToolUseFailure",
+                      tool_name="Bash", tool_input=self.CREATE,
+                      error="Exit code 1\nhttps://github.com/a/x/pull/12 already exists")
+        self.assertIsNone(failed)
+        self.assertEqual(opened_prs(self.s), [])
+        self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_a_subagents_pr_is_logged_too(self):
+        self.assertIsNone(self.bash(self.CREATE, self.CREATED, agent_id="a1"))
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
+    def test_gh_pr_new_opens_one_too(self):
+        self.bash({"command": "gh pr new --fill"}, self.CREATED)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
+    def test_another_gh_pr_command_logs_no_opening(self):
+        for command in ("gh pr merge 12 --squash", "gh pr edit 12 --title x", "git push -u origin f1",
+                        "gh pr view 12"):
+            with self.subTest(command=command):
+                self.bash({"command": command}, self.CREATED)
+        self.assertEqual(opened_prs(self.s), [])
+
+    def test_a_pr_in_another_repo_is_named_by_its_repo(self):
+        self.bash(self.CREATE, {"stdout": "https://github.com/b/y/pull/7\n"})
+        self.assertEqual([(e["pr"], e["text"]) for e in opened_prs(self.s)],
+                         [("b/y#7", "PR b/y#7 opened by a session")])
+
+    def test_a_refused_tracker_gets_no_pr_event(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            for agent in ({}, {"agent_id": "a1"}):
+                with self.subTest(refuse.__name__, **agent):
+                    self.setUp()
+                    refuse(self, self.s)
+                    before = tree(store.HOME / self.s)
+                    self.bash(self.CREATE, self.CREATED, **agent)  # exits 0: `hook` checks
+                    self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_check_warns_of_a_pr_no_ticket_claims(self):
+        self.bash(self.CREATE, self.CREATED)
+        before = tree(store.HOME / self.s)
+        warning = ("⚠ PR a/x#12 was opened by a session on this tracker and no ticket claims it: add a PR: link to "
+                   'the ticket it is for, `tracker add <id> link "PR: [title](url) — why"`')
+        self.assertIn(warning, run(*self.t, "check").splitlines())
+        self.assertEqual(tree(store.HOME / self.s), before)  # `check` writes nothing
+        run(*self.t, "new", "S-2", "--title", "Two")
+        run(*self.t, "add", "S-2", "link", "PR: [Parser](https://github.com/A/X/pull/012)")
+        before = tree(store.HOME / self.s)
+        self.assertNotIn("a/x#12", run(*self.t, "check"))
+        self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_a_pr_from_a_tickets_branch_is_claimed_by_sync(self):
+        self.bash(self.CREATE, self.CREATED)
+        self.assertIn("no ticket claims it", run(*self.t, "check"))
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1")])):
+            run(*self.t, "sync")
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"12": "open"})
+
+    def test_a_pr_a_tickets_branch_held_stays_claimed_once_another_replaces_it(self):
+        self.bash(self.CREATE, self.CREATED)
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1")])):
+            run(*self.t, "sync")
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1", state="CLOSED"), pull(13, branch="f1")])):
+            run(*self.t, "sync")
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"13": "open"})  # #12 dropped from its list
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+
+    def test_a_pr_an_older_format_held_is_claimed(self):
+        self.bash(self.CREATE, self.CREATED)
+        tr = model.tracker_at(self.s)
+        tr.lookup("S-1").save({"pr": "12", "pr_state": "open"})  # an older format's one PR, which logged no pr.state
+        tr.readme.save({"schema": 3})
+        run(*self.t, "list")  # migrates it
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"12": "open"})
+        self.assertEqual([e["kind"] for e in model.read_events(model.tracker_at(self.s)) if e.get("pr")], ["pr.opened"])
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+
+    def test_a_write_reports_the_new_warning_once(self):
+        self.bash(self.CREATE, self.CREATED)
+        said_ = run(*self.t, "set", "S-1", "next=Ship it")  # the PR came from a hook: this write did not add it
+        self.assertNotIn("no ticket claims it", said_)
+        self.assertIn("`check`: no new problems", said_)
+
+
 class Hooks(unittest.TestCase):
     """scripts/hook.sh end to end: its shell filters, and what each event tells the model."""
 
@@ -2896,6 +3223,119 @@ class Ui(unittest.TestCase):
         s, _ = new_tracker("Shown")
         run("--tracker", s, "new", "T-1", "--title", "One")
         return s
+
+    def pr_tracker(self, repos: str = "a/x") -> tuple[str, tuple[str, str]]:
+        """A tracker of `repos` whose S-1 is under way on branch f1."""
+        s, t = new_tracker("Pulls", repos)
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1", "--repo", repos.split(",")[0])
+        run(*t, "set", "S-1", "status=in-progress")
+        return s, t
+
+    def synced(self, t: tuple[str, str], prs: list[dict]) -> None:
+        with mock.patch.object(github, "gh", answers(prs)):
+            run(*t, "sync")
+
+    def test_the_view_data_lists_a_pr_once_with_each_ticket_that_names_it(self):
+        s, t = self.pr_tracker()
+        run(*t, "new", "S-2", "--title", "Two")
+        run(*t, "set", "S-2", "status=in-progress")
+        run(*t, "add", "S-2", "link", "PR: [Part one](https://github.com/A/X/pull/11)")
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        [row] = data(s)["prs"]
+        self.assertEqual({k: row[k] for k in ("key", "repo", "number", "url", "state", "tickets")},
+                         {"key": "a/x#11", "repo": "a/x", "number": "11", "url": "https://github.com/a/x/pull/11",
+                          "state": "open", "tickets": ["S-1", "S-2"]})
+
+    def test_the_same_number_in_two_repos_is_two_prs(self):
+        s, t = self.pr_tracker("a/x,b/y")
+        run(*t, "new", "S-2", "--title", "Two", "--repo", "b/y")
+        run(*t, "add", "S-2", "link", "PR: [Other](https://github.com/b/y/pull/5)")
+        run(*t, "add", "S-1", "link", "PR: [Mine](https://github.com/a/x/pull/5)")
+        rows = data(s)["prs"]
+        self.assertEqual([(x["key"], x["tickets"], x["state"], x["move"]) for x in rows],
+                         [("a/x#5", ["S-1"], "", None), ("b/y#5", ["S-2"], "", None)])  # linked, never read
+
+    def test_an_open_prs_move_is_its_tickets(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        got = data(s)
+        self.assertEqual(got["prs"][0]["move"], got["records"]["S-1"]["move"])
+        self.assertEqual(got["prs"][0]["move"]["text"], "rev: review requested")
+
+    def test_a_merged_or_closed_pr_has_no_move_and_open_ones_come_first(self):
+        s, t = self.pr_tracker()
+        run(*t, "add", "S-1", "link", "PR: [Two](https://github.com/a/x/pull/12)")
+        run(*t, "add", "S-1", "link", "PR: [Three](https://github.com/a/x/pull/13)")
+        self.synced(t, [pull(11, branch="f1", state="MERGED", merged_at="2026-09-04T01:00:00Z"),
+                        pull(12, branch="other"), pull(13, branch="other", state="CLOSED")])
+        rows = data(s)["prs"]
+        self.assertEqual([(x["number"], x["state"]) for x in rows], [("12", "open"), ("11", "merged"),
+                                                                      ("13", "closed")])
+        self.assertIsNotNone(rows[0]["move"])
+        self.assertEqual([x["move"] for x in rows[1:]], [None, None])
+
+    def test_an_open_pr_not_read_yet_has_no_move(self):
+        s, t = self.pr_tracker()
+        tr = model.tracker_at(s)
+        tr.lookup("S-1").save({"pr": "11", "pr_state": "open"})  # an older format's one PR: its facts never read
+        tr.readme.save({"schema": 3})
+        run(*t, "list")  # migrates it
+        self.assertEqual((model.tracker_at(s).lookup("S-1").prs, model.tracker_at(s).prs), ({"11": "open"}, {}))
+        [row] = data(s)["prs"]
+        self.assertEqual((row["state"], row["move"]), ("open", None))
+
+    def test_a_pr_whose_tickets_are_not_under_way_has_no_move(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        run(*t, "set", "S-1", "status=done")
+        [row] = data(s)["prs"]
+        self.assertEqual((row["state"], row["move"]), ("open", None))
+
+    def test_a_prs_history_is_its_events_and_its_tickets_reviews(self):
+        s, t = self.pr_tracker()
+        run(*t, "new", "S-2", "--title", "Two")
+        run(*t, "submit", "S-2", "--what", "plan")  # another ticket's: not this PR's
+        run(*t, "submit", "S-1", "--what", "plan")
+        rounds = [review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")]  # older on GitHub than the submission
+        self.synced(t, [pull(11, branch="f1", rounds=rounds)])
+        run(*t, "review", "S-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        run(*t, "review", "S-1", "--what", "plan", "--fixed", "1")
+        run(*t, "step", "S-1", "Built it")  # the ticket's, not the PR's
+        [row] = data(s)["prs"]
+        self.assertEqual([x["kind"] for x in row["history"]],
+                         ["submission", "pr.state", "pr.review", "review", "finding.fixed"])  # as logged
+        self.assertEqual(row["history"][2]["text"], "PR #11 review by rev: approved")
+        self.assertEqual(set(row["history"][0]), {"at", "kind", "text"})
+
+    def test_a_prs_title_is_githubs_then_its_last_logged_then_its_links(self):
+        s, t = self.pr_tracker()
+        run(*t, "add", "S-1", "link", "PR: [Link text](https://github.com/a/x/pull/11)")
+        run(*t, "add", "S-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/7) — the other half")
+        self.synced(t, [pull(11, branch="f1", title="Old title")])
+        self.synced(t, [pull(11, branch="f1", title="New title")])  # no new state: no new event
+        titles = {x["key"]: x["title"] for x in data(s)["prs"]}
+        self.assertEqual(titles, {"a/x#11": "New title", "b/y#7": "Elsewhere"})
+        self.synced(t, [pull(11, branch="f1", title="Merged title", state="MERGED",
+                             merged_at="2026-09-04T01:00:00Z")])
+        self.assertEqual({x["key"]: x["title"] for x in data(s)["prs"]}["a/x#11"], "Merged title")
+
+    def test_a_damaged_pr_number_is_no_pr(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1")])
+        path = store.HOME / s / "tickets" / "S-1.md"
+        damaged = f"x12:open, ²:open, {'9' * 5000}:open, 011:open, 11:open"  # hand edits gone wrong
+        path.write_text(path.read_text().replace("11:open", damaged))
+        self.assertEqual([x["key"] for x in data(s)["prs"]], ["a/x#11"])
+
+    def test_a_link_to_no_pr_number_is_no_pr(self):
+        s, t = self.pr_tracker()
+        for url in (f"https://github.com/a/x/pull/{'9' * 5000}", "https://github.com/a/x/pull/\u0663"):
+            self.assertIn("`check`:", run(*t, "add", "S-1", "link", f"PR: {url}"))
+        self.assertEqual(data(s)["prs"], [])
+        run(*t, "check")
+
+    def test_a_tracker_with_no_pr_lists_none(self):
+        self.assertEqual(data(self.tracker())["prs"], [])
 
     def test_the_view_data_lists_open_items(self):
         s = self.tracker()
@@ -4711,6 +5151,226 @@ class WhoDecided(unittest.TestCase):
         self.decide(AGENT, "Queue", "--resolve", "SQS", "--by", "Ryan")
         self.assertEqual(model.resolution(model.tracker_at(self.s).lookup("D-02")),
                          f"{schema.today()} (Ryan, entered by an agent): SQS")
+
+
+class CitedWord(unittest.TestCase):
+    """A resolution entered on a human's word cites the message that word came in (R18): the hooks keep a fingerprint
+    and an excerpt of the human's last few messages and answers with the session, and `decide --cite` copies the one
+    that holds the quote into the resolution's event."""
+
+    STORE = {"questions": [{"question": "Which store for the app?",
+                            "options": [{"label": "Postgres"}, {"label": "SQLite"}]}]}
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Cited")
+        self.root = store.HOME / self.s
+        run(*self.t, "new", "T-1", "--title", "One")
+        run(*self.t, "decide", "Which store")
+        self.work = repo("main")
+        self.sid = f"cw{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.sid)
+        self.agent = {"TRACKER_SESSION": self.sid}
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", self.s, cwd=self.work)
+
+    def prompt(self, text: str) -> None:
+        hook("prompt", self.sid, self.work, prompt=text)
+
+    def decide(self, *flags: str, env: dict | None = None, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, self.agent if env is None else env):
+            return run(*self.t, "decide", "D-1", "--resolve", "Postgres", *flags, code=code)
+
+    def settled(self) -> tuple[str, dict]:
+        tr = model.tracker_at(self.s)
+        return model.resolution(tr.lookup("D-01")), model.read_events(tr)[-1]
+
+    def words(self) -> list[dict]:
+        return session.load_session(self.sid).get("words", [])
+
+    def unchanged(self):
+        return tree(self.root), session.load_session(self.sid)
+
+    def test_a_resolution_cites_the_message_that_holds_the_quote(self):
+        self.prompt("Use Postgres for the store, not SQLite")
+        self.decide("--by", "Ryan", "--cite", "use  POSTGRES")
+        line, e = self.settled()
+        self.assertEqual(line, f"{schema.today()} (Ryan, entered by an agent on their word): Postgres")
+        self.assertEqual((e["kind"], e["decided"], e["by"], e["cited"]), ("decision.decided", "human", "Ryan", True))
+        kept = self.words()[-1]
+        self.assertEqual(e["word"], kept)
+        self.assertEqual(set(kept), {"fingerprint", "at", "excerpt"})
+        self.assertEqual(kept["excerpt"], "Use Postgres for the store, not SQLite")
+        self.assertEqual(kept["fingerprint"],
+                         hashlib.sha256(b"Use Postgres for the store, not SQLite").hexdigest()[:12])
+        self.assertIsNotNone(schema.utc_seconds(kept["at"]))
+
+    def test_the_newest_message_that_holds_the_quote_is_cited(self):
+        self.prompt("Postgres or SQLite? Let me think")
+        self.prompt("Something else")
+        self.prompt("Go with postgres")
+        self.prompt("Unrelated")
+        self.decide("--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Go with postgres")
+
+    def test_a_session_that_kept_no_word_says_to_leave_cite_out(self):
+        out = self.decide("--by", "Ryan", "--cite", "postgres", code=2)
+        self.assertIn("leave --cite out", out)
+        self.assertNotIn("Quote a few words", out)  # no quote can match
+
+    def test_a_quote_no_kept_message_holds_refuses_and_changes_nothing(self):
+        self.prompt("Use Postgres for the store")
+        before = self.unchanged()
+        out = self.decide("--by", "Ryan", "--cite", "use mysql", code=2)
+        self.assertIn("--cite", out)
+        self.assertIn("leave --cite out to enter the resolution uncited", out)
+        self.assertEqual(self.unchanged(), before)
+        for quote in ("", "  "):  # nothing to look for
+            with self.subTest(quote=quote):
+                self.decide("--by", "Ryan", "--cite", quote, code=2)
+                self.assertEqual(self.unchanged(), before)
+
+    def test_without_cite_the_resolution_is_uncited(self):
+        self.prompt("Use Postgres for the store")
+        self.decide("--by", "Ryan")
+        line, e = self.settled()
+        self.assertEqual(line, f"{schema.today()} (Ryan, entered by an agent): Postgres")
+        self.assertFalse(e["cited"])
+        self.assertNotIn("word", e)
+
+    def test_cite_needs_by_and_an_agent(self):
+        self.prompt("Use Postgres for the store")
+        before = self.unchanged()
+        for flags, env in ((["--source", "the spec", "--cite", "postgres"], None),
+                           (["--cite", "postgres"], None),
+                           (["--by", "Ryan", "--cite", "postgres"], {}),  # a terminal: no session's words
+                           # the view, opened from the agent's shell: a human answers there, not an agent
+                           (["--by", "Ryan", "--cite", "postgres"], {**self.agent, "TRACKER_VIA": "view"})):
+            with self.subTest(flags=flags, env=env):
+                self.assertIn("--cite", self.decide(*flags, env=env, code=2))
+                self.assertEqual(self.unchanged(), before)
+        self.assertIn("leave --cite out", self.decide("--by", "Ryan", "--cite", "postgres",
+                                                      env={**self.agent, "TRACKER_VIA": "view"}, code=2))
+        with mock.patch.dict(os.environ, self.agent):
+            out = run(*self.t, "decide", "D-1", "--note", "n", "--cite", "postgres", code=2)
+        self.assertIn("--cite", out)
+        self.assertEqual(self.unchanged(), before)
+        for env in ({}, {**self.agent, "TRACKER_VIA": "view"}):  # no agent: no flag added makes it work
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                out = run(*self.t, "decide", "D-1", "--note", "n", "--cite", "postgres", code=2)
+                self.assertIn("leave --cite out", out)
+                self.assertNotIn("--resolve", out)
+        self.assertEqual(self.unchanged(), before)
+
+    def test_only_the_last_five_are_kept_and_only_the_excerpt(self):
+        long = "Postgres " + "x" * 491
+        for i in range(5):
+            self.prompt(f"Message {i}")
+        self.prompt(long)
+        kept = self.words()
+        self.assertEqual(len(kept), 5)
+        self.assertEqual([w["excerpt"] for w in kept[:-1]], [f"Message {i}" for i in range(1, 5)])
+        self.assertEqual(kept[-1]["excerpt"], long[:200])
+        self.assertNotIn(long, session.session_path(self.sid).read_text())
+        self.decide("--by", "Ryan", "--cite", "message 0", code=2)  # the oldest went
+        self.decide("--by", "Ryan", "--cite", "message 1")
+
+    def test_an_answer_is_a_word_too(self):
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertEqual([w["excerpt"] for w in self.words()], ["Postgres"])  # the answer, never the question
+        self.decide("--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Postgres")
+        two = {"questions": [*self.STORE["questions"], {"question": "Which queue?", "options": [{"label": "SQS"}]}],
+               "answers": {"Which store for the app?": "SQLite", "Which queue?": "SQS"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=two, tool_response=two)
+        self.assertEqual(self.words()[-1]["excerpt"], "SQLite; SQS")
+        for name, response in (("AskUserQuestion", {}), ("AskUserQuestion", {"tool_response": "Postgres"}),
+                               ("AskUserQuestion", {"tool_response": {"answers": ["Postgres"]}}),
+                               ("AskUserQuestion", {"tool_response": {"answers": {"Store?": {"answers": ["Kafka"]}}}}),
+                               ("request_user_input", {"tool_response": {"answers": {"db": {"answers": ["Kafka"]}}}}),
+                               ("request_user_input", {"tool_response": {"answers": {"db": "Kafka"}}})):
+            with self.subTest(name=name, response=response):  # another shape, another host's tool: nothing to keep
+                tool(name, self.sid, self.work, tool_input=self.STORE, **response)
+                self.assertEqual(len(self.words()), 2)
+
+    def test_a_message_with_a_broken_character_is_kept_and_the_hook_goes_on(self):
+        self.prompt("Use Postgres \ud83d for the store")  # half an emoji, as JSON can carry it
+        self.assertEqual(self.words()[-1]["excerpt"], "Use Postgres ? for the store")  # the log can hold it
+        self.assertEqual(session.load_session(self.sid)["prompts"], 1)  # the rest of the hook ran
+        self.decide("--by", "Ryan", "--cite", "use postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Use Postgres ? for the store")
+
+    def test_a_slash_command_is_no_word(self):
+        for text in ("/work-tracker:tracker index", "$work-tracker:tracker index", "  /compact", ""):
+            self.prompt(text)
+        self.assertEqual(self.words(), [])
+        for text in ("$5 a month is fine, go with the paid tier", "/tmp/data is where it goes", "$HOME is wrong"):
+            self.prompt(text)
+        self.assertEqual([w["excerpt"][:6] for w in self.words()], ["$5 a m", "/tmp/d", "$HOME "])
+
+    def test_an_approval_or_a_subagent_keeps_no_word(self):
+        go = {"questions": [{"question": "Push?", "options": [{"label": "Yes, push"}, {"label": "Not now"}]}]}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=go, tool_response={**go, "answers": {"Push?": "Yes"}})
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, agent_id="a1", tool_input=self.STORE, tool_response=answer)
+        self.assertEqual(self.words(), [])
+
+    def test_a_session_on_no_tracker_keeps_no_word(self):
+        hook("waiting", self.sid, self.work, tool_name="AskUserQuestion")
+        hook("waiting", self.sid, self.work, tool_name="Bash", agent_id="sub")
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", "--clear", cwd=self.work)  # off its tracker; its file stays for the open waits
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertIn("sub", session.load_session(self.sid)["waits"])  # the subagent still asks: the file stays
+        self.assertEqual(self.words(), [])
+
+    def test_a_session_on_the_tracker_that_TRACKER_names_keeps_words_too(self):
+        sid = f"cwt{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, sid)
+        env = {"TRACKER": self.s}
+        hook("session-start", sid, self.work, env=env, source="startup")
+        hook("prompt", sid, self.work, env=env, prompt="Use Postgres for the store")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run(*self.t, "decide", "D-1", "--resolve", "Postgres", "--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Use Postgres for the store")
+
+    def test_the_answer_hook_asks_for_cite_only_when_it_kept_the_answer(self):
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        kept = tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertIn(schema.CITE, kept["hookSpecificOutput"]["additionalContext"])
+        other = tool("request_user_input", self.sid, self.work, tool_input=self.STORE, tool_response="SQS")
+        other = other["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("direction decision", other)
+        self.assertNotIn("--cite", other)  # nothing kept: a citation of it would be refused
+        self.assertNotIn("both", other)  # what --source replaces reads right with --cite and without
+
+    def test_a_refused_tracker_is_left_as_it_is(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            with self.subTest(refuse.__name__):
+                self.setUp()
+                refuse(self, self.s)
+                before = tree(self.root)
+                self.prompt("Use Postgres for the store")  # `hook` checks that it exits 0
+                answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+                tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+                self.assertEqual(tree(self.root), before)
+
+    def test_words_survive_tracker_start(self):
+        self.prompt("Use Postgres for the store")
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", self.s, "--on", "T-1", cwd=self.work)
+        self.decide("--by", "Ryan", "--cite", "use postgres")
+        self.assertTrue(self.settled()[1]["cited"])
+
+    def test_an_uncited_word_never_reaches_the_log(self):
+        self.prompt("Use Postgres for the store")
+        self.prompt("A secret aside")
+        self.decide("--by", "Ryan")
+        logged = (self.root / schema.EVENTS_FILE).read_text() + (self.root / "log.md").read_text()
+        for w in self.words():
+            self.assertNotIn(w["excerpt"], logged)
+            self.assertNotIn(w["fingerprint"], logged)
 
 
 class Handoffs(unittest.TestCase):

@@ -13,12 +13,13 @@ from pathlib import Path
 
 from .system import env_int, spawn, warn
 from .store import locked, record_cli, OtherFormat
-from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
-from .model import set_branch, short, Tracker
+from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
+from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
+from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
-    get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
-    session_activity, take_over, watch, work_dir, Lag, Match)
+    get_mark, hand_over, in_repos, keep_word, lag, load_session, match_cwd, own_edit, record_commits, remember,
+    save_session, session_activity, take_over, watch, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -203,9 +204,10 @@ COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")
 
 def hook_post_bash(data: dict) -> None:
     """After a `gh pr` command that changes a PR (PR_COMMAND) or a push: record the branch on its ticket
-    (`adopt_branch`) and sync PR state. After a commit: log it, and when it is the first since `next` last
-    changed, ask whether a step ended, while the work is fresh. A subagent's commit (its tool calls fire these hooks
-    too) is logged, but the subagent is asked nothing: the session records the step, asked at its next message."""
+    (`adopt_branch`) and sync PR state; after `gh pr create`, also log the PR it opened (`log_opened`). After a commit:
+    log it, and when it is the first since `next` last changed, ask whether a step ended, while the work is fresh. A
+    subagent's commit (its tool calls fire these hooks too) is logged, but the subagent is asked nothing: the session
+    records the step, asked at its next message."""
     subagent = bool(data.get("agent_id"))
     command = (data.get("tool_input") or {}).get("command", "")
     pr, commit = PR_TRIGGER.search(command), COMMIT_TRIGGER.search(command)
@@ -218,6 +220,8 @@ def hook_post_bash(data: dict) -> None:
     out = []
     if pr:
         adopt_branch(m, cwd)
+        if PR_CREATE.search(command):  # before the sync, which can fail or run out of time: nothing sees it again
+            log_opened(m.tracker, data.get("tool_response"))
         changes = sync(m.tracker, every=0)
         if changes and not subagent:
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
@@ -227,6 +231,30 @@ def hook_post_bash(data: dict) -> None:
             out.append(ask)
     if out:
         emit_context("PostToolUse", "\n".join(out))
+
+
+PR_CREATE = re.compile(r"\bgh\s+pr\s+(create|new)\b")  # `new` is gh's own alias of `create`
+
+
+def log_opened(tr: Tracker, response) -> None:
+    """Log the PR a `gh pr create` opened (`pr.opened`), once per PR: gh prints its address as the output's last
+    line. Claude Code gives a Bash command's output as `stdout`. A command that failed reaches no `post-bash` hook,
+    and one whose output ends in anything else (`--dry-run` prints the body last) logs nothing. A tracker the format
+    guard refuses gets no event."""
+    out = response.get("stdout") if isinstance(response, dict) else None
+    last = (out.strip().splitlines() or [""])[-1].strip() if isinstance(out, str) else ""
+    found = PR_PAGE.fullmatch(last)
+    if not found:
+        return
+    repo, number = found.groups()
+    key = pr_key(repo, number)
+    try:
+        with locked():
+            tr = Tracker(tr.root)
+            if not any(e["kind"] == "pr.opened" and e.get("pr") == key for e in read_events(tr)):
+                append_event(tr, "pr.opened", f"PR {pr_name(tr, repo, number)} opened by a session", [], pr=key)
+    except OtherFormat:
+        pass
 
 
 def hook_edit(data: dict) -> None:
@@ -289,16 +317,18 @@ def watch_request(data: dict) -> bool:
 
 
 def hook_prompt(data: dict) -> None:
-    """On tracked work, each user message gets what other sessions or GitHub changed since its last message (or its
-    brief), `next_request` when commits (a subagent's too) passed `next`, the issue fields a Refresh asked for and an
-    issue update newly due (updates_told), each once. With a ticket under way, the first message and
-    every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
-    branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
-    way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a watch request first."""
+    """On tracked work, each user message is kept for `decide --cite` (`keep_word`), and gets what other sessions or
+    GitHub changed since its last message (or its brief), `next_request` when commits (a subagent's too) passed `next`,
+    the issue fields a Refresh asked for and an issue update newly due (updates_told), each once. With a ticket under
+    way, the first message and every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With
+    none, only work since the branch's mark brings it: at once, once per mark, then on those messages while the work
+    stays. With a ticket under way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a
+    watch request first."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
+    keep_word(sid, str(data.get("prompt") or ""))
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
@@ -354,13 +384,29 @@ def approval_only(tool_input: dict) -> bool:
 
 
 def hook_answered(data: dict) -> None:
-    """The user answered a question the agent asked: an answer that settles direction is a decision made. A yes or no
-    to go ahead settles none."""
+    """The user answered a question the agent asked: an answer that settles direction is a decision made, and its
+    words can be cited (`keep_word`). A yes or no to go ahead settles none."""
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
-    if match_cwd(*where(data)):
-        emit_context("PostToolUse", f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, "
-                     f"or {DECIDED} for one made on the spot.")
+    cwd, sid = where(data)
+    kept = keep_word(sid, answer_text(data))
+    if match_cwd(cwd, sid):
+        ask = (f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, or {DECIDED} for "
+               "one made on the spot.")
+        # An answer not kept (another host's question tool) cannot be cited: `--cite` would be refused.
+        emit_context("PostToolUse", ask if kept else ask.replace(f" {CITE}", ""))
+
+
+def answer_text(data: dict) -> str:
+    """The human's answers in Claude Code's AskUserQuestion result, joined by "; ", never the questions: its
+    `answers` maps each question to its answer's text. "" for another shape, or another host's tool, whose result
+    this code has not seen."""
+    response = data.get("tool_response")
+    answers = response.get("answers") if isinstance(response, dict) else None
+    if data.get("tool_name") != "AskUserQuestion" or not isinstance(answers, dict):
+        return ""
+    texts = list(answers.values())
+    return "; ".join(texts) if all(isinstance(x, str) for x in texts) else ""
 
 
 def hook_subagent_start(data: dict) -> None:
