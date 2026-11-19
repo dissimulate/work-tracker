@@ -4,7 +4,7 @@ the review facts `sync` reads and the ticket's blockers (MOVE_RULE); nothing wri
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from .markdown import Link
 from .schema import COORDINATOR
@@ -51,6 +51,56 @@ class Move:
 
     def text(self, sep: str = ": ") -> str:
         return self.who + (sep + self.what if self.what else "")
+
+
+# ---------------------------------------------------------------- submissions and reviews
+# `tracker submit` hands a ticket's plan or built code (SUBMIT_WHAT) to its reviewer, `tracker review` answers it: both
+# are events on the ticket, and `handoffs` reads where each stands from them.
+
+REVIEW_OF = {"plan": "plan review", "code": "plan conformance check"}  # each SUBMIT_WHAT's review, by its name
+READY = {"plan": "plan ready for review", "code": "built code ready for the plan conformance check"}
+
+
+@dataclass
+class Handoff:
+    """Where one ticket's plan or built code stands in the log."""
+    submission: dict | None = None  # the latest submission that no later review answered
+    review: dict | None = None  # the latest review
+    fixed: set = field(default_factory=set)  # the numbers of that review's findings marked fixed since
+
+
+def handoffs(events: list[dict]) -> dict[tuple[str, str], Handoff]:
+    """Per (ticket, what) the log holds a submission, review or fix of, where it stands, in one pass over the events:
+    a review answers the submission before it, and a later submission replaces an earlier one."""
+    out: dict[tuple[str, str], Handoff] = {}
+    for e in events:
+        if e["kind"] not in ("submission", "review", "finding.fixed") or not e["refs"]:
+            continue
+        h = out.setdefault((e["refs"][0], str(e.get("what"))), Handoff())
+        if e["kind"] == "submission":
+            h.submission = e
+        elif e["kind"] == "review":
+            h.submission, h.review, h.fixed = None, e, set()
+        elif h.review and e.get("of") == h.review["seq"]:
+            h.fixed |= set(e.get("findings") or [])
+    return out
+
+
+def finding_numbers(review: dict) -> list[int]:
+    """The numbers of a review event's findings."""
+    return [f["n"] for f in review.get("findings") or [] if isinstance(f, dict) and isinstance(f.get("n"), int)]
+
+
+def last_submission(events: list[dict], ticket: str, what: str) -> dict | None:
+    """The ticket's latest submission of `what` that no later review of `what` answered: the one a review answers."""
+    h = handoffs(events).get((ticket, what))
+    return h.submission if h else None
+
+
+def last_review(events: list[dict], ticket: str, what: str) -> dict | None:
+    """The ticket's latest review of `what`: the one `--fixed` marks findings of."""
+    h = handoffs(events).get((ticket, what))
+    return h.review if h else None
 
 
 def owner_kind(tr: Tracker, d: Record) -> tuple[str, str]:

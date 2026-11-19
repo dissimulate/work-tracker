@@ -21,8 +21,9 @@ from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DI
     parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
-    names, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
-    tracker_at, unknown_dep, Record, Tracker)
+    names, put_section, read_events, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short,
+    sort_key, tracker_at, unknown_dep, Record, Tracker)
+from .moves import READY, REVIEW_OF, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
     in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
@@ -968,6 +969,70 @@ def issue_urls(t: Record) -> str:
     return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
 
 
+def only_tickets(r: Record) -> None:
+    """Refuse a record that is no ticket, naming the command that takes a note on it."""
+    if r.kind != "ticket":
+        die(f"{r.id} is {a_kind(r.kind)}: `tracker {KINDS[r.kind].command} {r.id} --note \"...\"`")
+
+
+def open_ticket(args) -> tuple[Tracker, Record]:
+    """The ticket a submission or review is about: refused when it is no ticket or is closed."""
+    tr, t = locate(args, args.id)
+    only_tickets(t)
+    if t.closed:
+        die(f"{t.id} is closed: a closed ticket takes no submission or review")
+    return tr, t
+
+
+def cmd_submit(args):
+    """Hand a ticket's plan or built code to its reviewer: an event on the ticket, which its move then shows."""
+    tr, t = open_ticket(args)
+    note = f": {args.note}" if args.note else ""
+    append_event(tr, "submission", f"{t.id} {READY[args.what]}{note}", [t.id], what=args.what)
+    print(f"submitted {t.id}'s {args.what}")
+
+
+def count(n: int, word: str) -> str:
+    return f"{n} {word}{'s' * (n != 1)}"
+
+
+def cmd_review(args):
+    """Record a review of a ticket's plan or built code, with its numbered findings, answering the submission before it
+    (`last_submission`); or, with --fixed, mark findings of the latest review fixed. Every check runs before the
+    write."""
+    if args.fixed is not None and (args.verdict or args.finding):
+        die("--fixed marks findings of the latest review fixed, and a new review takes --verdict (with --finding): "
+            "pass one or the other")
+    if args.fixed is None and not args.verdict:
+        die("give the review's --verdict pass|changes, or --fixed <numbers> to mark its findings fixed")
+    if args.verdict == "changes" and not args.finding:
+        die("a review that asks for changes lists them: one --finding per change")
+    if args.verdict == "pass" and args.finding:
+        die("a finding is a change asked for: use --verdict changes, or leave the finding out")
+    tr, t = open_ticket(args)
+    events, name = read_events(tr), REVIEW_OF[args.what]
+    if args.fixed is not None:
+        review = last_review(events, t.id, args.what) or die(f"{t.id} has no {name} whose findings to mark fixed")
+        have = finding_numbers(review)
+        given = csv(args.fixed)
+        if not given or any(not x.isdigit() or int(x) not in have for x in given):
+            die(f"{t.id}'s latest {name} has " + (f"findings {', '.join(map(str, have))}: --fixed takes those numbers"
+                                                    if have else "no findings"))
+        fixed = list(dict.fromkeys(int(x) for x in given))
+        listed = ", ".join(map(str, fixed))
+        append_event(tr, "finding.fixed", f"{t.id} fixed findings {listed} of the {name}", [t.id], what=args.what,
+                     of=review["seq"], findings=fixed)
+        print(f"marked findings {listed} of {t.id}'s {name} fixed")
+        return
+    findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
+    said = f"{args.verdict}, {count(len(findings), 'finding')}" if findings else args.verdict
+    listed = "; ".join(f"{f['n']}. {f['text']}" for f in findings)
+    submission = last_submission(events, t.id, args.what)
+    append_event(tr, "review", f"{t.id} {name}: {said}" + (f": {listed}" if listed else ""), [t.id], what=args.what,
+                 verdict=args.verdict, findings=findings, of=submission["seq"] if submission else 0)
+    print(f"reviewed {t.id}'s {args.what}: {said}")
+
+
 def cmd_step(args):
     """A step in one command: the ticket's next action (or its close), Carry forward and a log line; then, when the
     ticket is on the current branch, the branch's commits that the hooks have not logged are logged, its mark moves
@@ -979,8 +1044,7 @@ def cmd_step(args):
         return
     fit("next", args.next)
     tr, t = named_or_own(args)
-    if t.kind != "ticket":
-        die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")
+    only_tickets(t)
     if args.done and (args.next or args.pause):
         die("--done closes the ticket: a closed ticket has no next action, and its branch keeps no handoff. Pass "
             "--next or --pause without --done")

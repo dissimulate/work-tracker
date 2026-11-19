@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy
-from .schema import BLOCKER, COORDINATOR, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .schema import BLOCKER, COORDINATOR, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES, SUBMIT_WHAT, VERDICTS
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers, OtherFormat
@@ -23,8 +23,9 @@ from .ui import GPUI_SHELL_VERSION
 from .commands import (cmd_act, cmd_actions, cmd_add, cmd_agents, cmd_archive, cmd_attach, cmd_attached,
     cmd_await_change, cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence,
     cmd_find, cmd_here, cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list,
-    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start,
-    cmd_step, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
+    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_review, cmd_rules, cmd_seq, cmd_set, cmd_show,
+    cmd_start, cmd_step, cmd_submit, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates,
+    tracker_matches)
 
 # ---------------------------------------------------------------- main
 
@@ -227,6 +228,24 @@ def build_parser():
     sp.add_argument("--done", metavar="SUMMARY", help="close the ticket: what it delivered")
     sp.add_argument("--pause", metavar="HANDOFF", help="stopping mid-work: what is done, what is half-done and "
                                                        "uncommitted, and the next step")
+    sp = add("submit", cmd_submit, "hand a ticket's plan, or its built code, to its reviewer (the coordinator, else "
+                                   "a human): the ticket's move is theirs until `tracker review` answers it")
+    sp.add_argument("id", help="the ticket")
+    sp.add_argument("--what", required=True, choices=SUBMIT_WHAT, help="plan: its plan is ready for review; code: "
+                                                                      "its built code is ready for the plan "
+                                                                      "conformance check")
+    sp.add_argument("--note", help="what the reviewer should know, such as where the plan is")
+    sp = add("review", cmd_review, "record a review of a ticket's plan or built code, with its numbered findings: "
+                                   "review T-8 --what plan --verdict changes --finding \"...\" --finding \"...\"; or "
+                                   "mark findings of the latest review fixed: review T-8 --what plan --fixed 2,3")
+    sp.add_argument("id", help="the ticket")
+    sp.add_argument("--what", required=True, choices=SUBMIT_WHAT, help="what was reviewed: its plan, or its built "
+                                                                      "code (the plan conformance check)")
+    sp.add_argument("--verdict", choices=VERDICTS, help="pass, or changes: the changes it asks for, each a --finding")
+    sp.add_argument("--finding", action="append", metavar="TEXT", help="one change the review asks for; repeat it "
+                                                                     "for each, numbered in that order")
+    sp.add_argument("--fixed", metavar="N,N", help="the numbers of the latest review's findings now fixed, "
+                                                   "comma-separated")
     sp = add("start", cmd_start, "tie a tracker to this agent session, by its slug or words of its title "
                                  "(`start payments rework`); prints the brief. Lists options when unsure (exit 3). "
                                  "Never changes git")
@@ -301,7 +320,7 @@ def build_parser():
 
 
 WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "step", "use",
-                  "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
+                  "add", "put", "drop", "attach", "issue", "submit", "review"}  # `sync` locks itself
 
 
 def with_check(run, args) -> None:
@@ -358,7 +377,7 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
 TEXT_DESTS = ("message", "text", "next", "plan", "done", "pause", "carry", "question", "note", "resolve", "replace",
-              "append", "why", "pairs")
+              "append", "why", "pairs", "finding")
 
 
 def no_id(args) -> None:

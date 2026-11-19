@@ -201,10 +201,16 @@ EVENTS = {
     "branch.set": "the branch a ticket is built on (`branch`)",
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
+    "submission": "a ticket's plan or built code handed to its reviewer (`what`: one of SUBMIT_WHAT)",
+    "review": "a review of a ticket's plan or built code (`what`; `verdict`: one of VERDICTS; `findings`: the changes "
+              "it asks for, each `{n, text}` numbered from 1; `of`: the seq of the submission it answers, 0 for none)",
+    "finding.fixed": "findings of a review marked fixed (`what`; `of`: the review's seq; `findings`: their numbers)",
     "migrated": "the tracker brought to a newer format (`schema`)",
     "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",
 }
+SUBMIT_WHAT = ("plan", "code")  # what `tracker submit` hands to a reviewer: a ticket's plan, or its built code
+VERDICTS = ("pass", "changes")  # a review's verdict: `changes` lists the changes it asks for as findings
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},

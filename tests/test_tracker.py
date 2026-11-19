@@ -4449,5 +4449,117 @@ class WhoDecided(unittest.TestCase):
                          f"{schema.today()} (Ryan, entered by an agent): SQS")
 
 
+class Handoffs(unittest.TestCase):
+    """A ticket's plan or built code handed to its reviewer (`tracker submit`), and the review that answers it
+    (`tracker review`): events on the ticket, and no file."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Handoffs")
+        self.root = store.HOME / self.s
+        run(*self.t, "new", "T-1", "--title", "One")
+        run(*self.t, "set", "T-1", "status=in-progress")
+        run(*self.t, "new", "T-2", "--title", "Two")
+        run(*self.t, "set", "T-2", "status=done")
+        run(*self.t, "decide", "Which store")
+
+    def last(self, kind: str = "") -> dict:
+        return [e for e in model.read_events(model.Tracker(self.root)) if not kind or e["kind"] == kind][-1]
+
+    def events(self) -> list[dict]:
+        return model.read_events(model.Tracker(self.root))
+
+    def test_a_submission_is_an_event_on_its_ticket(self):
+        files = set(tree(self.root))
+        self.assertEqual(run(*self.t, "submit", "T-1", "--what", "plan", "--note", "see Plan").splitlines()[0],
+                         "submitted T-1's plan")
+        e = self.last()
+        self.assertEqual((e["kind"], e["refs"], e["what"], e["text"]),
+                         ("submission", ["T-1"], "plan", "T-1 plan ready for review: see Plan"))
+        run(*self.t, "submit", "T-1", "--what", "code")
+        self.assertEqual(self.last()["text"], "T-1 built code ready for the plan conformance check")
+        self.assertEqual(set(tree(self.root)), files)  # no file added
+
+    def test_a_review_answers_the_open_submission(self):
+        run(*self.t, "submit", "T-1", "--what", "plan")
+        s = self.last()["seq"]
+        said = run(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a",
+                   "--finding", "b")
+        self.assertEqual(said.splitlines()[0], "reviewed T-1's plan: changes, 2 findings")
+        e = self.last()
+        self.assertEqual((e["kind"], e["of"], e["verdict"], e["what"]), ("review", s, "changes", "plan"))
+        self.assertEqual(e["findings"], [{"n": 1, "text": "a"}, {"n": 2, "text": "b"}])
+        self.assertTrue(e["text"].startswith("T-1 plan review: changes, 2 findings"), e["text"])
+        self.assertIn("1. a; 2. b", e["text"])  # a worker reads them in the log
+        run(*self.t, "submit", "T-1", "--what", "code")
+        run(*self.t, "review", "T-1", "--what", "code", "--verdict", "pass")
+        self.assertEqual(self.last()["text"], "T-1 plan conformance check: pass")
+
+    def test_a_review_with_no_submission_is_recorded(self):
+        run(*self.t, "review", "T-1", "--what", "code", "--verdict", "pass")
+        self.assertEqual((self.last()["kind"], self.last()["of"]), ("review", 0))
+
+    def test_a_review_answers_only_its_own_kind(self):
+        run(*self.t, "submit", "T-1", "--what", "plan")
+        s = self.last()
+        run(*self.t, "review", "T-1", "--what", "code", "--verdict", "pass")
+        self.assertEqual(self.last()["of"], 0)
+        self.assertEqual(moves.last_submission(self.events(), "T-1", "plan"), s)
+        self.assertIsNone(moves.last_submission(self.events(), "T-2", "plan"))
+
+    def test_a_later_submission_replaces_an_earlier_one(self):
+        run(*self.t, "submit", "T-1", "--what", "plan")
+        run(*self.t, "submit", "T-1", "--what", "plan", "--note", "again")
+        second = self.last()["seq"]
+        run(*self.t, "review", "T-1", "--what", "plan", "--verdict", "pass")
+        self.assertEqual(self.last()["of"], second)
+        self.assertIsNone(moves.last_submission(self.events(), "T-1", "plan"))
+        self.assertEqual(moves.last_review(self.events(), "T-1", "plan"), self.last())
+
+    def test_marking_findings_fixed(self):
+        run(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a", "--finding", "b",
+            "--finding", "c")
+        r = self.last()["seq"]
+        said = run(*self.t, "review", "T-1", "--what", "plan", "--fixed", "2,3")
+        self.assertEqual(said.splitlines()[0], "marked findings 2, 3 of T-1's plan review fixed")
+        e = self.last()
+        self.assertEqual((e["kind"], e["of"], e["findings"], e["what"], e["text"]),
+                         ("finding.fixed", r, [2, 3], "plan", "T-1 fixed findings 2, 3 of the plan review"))
+
+    def test_each_refusal_changes_nothing(self):
+        run(*self.t, "review", "T-1", "--what", "code", "--verdict", "changes", "--finding", "a", "--finding", "b")
+        before = tree(self.root)
+        refusals = [
+            (["submit", "D-01", "--what", "plan"], "D-01 is a decision: `tracker decide D-01 --note \"...\"`"),
+            (["review", "D-01", "--what", "plan", "--verdict", "pass"],
+             "D-01 is a decision: `tracker decide D-01 --note \"...\"`"),
+            (["submit", "T-2", "--what", "plan"], "T-2 is closed: a closed ticket takes no submission or review"),
+            (["review", "T-2", "--what", "plan", "--verdict", "pass"],
+             "T-2 is closed: a closed ticket takes no submission or review"),
+            (["review", "T-1", "--what", "plan", "--verdict", "changes"],
+             "a review that asks for changes lists them: one --finding per change"),
+            (["review", "T-1", "--what", "plan", "--verdict", "pass", "--finding", "a"],
+             "a finding is a change asked for: use --verdict changes, or leave the finding out"),
+            (["review", "T-1", "--what", "code", "--fixed", "1", "--verdict", "pass"], "--fixed"),
+            (["review", "T-1", "--what", "code", "--fixed", "1", "--finding", "a"], "--fixed"),
+            (["review", "T-1", "--what", "plan", "--fixed", "1"], "T-1 has no plan review"),
+            (["review", "T-1", "--what", "code", "--fixed", "3"], "findings 1, 2"),
+            (["review", "T-1", "--what", "code", "--fixed", "x"], "findings 1, 2"),
+            (["review", "T-1", "--what", "code"], "--verdict"),
+        ]
+        for args, sentence in refusals:
+            with self.subTest(args=args):
+                self.assertIn(sentence, run(*self.t, *args, code=2))
+        self.assertEqual(tree(self.root), before)
+
+    def test_the_history_reads_like_a_log(self):
+        run(*self.t, "submit", "T-1", "--what", "plan")
+        run(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "a")
+        run(*self.t, "review", "T-1", "--what", "plan", "--fixed", "1")
+        lines = run(*self.t, "history", "--ref", "T-1").splitlines()[-3:]
+        self.assertEqual([x.split(" ", 2)[2] for x in lines],
+                         ["T-1 plan ready for review", "T-1 plan review: changes, 1 finding: 1. a",
+                          "T-1 fixed findings 1 of the plan review"])
+
+
 if __name__ == "__main__":
     unittest.main()
