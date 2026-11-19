@@ -15,10 +15,10 @@ from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
-from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS,
-    LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES,
-    SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
-    parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS,
+    KINDS, LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET,
+    SCALES, SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
+    options_problems, parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
     names, put_section, read_events, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short,
@@ -26,8 +26,8 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
-    in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
-    remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
+    in_repos, items_of, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
+    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -302,7 +302,10 @@ def cmd_history(args):
     tr = resolve(args)
     if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
         die("--since takes a date: YYYY-MM-DD")
-    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last)
+    kinds = csv(args.kind)
+    if unknown := [k for k in kinds if k not in EVENTS]:
+        die(f"no event kind {', '.join(unknown)}: the kinds are {', '.join(EVENTS)}")
+    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last, kinds=kinds)
     print("\n".join(lines) if lines else "no log lines")
 
 
@@ -914,9 +917,15 @@ def problem_lines(tr: Tracker) -> list[str]:
 
 
 def cmd_check(args):
+    """The tracker's problems (`contract.check`), then the open items that are stuck (`items_of`): those are no
+    problem in its files, so neither a write's report nor a brief, which ask the agent to fix what `check` finds,
+    shows them."""
     tr = resolve(args)
     lines = problem_lines(tr)
     print("\n".join(lines) or " · ".join(["ok", *(f"{len(tr.records_of(k))} {KINDS[k].folder}" for k in KINDS)]))
+    stuck = [f"stuck: {i.what}" for i in items_of(tr) if i.stuck]
+    if stuck:
+        print("\n".join(stuck))
     sys.exit(1 if any(x.startswith("✗") for x in lines) else 0)
 
 

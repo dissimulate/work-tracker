@@ -14,7 +14,7 @@ from .system import warn
 from .store import HOME, atomic_write, guard_writes, locked, read_json, unguarded, OtherFormat
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE_DIR,
     FORMS, ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR,
-    OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS,
+    OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, QUIET_KINDS, README_INSTRUCTIONS, README_KEYS,
     README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES,
     STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since,
     kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
@@ -257,9 +257,11 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         "(`via`: view, agent or terminal) and plugin version. Only the tool writes it: each write logs what the "
         "history needs; `tracker log` adds a note no other write holds. "
         "The hooks add the branch's new commits (`" + LOG["commits"].format(branch="<branch>", commits="...")
-        + "`), `step --pause` the handoff's first words.",
-        "  log.md: the log for people, one dated line per event, written with it. Editing it changes nothing the views "
-        "show.",
+        + "`), `step --pause` the handoff's first words, and each wait on a human for a permission or an answer, "
+        f"as its start and its end ({', '.join(QUIET_KINDS)}: `tracker history` shows them only when `--kind` "
+        "names them).",
+        "  log.md: the log for people, one dated line per event but a wait on a human, written with it. Editing it "
+        "changes nothing the views show.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",

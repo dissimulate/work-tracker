@@ -203,8 +203,9 @@ def decision_view(tr: Tracker, d: Record) -> dict:
 
 def now_view(tr: Tracker) -> dict:
     """Work under way (your move first, then the others' by who, then the tickets whose PR GitHub has not been read
-    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, and the
-    watch."""
+    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, the
+    watch, and `open`: every open item (`items_of`: a submission, findings, a question, a wait on a human), stuck
+    first, with its move and its age."""
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     moves = {t.id: move_of(tr, t) for t in tr.tickets if t.in_flight}
@@ -247,7 +248,10 @@ def now_view(tr: Tracker) -> dict:
     watch = {"running": True, "text": "Watched by " + ", ".join(f"{w['who']} since {clock(w['since'])}"
                                                                  for w in running)} if running else \
         {"running": False, "text": f"Watch by {last['who']} ended {clock(last['ended'])}"} if last else None
-    return {"items": items, "idle": idle, "watch": watch}
+    now = time.time()
+    opened = [{"kind": i.kind, "refs": i.refs, "what": i.what, "move": move_view(i.move), "stuck": i.stuck,
+               "age_s": int(now - i.at)} for i in items_of(tr, now)]
+    return {"items": items, "idle": idle, "watch": watch, "open": opened}
 
 
 def issue_state(tr: Tracker) -> str:

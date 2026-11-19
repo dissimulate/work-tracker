@@ -191,13 +191,14 @@ HISTORY_LAST = 30  # log lines `history` shows by default
 SHOWN_DECISION_KINDS = ("decision.opened", "decision.decided", "legacy")  # what a view of the decision says already
 
 
-def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset()) -> list[str]:
+def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset(),
+                  kinds: list[str] = ()) -> list[str]:
     """The log's last `last` lines (0: all), oldest first: those whose refs name any of `refs`, dated `since` or
-    later. A line that opened or settled a decision in `shown` is left out: the view shows that decision. A legacy
-    line that had no day is left out too, and so is a QUIET_KINDS event."""
+    later, of `kinds` when given, else of any kind but QUIET_KINDS. A line that opened or settled a decision in
+    `shown` is left out: the view shows that decision. A legacy line that had no day is left out too."""
     lines = [log_line(e)[2:] for e in read_events(tr)
-             if e["kind"] not in QUIET_KINDS and (day := event_day(e)) and day >= since
-             and (not refs or set(refs) & set(e["refs"]))
+             if (e["kind"] in kinds if kinds else e["kind"] not in QUIET_KINDS)
+             and (day := event_day(e)) and day >= since and (not refs or set(refs) & set(e["refs"]))
              and not (e.get("decision") in shown and e["kind"] in SHOWN_DECISION_KINDS)]
     return lines[-last:] if last > 0 else lines
 
@@ -321,6 +322,11 @@ def protocol(slug: str) -> str:
         "line shows what the PR waits on",
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
+        "- a ticket's plan is ready: `submit <id> --what plan`; its code is built: `submit <id> --what code`; then "
+        "wait for the review. Fix or answer each finding (`history --ref <id>` lists them), mark it "
+        "`review <id> --what <plan|code> --fixed <n>`, and submit again. Reviewing: "
+        "`review <id> --what <plan|code> --verdict pass`, or `--verdict changes` with a `--finding \"...\"` per "
+        "change. Tell another session something with `log \"...\" --ref <id>` only when no command records it",
         "- as they happen: a direction choice `decide`, each choice an `--option`; an order or blocker `wait`; a "
         "result file `attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a "
         "sign-off): ask them, then `act \"<what, with whom>\" --refs <ids>`",

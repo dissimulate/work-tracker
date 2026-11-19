@@ -20,7 +20,7 @@ from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEE
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
-    granted, live_sessions, session_id, ticket_facts, watch_running, Live)
+    granted, items_of, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -78,7 +78,7 @@ def session_name(sid: str) -> str:
 
 class Event(NamedTuple):
     kind: str  # one of EVENT_KINDS: what `--only` picks
-    key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`
+    key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`, `stuck <id>`
     urgent: bool  # it needs a human: `!`
     text: str
 
@@ -87,7 +87,8 @@ EVENT_KINDS = {"ticket": "a ticket's stage, move or next, or that it can start",
                "log": "a new log line, the commits logged",
                "agent": "an agent session that starts, ends its turn, waits on the user, seems stuck or ends",
                "github": "a sync that fails or works again",
-               "check": "a new `check` error"}
+               "check": "a new `check` error",
+               "stuck": "a submission, a question or a wait on a human left too long"}
 URGENT = "urgent"  # to `--only`: any event that needs a human, of any kind
 
 
@@ -401,6 +402,7 @@ class Watcher:
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role, self.sid)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
+        events += self.stuck(tr, now)
         named = {e.key for e in events}
         for sid, a in self.st.get("agents", {}).items():
             if named & set(a["on"]):
@@ -482,6 +484,24 @@ class Watcher:
         out += [Event("agent", i, False, f"{len(names)} agents on it: {', '.join(names)}")
                 for i, names in shared.items() if self.st.get("shared", {}).get(i) != names]
         self.st.update(agents=agents, shared=shared)
+        return out
+
+    def stuck(self, tr: Tracker, now: float) -> list[Event]:
+        """Each open item that is stuck (`items_of`, with the clock at each look and the log read only when it
+        changed), said once: its key stays in the state while the item is open, so one that comes back is said again.
+        Nothing is written to the tracker. A wait whose session the agent line already shows waiting is that line's
+        to say, and the watch's own session's waits are not news to it."""
+        items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]
+        told, agents = set(self.st.get("stuck", [])), self.st.get("agents", {})
+        out = []
+        for i in items:
+            if not i.stuck or i.key in told:
+                continue
+            told.add(i.key)
+            if i.kind != "wait" or agents.get(i.session, {}).get("status") != "waiting":
+                about = i.key.split(":", 1)[1] if i.kind == "question" else i.refs[0] if i.refs else ""
+                out.append(Event("stuck", f"stuck {about}".strip(), True, i.what))  # a line of its own
+        self.st["stuck"] = sorted(told & {i.key for i in items})
         return out
 
     def run(self, once: bool) -> None:

@@ -12,7 +12,8 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy
-from .schema import BLOCKER, COORDINATOR, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES, SUBMIT_WHAT, VERDICTS
+from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
+    SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers, OtherFormat
@@ -131,6 +132,8 @@ def build_parser():
     sp.add_argument("--since", metavar="YYYY-MM-DD", help="only the lines dated this day or later")
     sp.add_argument("--last", type=int, default=HISTORY_LAST, metavar="N",
                     help=f"the last N lines (default {HISTORY_LAST}; 0 for all)")
+    sp.add_argument("--kind", metavar="KINDS", help="only the events of these kinds, comma-separated: "
+                    f"{', '.join(EVENTS)}. A wait on a human ({', '.join(QUIET_KINDS)}) shows only when named")
     sp = add("attach", cmd_attach, f"keep a file in the tracker's {EVIDENCE_DIR}/ folder and link it from the "
                                    "tickets and decisions it supports")
     sp.add_argument("file", nargs="?")
