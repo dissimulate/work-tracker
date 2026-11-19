@@ -15,6 +15,8 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - The watch, the view's data and `tracker check` show as stuck a submission or a question that the coordinator or a session left unanswered too long, or whose ticket is under way with no session on it, and a wait on you longer than 30 s. Nothing has to be running for this to be worked out.
 - `tracker history --kind` filters the log by kind of event.
 - Each review of a PR that approves it or requests changes is in the log, once, with its time on GitHub and whether a bot wrote it, also those of a PR that merged. A review that only comments is not. The first sync of a PR that already has reviews logs them all, and the watch says them as one line.
+- `tracker check` warns of a PR that a session on the tracker opened with `gh pr create` and that no ticket claims, and says how to claim it with a `PR:` link. Each PR a session opens that way is logged.
+- `tracker check` warns of each open ticket with no `Issue:` link, once any ticket of the tracker has one. `tracker set tracker issues=required` makes it an error for every open ticket.
 - `tracker data` lists each PR the tickets name, once, with its title, state, move, tickets and history, for a view to show. The view does not draw it yet.
 - A resolution entered on your word can cite your message: the session keeps the start of your last 5 messages and answers, and `tracker decide D-<n> --resolve "..." --by <name> --cite "<a few words you said>"` copies the one that holds those words into the log. Only a cited message reaches the log. A quote that no kept message holds is refused.
 

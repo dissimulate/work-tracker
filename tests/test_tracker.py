@@ -1138,6 +1138,33 @@ class Writes(unittest.TestCase):
             self.assertIn("no tracker", run("--tracker", name, "index", code=2))
             self.assertIn("no tracker", run("context", f"{name}:L-1", code=2))
 
+    def test_tickets_with_no_issue(self):
+        s, t = new_tracker("Issues")
+        run(*t, "new", "I-1", "--title", "One")
+        self.assertIn("`check`: no new problems", run(*t, "new", "I-2", "--title", "Two"))  # no issue tracker in use
+        self.assertNotIn("no issue", run(*t, "check"))
+        run(*t, "new", "I-3", "--title", "Three")
+        run(*t, "set", "I-3", "status=done")
+        said_ = run(*t, "add", "I-1", "link", "Issue: [PROJ-1 One](https://x.y/PROJ-1)")
+        self.assertIn("added `tracker check` problems:\n⚠ I-2: no issue\n`check`: fix the problems above", said_)
+        report = run(*t, "check")
+        self.assertIn("⚠ I-2: no issue", report.splitlines())
+        self.assertNotIn("I-1: no issue", report)
+        self.assertNotIn("I-3: no issue", report)  # closed
+        said_ = run(*t, "new", "I-4", "--title", "Four")
+        self.assertIn("added `tracker check` problems:\n⚠ I-4: no issue\n", said_)
+        self.assertNotIn("I-2", said_)  # said once, by the write that added it
+        self.assertIn("issues 'sometimes' is not one of optional|required",
+                      run(*t, "set", "tracker", "issues=sometimes", code=2))
+        run(*t, "set", "tracker", "issues=required")
+        report = run(*t, "check", code=1)
+        self.assertEqual([x for x in report.splitlines() if "no issue" in x],
+                         ["✗ I-2: no issue (README issues: required)", "✗ I-4: no issue (README issues: required)"])
+        run(*t, "drop", "I-1", "link", "PROJ-1")  # no ticket has an issue: still required
+        self.assertIn("✗ I-1: no issue (README issues: required)", run(*t, "check", code=1).splitlines())
+        run(*t, "set", "tracker", "issues=optional")
+        self.assertNotIn("no issue", run(*t, "check"))
+
     def test_templates_take_the_contract_limits(self):
         s, _ = new_tracker("Limits")
         run("--tracker", s, "new", "M-1", "--title", "One")
@@ -2188,6 +2215,122 @@ def tool(name: str, sid: str, cwd: Path, **extra) -> dict | None:
 
 def said(out: dict | None) -> str:
     return json.dumps(out or {})
+
+
+def no_gh() -> dict:
+    """A PATH with git and the shell's tools but no `gh`, which a hook's sync then cannot run: no hook in a test asks
+    GitHub (`gh` may sit in /usr/bin)."""
+    path = Path(BASE) / "nogh"
+    if not path.exists():
+        path.mkdir()
+        for name in ("git", "cat", "sh"):
+            (path / name).symlink_to(shutil.which(name))
+    return {"PATH": f"{path}:{Path(sys.executable).parent}"}
+
+
+def opened_prs(s: str) -> list[dict]:
+    return [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.opened"]
+
+
+class PrsOpened(unittest.TestCase):
+    """A PR a session on a tracker opens with `gh pr create` is logged (`pr.opened`), and `tracker check` warns of one
+    that no ticket claims (R11)."""
+
+    CREATE = {"command": "gh pr create --fill --title 'Parser'"}
+    CREATED = {"stdout": "Creating pull request for f1 into main in a/x\n\nhttps://github.com/a/x/pull/12\n",
+               "stderr": "", "interrupted": False, "isImage": False}
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Opened", "a/x")
+        run(*self.t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "set", "S-1", "status=in-progress")
+        self.work = repo("f1")
+        self.sid = f"po{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.sid)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("start", self.s, cwd=self.work)
+
+    def bash(self, tool_input: dict, response: dict | None = None, **extra) -> dict | None:
+        return tool("Bash", self.sid, self.work, env=no_gh(), tool_input=tool_input,
+                    **({"tool_response": response} if response is not None else {}), **extra)
+
+    def test_a_pr_a_session_opens_is_logged_once(self):
+        self.bash(self.CREATE, self.CREATED)
+        self.bash(self.CREATE, self.CREATED)  # gh says the PR is there already: the same one
+        [e] = opened_prs(self.s)
+        self.assertEqual((e["text"], e["refs"], e["pr"], e["session"]), ("PR #12 opened by a session", [], "a/x#12",
+                                                                          self.sid))
+        self.assertNotIn("url", e)
+
+    def test_the_last_pr_address_is_the_one_opened(self):
+        out = {"stdout": "Warning: see https://github.com/a/x/pull/3\nhttps://github.com/a/x/pull/14\n"}
+        self.bash(self.CREATE, out)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#14"])
+
+    def test_a_silent_pr_create_logs_nothing(self):
+        before = tree(store.HOME / self.s)
+        for response in ({"stdout": "", "stderr": "aborted"}, None, {"stdout": "see github.com/a/x"}):
+            with self.subTest(response=response):
+                self.bash(self.CREATE, response)  # `hook` checks that it exits 0
+        failed = hook("resumed", self.sid, self.work, env=no_gh(), hook_event_name="PostToolUseFailure",
+                      tool_name="Bash", tool_input=self.CREATE,
+                      error="Exit code 1\nhttps://github.com/a/x/pull/12 already exists")
+        self.assertIsNone(failed)
+        self.assertEqual(opened_prs(self.s), [])
+        self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_a_subagents_pr_is_logged_too(self):
+        self.assertIsNone(self.bash(self.CREATE, self.CREATED, agent_id="a1"))
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
+    def test_another_gh_pr_command_logs_no_opening(self):
+        for command in ("gh pr merge 12 --squash", "gh pr edit 12 --title x", "git push -u origin f1",
+                        "gh pr view 12"):
+            with self.subTest(command=command):
+                self.bash({"command": command}, self.CREATED)
+        self.assertEqual(opened_prs(self.s), [])
+
+    def test_a_pr_in_another_repo_is_named_by_its_repo(self):
+        self.bash(self.CREATE, {"stdout": "https://github.com/b/y/pull/7\n"})
+        self.assertEqual([(e["pr"], e["text"]) for e in opened_prs(self.s)],
+                         [("b/y#7", "PR b/y#7 opened by a session")])
+
+    def test_a_refused_tracker_gets_no_pr_event(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            for agent in ({}, {"agent_id": "a1"}):
+                with self.subTest(refuse.__name__, **agent):
+                    self.setUp()
+                    refuse(self, self.s)
+                    before = tree(store.HOME / self.s)
+                    self.bash(self.CREATE, self.CREATED, **agent)  # exits 0: `hook` checks
+                    self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_check_warns_of_a_pr_no_ticket_claims(self):
+        self.bash(self.CREATE, self.CREATED)
+        before = tree(store.HOME / self.s)
+        warning = ("⚠ PR a/x#12 was opened by a session on this tracker and no ticket claims it: add a PR: link to "
+                   'the ticket it is for, `tracker add <id> link "PR: [title](url) — why"`')
+        self.assertIn(warning, run(*self.t, "check").splitlines())
+        self.assertEqual(tree(store.HOME / self.s), before)  # `check` writes nothing
+        run(*self.t, "new", "S-2", "--title", "Two")
+        run(*self.t, "add", "S-2", "link", "PR: [Parser](https://github.com/A/X/pull/12)")
+        before = tree(store.HOME / self.s)
+        self.assertNotIn("a/x#12", run(*self.t, "check"))
+        self.assertEqual(tree(store.HOME / self.s), before)
+
+    def test_a_pr_from_a_tickets_branch_is_claimed_by_sync(self):
+        self.bash(self.CREATE, self.CREATED)
+        self.assertIn("no ticket claims it", run(*self.t, "check"))
+        with mock.patch.object(github, "gh", answers([pull(12, branch="f1")])):
+            run(*self.t, "sync")
+        self.assertNotIn("no ticket claims it", run(*self.t, "check"))
+        self.assertEqual(model.tracker_at(self.s).lookup("S-1").prs, {"12": "open"})
+
+    def test_a_write_reports_the_new_warning_once(self):
+        self.bash(self.CREATE, self.CREATED)
+        said_ = run(*self.t, "set", "S-1", "next=Ship it")  # the PR came from a hook: this write did not add it
+        self.assertNotIn("no ticket claims it", said_)
+        self.assertIn("`check`: no new problems", said_)
 
 
 class Hooks(unittest.TestCase):

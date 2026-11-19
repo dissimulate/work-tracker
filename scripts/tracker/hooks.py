@@ -14,7 +14,8 @@ from pathlib import Path
 from .system import env_int, spawn, warn
 from .store import locked, record_cli, OtherFormat
 from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
-from .model import set_branch, short, Tracker
+from .model import append_event, pr_key, read_events, set_branch, short, Tracker
+from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
     get_mark, hand_over, in_repos, keep_word, lag, load_session, match_cwd, own_edit, record_commits, remember,
@@ -203,9 +204,10 @@ COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")
 
 def hook_post_bash(data: dict) -> None:
     """After a `gh pr` command that changes a PR (PR_COMMAND) or a push: record the branch on its ticket
-    (`adopt_branch`) and sync PR state. After a commit: log it, and when it is the first since `next` last
-    changed, ask whether a step ended, while the work is fresh. A subagent's commit (its tool calls fire these hooks
-    too) is logged, but the subagent is asked nothing: the session records the step, asked at its next message."""
+    (`adopt_branch`) and sync PR state; after `gh pr create`, also log the PR it opened (`log_opened`). After a commit:
+    log it, and when it is the first since `next` last changed, ask whether a step ended, while the work is fresh. A
+    subagent's commit (its tool calls fire these hooks too) is logged, but the subagent is asked nothing: the session
+    records the step, asked at its next message."""
     subagent = bool(data.get("agent_id"))
     command = (data.get("tool_input") or {}).get("command", "")
     pr, commit = PR_TRIGGER.search(command), COMMIT_TRIGGER.search(command)
@@ -221,12 +223,38 @@ def hook_post_bash(data: dict) -> None:
         changes = sync(m.tracker, every=0)
         if changes and not subagent:
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
+        if PR_CREATE.search(command):
+            log_opened(m.tracker, data.get("tool_response"))
     if commit:
         record_commits(m, cwd)
         if not subagent and (ask := next_request(m, cwd, sid)):
             out.append(ask)
     if out:
         emit_context("PostToolUse", "\n".join(out))
+
+
+PR_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
+
+
+def log_opened(tr: Tracker, response) -> None:
+    """Log the PR a `gh pr create` opened (`pr.opened`): the last PR address in its output, where gh prints it, once
+    per PR. Claude Code gives a Bash command's output as `stdout`. A command that failed reaches no `post-bash` hook,
+    and one whose output holds no address logs nothing. A tracker the format guard refuses gets no event."""
+    out = response.get("stdout") if isinstance(response, dict) else response
+    found = PR_PAGE.findall(out) if isinstance(out, str) else []
+    if not found:
+        return
+    repo, number = found[-1]
+    key = pr_key(repo, number)
+    ours = [r for r in tr.repos if r.lower() == repo.lower()]  # as `sync` names it in a pr.state event
+    name = f"#{number}" if len(tr.repos) == 1 and ours else f"{(ours or [repo])[0]}#{number}"
+    try:
+        with locked():
+            tr = Tracker(tr.root)
+            if not any(e["kind"] == "pr.opened" and e.get("pr") == key for e in read_events(tr)):
+                append_event(tr, "pr.opened", f"PR {name} opened by a session", [], pr=key)
+    except OtherFormat:
+        pass
 
 
 def hook_edit(data: dict) -> None:

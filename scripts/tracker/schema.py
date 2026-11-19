@@ -171,6 +171,8 @@ KEYS = {
         "owner": ("set", "who owns the work"),
         "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
+        "issues": ("set", "required: every open ticket has an Issue link, and `check` reports one with none as an "
+                          "error; optional or empty: a warning, only while some ticket has an Issue link"),
         "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
                                  "decisions settled on it to the ticket's issue, with the issue tracker's tool "
                                  "(`tracker issue` says what is due); off or empty: the tracker never asks"),
@@ -199,6 +201,8 @@ EVENTS = {
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
     "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`)",
+    "pr.opened": "a PR a session on the tracker opened (`gh pr create`), once (`pr`); `check` warns while no ticket "
+                 "claims it",
     "pr.review": "a review of a PR that approved it or requested changes, as `sync` read it, once each (`pr`; "
                  "`review`: the forge's id for it; `by`; `result`: approved or changes; `submitted_at`: the forge's "
                  "time for it; `bot`: whether a bot wrote it)",
@@ -228,6 +232,7 @@ RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_crea
                 "action": {"opened": "created_at", "updated": "updated_at"},
                 "tracker": {"created": "created_at"}}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
+ISSUES = ("optional", "required")  # README `issues`: whether each open ticket must have an Issue link (`check`)
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
@@ -279,7 +284,7 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
 LIST_KEYS = {"depends_on", "refs", "labels", "prs"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
-CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
+CHOICES = {"issue_updates": ISSUE_UPDATES, "issues": ISSUES}  # a key that holds one of a few words
 
 
 class Form:
