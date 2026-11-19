@@ -509,6 +509,19 @@ class Moves(unittest.TestCase):
         move = moves.whose_move(tr, one)
         self.assertEqual((move.text(), move.quiet), ("you: PR closed", False))
 
+    def test_sync_asks_github_for_no_damaged_pr_number(self):
+        s, t = new_tracker("Damaged", "a/x")
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
+        run(*t, "set", "S-1", "status=in-progress")
+        path = store.HOME / s / "tickets" / "S-1.md"
+        damaged = "prs: [abc:open, \u0661\u0662:open, 0012:open, 99999999999:open, 7:open]"  # hand edits gone wrong
+        path.write_text(path.read_text().replace("depends_on: []", f"depends_on: []\n{damaged}"))
+        fake = answers([pull(7, branch="f1"), pull(12, branch="other")])
+        with mock.patch.object(github, "gh", fake):
+            run(*t, "sync")
+        self.assertEqual(sorted(re.findall(r"\bp(\S+): pullRequest\(number: (\S+)\)", fake.queries[0])),
+                         [("12", "12"), ("7", "7")])
+
     def test_review_facts(self):
         bot = {"author": {"__typename": "Bot", "login": "lint"}, "state": "CHANGES_REQUESTED",
                "submittedAt": "2026-09-02T00:00:00Z"}

@@ -13,7 +13,7 @@ from pathlib import Path
 from .store import locked
 from .schema import FORMS, OPEN_PR, PR_MATCH_TTL_S, SYNC_MIN_INTERVAL_S, utc_seconds
 from .model import apply_prs, branch_entry, pr_key, put_entry, set_branch, Record, Tracker
-from .moves import linked_prs
+from .moves import PR_NUMBER, linked_prs
 from .git import cwd_repo, default_branches
 from .session import match_cwd, named_in, Match
 
@@ -53,8 +53,9 @@ def pr_url(repo: str, number: object) -> str:
 
 
 def named_prs(t: Record, repo: str) -> set[str]:
-    """The numbers of the PRs a ticket names in this repo: the ones `sync` follows, and its `PR:` links."""
-    return {n for n in (*t.prs, *link_numbers(t, repo)) if n.isdigit()}
+    """The numbers of the PRs a ticket names in this repo: the ones `sync` follows, and its `PR:` links. A number a
+    hand edit damaged is none: GitHub would refuse the whole query for it."""
+    return {str(int(n)) for n in (*t.prs, *link_numbers(t, repo)) if PR_NUMBER.fullmatch(n)}
 
 
 def link_numbers(t: Record, repo: str) -> set[str]:
