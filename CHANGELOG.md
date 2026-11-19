@@ -4,8 +4,22 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Added
+
+- `tracker rules` lists the issue stages: what an issue's state means (not started, work under way, parked, in review, merged, finished, closed without the work), whatever its issue tracker calls it.
+- `tracker issue <id> --stage <stage> [--state '<name>']` records an issue's state as the agent read it. An issue closed in its issue tracker (finished, or closed without the work) closes its ticket, and a started ticket whose issue shows not started is reported.
+- `tracker context` and `tracker index` show a ticket's issue state, quoted, by its issue tracker's own name. Briefs and hook lines never show it.
+- The view shows each ticket's issue state by its issue tracker's own name in its status, with "· PR open" while a PR of a story its issue shows merged or done is still open. The view's format changes: if it says it is older, run `tracker install-mod` again.
+
+### Changed
+
+- With issue updates on, the agent moves each linked issue as the work moves: started, parked while it waits on something not under way, back to under way, in review, merged, and finished when done with no PR. It reads the issue first, never moves it backwards, and a move you make in the issue tracker holds until the work moves on. A dropped ticket's issue gets its summary as a comment and is not moved; a ticket reopened here does not move its issue back.
+- A running session is asked to read its tickets' issue states again, state only: after a PR change, every 10 minutes while a ticket of its own is under way, and once merged, hourly for a week, then daily, until a month after the merge. Each new set is asked for once.
+- Trackers move to format 6, which keeps the moves made to each issue apart from its summary and decisions. Start again any session still running the older plugin version.
+
 ### Fixed
 
+- A title, summary or other text holding a line or paragraph separator (U+2028, U+2029, U+0085) no longer breaks its record's frontmatter.
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
 - In a Herdr layout, the view follows an agent you started from a shell (a tab opened as a shell, then `claude` or `claude --resume` run in it) to its tracker, instead of saying that the focused agent has none. With two or more agents under that shell it still says none. Not on Windows.
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -15,8 +16,9 @@ from .system import die
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE,
-    PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
+from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, ISSUE_MERGED_READ_S, ISSUE_MERGED_SLOW_S,
+    ISSUE_MERGED_STOP_S, ISSUE_STAGES, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES,
+    STATE_KEEP_DAYS, STATUSES, SYNC_MIN_INTERVAL_S, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
     utc_now, utc_seconds, Stage)
 
 
@@ -530,17 +532,111 @@ class Tracker:
             not read.get(t.id) or read[t.id] < asked)
             or not read.get(t.id) and t.get("started_at"))]  # closed: once, for its wait time, if it has a start
 
-    def issue_shown(self, t: Record) -> dict:
-        """What t's issue should show (STATE_RULES["issues"]): its stage, its summary once closed, and the answer of
-        each settled decision that touches it."""
-        return {"stage": t.stage, "summary": (t.get("summary") or None) if t.closed else None,
+    def states_to_read(self, focus: Iterable[str] = ()) -> list[Record]:
+        """The linked tickets whose issue state alone the model should read again (STATE_RULES["issues"]), besides
+        those whose fields are due (issues_to_read): with issue updates on, one its work would move but never read
+        (a move waits for that read); one with a PR event since its last read; and of `focus` (a session's tickets),
+        one under way read over SYNC_MIN_INTERVAL_S ago, or one read as merged, by the ISSUE_MERGED_* steps."""
+        issues, now, focus = self.raw_state().get("issues", {}), time.time(), set(focus)
+        read, changed = issues.get("state_read", {}), issues.get("pr_changed", {})
+        fields = {t.id for t in self.issues_to_read()}
+        out = []
+        for t in self.tickets:
+            if not t.aliases or t.id in fields:
+                continue
+            last = read.get(t.id, 0)
+            if not t.get("issue_stage"):
+                due = self.readme.get("issue_updates") == "on" and self.wanted_issue_stage(t) is not None
+            elif t.get("issue_stage") == "merged":
+                merged = utc_seconds(t.get("merged_at"))  # none while a PR of it is open: PR changes say when
+                since = now - merged if merged else ISSUE_MERGED_STOP_S
+                every = ISSUE_MERGED_READ_S if since < ISSUE_MERGED_SLOW_S else 86400
+                due = t.id in focus and since < ISSUE_MERGED_STOP_S and now - last > every
+            else:
+                due = t.id in focus and t.stage in ("in-progress", "in-review") and now - last > SYNC_MIN_INTERVAL_S
+            if due or changed.get(t.id, 0) > last:
+                out.append(t)
+        return out
+
+    def stopped_on(self, t: Record) -> bool:
+        """It waits on something not itself under way: a decision, an action, an external blocker, or a ticket not
+        started. Work stacked on tickets under way goes on."""
+        return any(not (d.rec and d.rec.in_flight) for d in self.blockers(t))
+
+    def wanted_issue_stage(self, t: Record) -> str | None:
+        """The issue stage (ISSUE_STAGES) a linked ticket's work puts its issue at; None while todo, once dropped (a
+        person decides that issue's close), and with no Issue link."""
+        if not t.aliases:
+            return None
+        if t.stage == "in-progress":
+            return "parked" if self.stopped_on(t) else "started"
+        if t.stage == "in-review":
+            return "review"
+        if t.stage == "done":
+            return "merged" if "merged" in t.prs.values() else "done"
+        return None
+
+    def record_issue_read(self, t: Record, stage: str, state: str | None) -> list[str]:
+        """Record the issue's state as the model read it; the lines to print. A close made in the issue tracker
+        closes the ticket. A stage other than both the last read and the last move the model made there (none on
+        this machine counts) is a person's move: the tracker asks for no move while the work still wants the stage it
+        wants now (STATE_RULES["issues"] `held`). The same stage as the last read is no news: a hold stays as it is."""
+        lines, updates, before = [], {}, t.get("issue_stage")
+        if stage in ("done", "wontdo") and not t.closed:
+            updates = t.status_update("done" if stage == "done" else "dropped")
+            lines.append(f"{t.id}: closed in its issue tracker; set its summary: "
+                         f"`tracker set {t.id} summary=\"<what it delivered, or why dropped>\"`")
+        elif stage == "unstarted" and t.started:
+            lines.append(f"{t.id}: its issue shows not started")
+        updates["issue_stage"] = stage
+        if state is not None:
+            updates["issue_state"] = state or None
+        if "status" in updates:
+            t.change(updates)
+        else:
+            t.save(updates)  # not `updated_at`: reading the issue is no change to the work
+        state_ = self.raw_state()
+        issues = state_.setdefault("issues", {})
+        issues.setdefault("state_read", {})[t.id] = time.time()
+        held = issues.setdefault("held", {})
+        moved = issues.get("moves", {}).get(t.id, {}).get("stage")
+        wanted = self.wanted_issue_stage(t)
+        # A first read with no move made, behind where the work is, is the issue left as it was: no one to hold for.
+        behind = (not before and not moved and wanted in ISSUE_STAGES
+                  and ISSUE_STAGES[stage].order < ISSUE_STAGES[wanted].order)
+        if stage == moved:
+            held.pop(t.id, None)
+        elif stage != before and not behind:
+            held[t.id] = wanted
+        self.save_state(state_)
+        return lines
+
+    def move_due(self, t: Record, issues: dict) -> str | None:
+        """The issue stage t's issue is to move to now, or None (STATE_RULES["issues"]): what its work wants, once
+        its issue has been read, when the model has not moved it there, the issue is not there or further on, and
+        no person's move holds it."""
+        wanted, read = self.wanted_issue_stage(t), t.get("issue_stage")
+        if not wanted or read not in ISSUE_STAGES or wanted == read:
+            return None
+        if wanted == issues.get("moves", {}).get(t.id, {}).get("stage"):
+            return None
+        if ISSUE_STAGES[wanted].order < ISSUE_STAGES[read].order:
+            return None
+        held = issues.get("held", {})
+        return None if t.id in held and held[t.id] == wanted else wanted
+
+    def issue_shown(self, t: Record, issues: dict | None = None) -> dict:
+        """What t's issue should show (STATE_RULES["issues"]): the stage to move it to, its summary once closed, and
+        the answer of each settled decision that touches it."""
+        issues = self.raw_state().get("issues", {}) if issues is None else issues
+        return {"stage": self.move_due(t, issues), "summary": (t.get("summary") or None) if t.closed else None,
                 "decisions": {d.id: answer(d) for d in self.decisions_for(t) if d.closed}}
 
     def issue_updates_due(self) -> list[tuple[Record, list[str]]]:
         """Per linked ticket, what its issue should now show and does not yet, as items for the model to write with
-        the issue tracker's tool (STATE_RULES["issues"]): its stage, with its summary once closed; and each settled
-        decision that touches it, by title and answer. Nothing while README `issue_updates` is not on, or before
-        `set` recorded the history."""
+        the issue tracker's tool (STATE_RULES["issues"]): the stage to move it to (move_due), its summary once closed,
+        and each settled decision that touches it, by title and answer. Nothing while README `issue_updates` is not
+        on, or before `set` recorded the history."""
         issues = self.raw_state().get("issues", {})
         if self.readme.get("issue_updates") != "on" or "history" not in issues:
             return []
@@ -549,10 +645,13 @@ class Tracker:
         for t in self.tickets:
             if not t.aliases:
                 continue
-            last, now = written.get(t.id, {}), self.issue_shown(t)
+            last, now = written.get(t.id, {}), self.issue_shown(t, issues)
             items = []
-            if (now["stage"], now["summary"]) != (last.get("stage"), last.get("summary")) and (last or not t.todo):
-                items.append(f"status {now['stage']}" + (f"; summary: {now['summary']}" if now["summary"] else ""))
+            if now["stage"]:
+                items.append(f"status: move it to the state that means {ISSUE_STAGES[now['stage']].meaning} "
+                             f"(--stage {now['stage']})")
+            if now["summary"] and now["summary"] != last.get("summary"):
+                items.append(f"summary: {now['summary']}")
             told = {**history, **last.get("decisions", {})}
             items += [f"decision settled: {d.get('title')}: {now['decisions'][d.id]}" for d in self.decisions_for(t)
                       if d.closed and now["decisions"][d.id] != told.get(d.id)]
@@ -566,15 +665,20 @@ class Tracker:
         state.setdefault("issues", {})["listed"] = {t.id: self.issue_shown(t) for t, _ in due}
         self.save_state(state)
 
-    def mark_issue_written(self, t: Record) -> bool:
-        """Record that t's issue now shows what `tracker issue` last listed for it; False when it listed nothing for
-        t. A change after the listing stays due."""
+    def mark_issue_written(self, t: Record, stage: str | None = None) -> bool:
+        """Record that t's issue now shows the summary and decisions `tracker issue` last listed for it, and, given
+        `stage`, that the model moved it there; False when it listed nothing for t. A change after the listing stays
+        due."""
         state = self.raw_state()
         issues = state.setdefault("issues", {})
         shown = issues.get("listed", {}).pop(t.id, None)
         if shown is None:
             return False
-        issues.setdefault("written", {})[t.id] = {**shown, "at": time.time()}
+        now = time.time()
+        issues.setdefault("written", {})[t.id] = {"summary": shown["summary"], "decisions": shown["decisions"],
+                                                  "at": now}
+        if stage:
+            issues.setdefault("moves", {})[t.id] = {"stage": stage, "at": now}
         self.save_state(state)
         return True
 
@@ -895,6 +999,10 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
     state["last_sync"] = time.time()
     if facts is not None:
         state["prs"] = facts
+    moved = {i for ids in events.values() for i in ids if tr.by_id(i) and tr.by_id(i).aliases}
+    if moved:  # a PR event is when a person most often moves the issue: its state is to read again
+        changed = state.setdefault("issues", {}).setdefault("pr_changed", {})
+        changed.update({i: state["last_sync"] for i in moved})
     tr.save_state(state)
     return changes
 

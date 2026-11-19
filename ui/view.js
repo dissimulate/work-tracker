@@ -26,7 +26,7 @@ import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filter
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, field, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
-const SCHEMA = 7; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 8; // viewmodel.VIEW_SCHEMA
 const TITLE_MIN = 120; // the least width a ticket's title keeps in the sequence before a column leaves
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 // The longest the view waits for a change: a session that ends with no hook, and another machine's tracker, change

@@ -23,19 +23,29 @@ def parse_value(raw: str):
     return raw
 
 
+LINE_BREAKS = "\x85\u2028\u2029"  # beyond the controls: where str.splitlines also ends a line
+
+
 def needs_quotes(s: str, extra: str = "") -> bool:
     return (s != s.strip() or s[0] in "[{\"'#&*!|>%@`" or ": " in s or " #" in s
-            or any(c in s for c in extra) or any(ord(c) < 32 for c in s))
+            or any(c in s for c in extra + LINE_BREAKS) or any(ord(c) < 32 for c in s))
+
+
+def quoted(s: str) -> str:
+    """s as a JSON string on one line: json.dumps keeps LINE_BREAKS as they are, so they are escaped here."""
+    text = json.dumps(s, ensure_ascii=False)
+    for c in LINE_BREAKS:
+        text = text.replace(c, f"\\u{ord(c):04x}")
+    return text
 
 
 def format_value(value) -> str:
     if isinstance(value, list):
-        return "[" + ", ".join(json.dumps(str(x), ensure_ascii=False) if x and needs_quotes(str(x), ',"[]')
-                               else str(x) for x in value) + "]"
+        return "[" + ", ".join(quoted(str(x)) if x and needs_quotes(str(x), ',"[]') else str(x) for x in value) + "]"
     s = str(value)
     if s == "":
         return ""
-    return json.dumps(s, ensure_ascii=False) if needs_quotes(s) else s
+    return quoted(s) if needs_quotes(s) else s
 
 
 def split_frontmatter(text: str) -> tuple[list[str], str]:

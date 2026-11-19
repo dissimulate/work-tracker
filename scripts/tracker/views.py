@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 from pathlib import Path
 
 from .system import BIN
 from .markdown import section, strip_comments
-from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, STAGES, STALE_ACTION_DAYS,
-    STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
+from .schema import (FACTS, ISOLATION_RULE, ISSUE_STAGES, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, SCHEMA,
+    STAGES, STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
 from .model import (LOG_LINE, SPANS, cut, due_date, link_lines, logged_decision, resolution, sequence, short, span, Dep,
     Record, Start, Tracker)
 from .moves import whose_move
@@ -24,8 +25,15 @@ def pr_label(t: Record) -> str:
                      for n, state in t.prs.items()) or "—"
 
 
+def issue_state_text(rec: Record, sep: str = ": ") -> str:
+    """A ticket's issue state as views on demand show it: quoted, as text from outside the tracker; "" with none.
+    The brief and the hook lines never show it."""
+    state = rec.get("issue_state")
+    return f"issue{sep}{json.dumps(str(state), ensure_ascii=False)}" if state else ""
+
+
 def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None = None,
-                titles: bool = False, width: int = 0, urls: bool = True) -> list[str]:
+                titles: bool = False, width: int = 0, urls: bool = True, issue_states: bool = False) -> list[str]:
     counts = stage_counts(tr)
     tally = " · ".join(f"{s} {counts[s]}" for s in STAGES if s in counts)
     out = [f"{tr.headline()} · {len(tr.tickets)} tickets · {tally}"]
@@ -40,7 +48,9 @@ def index_lines(tr: Tracker, stages: set[str] | None = None, group: str | None =
     w_group = max([len(str(t.get("group") or "—")) for t in rows] + [1])
     for t in rows:
         nxt = gate(tr, t) + short((not t.closed and t.get("next")) or t.get("summary") or t.get("title"), 90)
-        out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}")
+        issue = issue_state_text(t, " ") if issue_states else ""
+        out.append(f"{t.id:<{w_id}}  {str(t.get('group') or '—'):<{w_group}}  {t.stage:<11} {pr_label(t):<12} {nxt}"
+                   + (f" · {issue}" if issue else ""))
     moves = move_lines(tr) if not stages or any(stage_of("ticket", s).in_flight for s in stages) else []
     out += [""] + moves + [""] * bool(moves) + order_lines(tr)
     decisions = tr.open_decisions()
@@ -208,13 +218,16 @@ def recent_log(tr: Tracker, rec: Record, n: int, width: int = 0, shown: set[str]
             *(f"  {cut(x, width)}" for x in lines)] if lines else []
 
 
-def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0) -> list[str]:
-    """A ticket's own facts: its line, its TEXT_FACTS, next action or summary, move, handoff, dependencies and links."""
+def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0,
+                 issue_state: bool = False) -> list[str]:
+    """A ticket's own facts: its line, its TEXT_FACTS (and, asked for, its issue state), next action or summary, move,
+    handoff, dependencies and links."""
     head = [rec.id, rec.get("title"), rec.get("group") and f"group {rec.get('group')}", rec.stage,
             f"PR {pr_label(rec)}"]
     out = [" · ".join(str(x) for x in head if x)]
     closed = rec.closed
     facts = [f"{k}: {show_value(k, rec.get(k))}" for k in FACTS if k in TEXT_FACTS and rec.get(k)]
+    facts += [x for x in [issue_state_text(rec) if issue_state else ""] if x]
     out += [" · ".join(facts)] if facts else []
     k = "summary" if closed else "next"
     if rec.get(k):
@@ -288,7 +301,7 @@ def decision_lines(tr: Tracker, tickets: list[Record], width: int = 0) -> list[s
 
 def context_lines(tr: Tracker, rec: Record, full: bool, deep: bool = False, log: int = CONTEXT_LOG) -> list[str]:
     if rec.kind == "ticket":
-        out = ticket_lines(tr, rec) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
+        out = ticket_lines(tr, rec, issue_state=True) + carry_lines(tr, [rec], deep) + decision_lines(tr, [rec])
     else:
         out = [f"{rec.id} · {rec.get('status')} · {rec.get('title')}", *dep_lines(tr, rec)]
         if rec.closed and KINDS[rec.kind].closing:
@@ -383,11 +396,17 @@ def span_lines(tr: Tracker, now: float | None = None) -> list[str]:
 
 
 ISSUE_SHOWN = 5  # tickets named in a request for their issue fields or issue updates; the rest as a count
-ISSUE_HOW = ("Read each issue's priority, estimate, due day and creation time with its issue tracker's tool and record "
-             "them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
-             + " --due <YYYY-MM-DD> --created <ISO 8601 time>`. Map each by what it means on its issue tracker's own "
-             "scale, not by a raw number its API gives (`tracker rules` gives the mapping). Leave out a flag whose "
-             "field the issue tracker lacks; pass it empty when the issue's value means none. Never guess a value.")
+STATE_FLAGS = ("--stage <" + "|".join(ISSUE_STAGES) + "> --state '<its name>'`. Map the state by what it means "
+               "(`tracker rules`: Issue stages), not by its name. The name goes in single quotes; when it holds a "
+               "quote, `$`, a backtick or a backslash, pass `--stage` alone.")
+ISSUE_HOW = ("Read each issue's priority, estimate, due day, creation time and state with its issue tracker's tool and "
+             "record them: `tracker issue <id> " + " ".join(f"--{k} <{s.span}: {s.ends}>" for k, s in SCALES.items())
+             + " --due <YYYY-MM-DD> --created <ISO 8601 time> " + STATE_FLAGS
+             + " Map each other value by what it means on its issue tracker's own scale, not by a raw number its API "
+             "gives (`tracker rules` gives the mapping). Leave out a flag whose field the issue tracker lacks; pass it "
+             "empty when the issue's value means none. Never guess a value.")
+ISSUE_STATE_HOW = ("Read only each issue's state, with the narrowest call its issue tracker's tool has, and record it: "
+                   "`tracker issue <id> " + STATE_FLAGS + " Never guess a value.")
 
 
 def shown_ids(due: list[Record]) -> str:
@@ -396,32 +415,56 @@ def shown_ids(due: list[Record]) -> str:
     return ", ".join(t.id for t in due[:ISSUE_SHOWN]) + (f" +{more}" if more > 0 else "")
 
 
+def reads_due(tr: Tracker, first: list[Record] = ()) -> tuple[list[Record], list[Record]]:
+    """The tickets whose issue fields, and those whose issue state alone, the model should read; the `first` tickets
+    (the session's own) first, and they are the focus of the state reads by age. None on a tracker of a newer format
+    than this plugin's: an older plugin's requests would not match what it holds."""
+    if tr.schema > SCHEMA:
+        return [], []
+    focus = [t.id for t in first]
+    fields = sorted(tr.issues_to_read(), key=lambda t: t not in first)
+    return fields, sorted(tr.states_to_read(focus), key=lambda t: t not in first)
+
+
+def reads_told(tr: Tracker, first: list[Record] = ()) -> list[str]:
+    """The reads due, as a session remembers having been told them (its `told_reads`): the prompt hook asks again
+    only for one not among them."""
+    fields, states = reads_due(tr, first)
+    return sorted({t.id for t in fields + states})
+
+
 def issue_request(tr: Tracker, first: list[Record] = ()) -> str:
-    """The request for the issue fields to read (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
-    session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The model reads
-    them with the issue tracker's tool; the tracker cannot."""
-    due = sorted(tr.issues_to_read(), key=lambda t: t not in first)
-    if not due:
+    """The request for the issue fields and states to read (STATE_RULES["issues"]), or "": one line, the `first`
+    tickets (the session's own) named first. `tracker issue` gives the links and how to record them (ISSUE_HOW). The
+    model reads them with the issue tracker's tool; the tracker cannot."""
+    fields, states = reads_due(tr, first)
+    parts = ([f"Issue fields to read for {len(fields)} ticket(s): {shown_ids(fields)}"] if fields else []) + (
+        [f"Issue states to read for {len(states)} ticket(s): {shown_ids(states)}"] if states else [])
+    if not parts:
         return ""
-    ids = shown_ids(due)
-    return (f"[work-tracker] Issue fields to read for {len(due)} ticket(s): {ids}. With a tool for their issue tracker "
-            "(such as an MCP server), run `tracker issue` for their links and how to record them; with none, leave "
-            "them: never guess a value.")
+    return (f"[work-tracker] {'; '.join(parts)}. With a tool for their issue tracker (such as an MCP server), run "
+            "`tracker issue` for their links and how to record them; with none, leave them: never guess a value.")
 
 
 ISSUE_UPDATES_OFF = "tell the user that `tracker set tracker issue_updates=off` stops these requests"
-ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool: move the issue to the state in its "
-                   "own workflow that means the ticket's status (" + ", ".join(STAGES) + "), and comment a closed "
-                   "ticket's summary and each settled decision, by its title and answer. Once every update of a "
-                   "ticket is written, run `tracker issue <id> --written`: it records what this list showed. When "
-                   "one fails, leave that ticket: it stays due. " + ISOLATION_RULE + " With no tool for that issue "
-                   "tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
+ISSUE_WRITE_HOW = ("Write each to the ticket's issue with its issue tracker's tool. For a status item, open the issue "
+                   "first: when its state already means that stage or one further on, or a person has moved it "
+                   "elsewhere, do not move it: record what it shows with `tracker issue <id> --stage <stage> --state "
+                   "'<its name>'`, and go on with its comments. Otherwise move it to the state in its own workflow "
+                   "that means that stage, then comment a closed ticket's summary and each settled decision, by its "
+                   "title and answer; when the move fails, post nothing. Write no customer's words or names into a "
+                   "comment. Name a blocker by its Issue id or URL, or not at all. Once a ticket's "
+                   "updates are written, run `tracker issue <id> --written`, with `--stage <stage> --state '<name>'` "
+                   "for a move: it records what this list showed. When one fails, leave that ticket: it stays due. "
+                   + ISOLATION_RULE + " With no tool for that issue tracker, leave them and " + ISSUE_UPDATES_OFF + ".")
 
 
 def issue_update_request(tr: Tracker, first: list[Record] = ()) -> str:
     """The request for the issue updates due (STATE_RULES["issues"]), or "": one line, the `first` tickets (the
     session's own) named first. `tracker issue` lists what to write (ISSUE_WRITE_HOW); the model writes it with the
-    issue tracker's tool, which the tracker cannot."""
+    issue tracker's tool, which the tracker cannot. None on a tracker of a newer format than this plugin's."""
+    if tr.schema > SCHEMA:
+        return ""
     due = sorted((t for t, _ in tr.issue_updates_due()), key=lambda t: t not in first)
     if not due:
         return ""

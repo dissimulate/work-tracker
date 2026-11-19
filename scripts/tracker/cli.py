@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy
-from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE_STAGES, SCALES, STAGES, STATUSES
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
 from .contract import upgrade_trackers
@@ -210,6 +210,10 @@ def build_parser():
                                          f"has none")
     sp.add_argument("--due", metavar="YYYY-MM-DD", help="the issue's due day; empty: it has none")
     sp.add_argument("--created", help="when the issue was created, ISO 8601 with a time zone (2026-10-01T09:30:00Z)")
+    sp.add_argument("--stage", choices=list(ISSUE_STAGES),
+                    help="what the issue's state means now (`tracker rules`: Issue stages); with several Issue links, "
+                         "the first link's issue")
+    sp.add_argument("--state", help="the issue's state by its own name, shown only; needs --stage")
     sp.add_argument("--written", action="store_true", help="every update `tracker issue` last listed for the "
                                                            "ticket is written to its issue; a change since stays due")
     sp = add("step", cmd_step, "record a step in one command: the next action (or --done), Carry forward and a log "

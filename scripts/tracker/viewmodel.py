@@ -7,7 +7,8 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
+from .schema import (FACTS, ISSUE_STAGES, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+    show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, sequence,
     sort_key, span, Dep, Record, Tracker)
 from .moves import is_pr_link, linked_prs, whose_move, Move
@@ -18,13 +19,20 @@ from .github import pr_url
 from .watcher import watches_of
 from .lifecycle import in_use
 
-VIEW_SCHEMA = 7  # a UI that reads another number says which side is older
+VIEW_SCHEMA = 8  # a UI that reads another number says which side is older
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
     """A ticket's state: dropped or closed; under way, stackable, ready or blocked; else its unknown status."""
     return ("dropped" if t.dropped else "closed" if t.closed else "going" if t.in_flight
             else tr.gate(t).state or t.stage)
+
+
+def issue_view(t: Record) -> dict:
+    """A ticket's issue state as a row shows it: its name, and what it means (ISSUE_STAGES); None for each until read.
+    An unknown stage, from a hand edit, shows as none."""
+    stage = t.get("issue_stage")
+    return {"issue_state": t.get("issue_state") or None, "issue_stage": stage if stage in ISSUE_STAGES else None}
 
 
 def dep_tone(d: Dep) -> str:
@@ -166,7 +174,7 @@ def ticket_view(tr: Tracker, t: Record, order: int, step: int, links: list[str])
     unblocks = [o.id for o in tr.waiting_on(t.id)]
     return {
         "id": t.id, "title": str(t.get("title")), "stage": t.stage, "closed": t.closed, "state": ticket_state(tr, t),
-        "gate": {"state": tr.gate(t).state},
+        **issue_view(t), "gate": {"state": tr.gate(t).state},
         "order": order, "step": step, "links": links,
         "group": str(t.get("group", "")), "levels": {key: level_name(t, key) for key in SCALES},
         "waits": [{"id": d.ident, "done": d.done} for d in waits], "unblocks": unblocks,
@@ -218,7 +226,7 @@ def now_view(tr: Tracker) -> dict:
         fresh = f"commits logged {ago(mark['at'])}" if mark else ""
         move = moves[t.id]
         items.append({"key": t.id, "kind": "ticket", "id": t.id, "stage": t.stage, "state": ticket_state(tr, t),
-                      "prs": pr_views(tr, t), "fresh": fresh, "move": move_view(move),
+                      **issue_view(t), "prs": pr_views(tr, t), "fresh": fresh, "move": move_view(move),
                       "agents": agent_views(agents[t.id])})
     for key, h in handoffs.items():
         items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""),

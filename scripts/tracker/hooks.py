@@ -20,7 +20,7 @@ from .session import (behind, branch_matches, changes_since, declined, drop_sess
     inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
     take_over, watch, work_dir, Lag, Match)
 from .contract import prune_backups, upgrade_trackers
-from .views import brief, issue_request, issue_update_request, updates_told
+from .views import brief, issue_request, issue_update_request, reads_told, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
 
@@ -131,7 +131,8 @@ def hook_session_start(data: dict) -> None:
     remember(sid, m, cwd)
     note = "\n\n".join(x for x in (note, found) if x)
     text = brief(m, cwd, note, compact=source == "compact")
-    fields = {"told_updates": updates_told(m.tracker)}  # the brief lists them: no prompt repeats them
+    fields = {"told_updates": updates_told(m.tracker),  # the brief lists them: no prompt repeats them
+              "told_reads": reads_told(m.tracker, m.focus)}
     # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
     sync_later(m.tracker, load_session(sid), fields)
     if sid:
@@ -306,9 +307,11 @@ def hook_prompt(data: dict) -> None:
     if ask:
         lines.append(ask)  # it holds what the state line would say
     asked = m.tracker.issue_reads()[1]
-    if asked and asked != entry.get("told_issues"):  # a UI's Refresh: passed on once
-        fields["told_issues"] = asked
+    reads = reads_told(m.tracker, m.focus)
+    refreshed = bool(asked) and asked != entry.get("told_issues")  # a UI's Refresh: passed on once
+    if refreshed or set(reads) - set(entry.get("told_reads") or []):  # a new read due: passed on once
         lines += [x for x in [issue_request(m.tracker, m.focus)] if x]
+    fields["told_issues"], fields["told_reads"] = asked, reads
     updates = updates_told(m.tracker)
     if set(updates) - set(entry.get("told_updates") or []):  # a new issue update due: passed on once
         lines.append(issue_update_request(m.tracker, m.focus))
