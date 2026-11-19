@@ -3264,6 +3264,13 @@ class Ui(unittest.TestCase):
                              merged_at="2026-09-04T01:00:00Z")])
         self.assertEqual({x["key"]: x["title"] for x in data(s)["prs"]}["a/x#11"], "Merged title")
 
+    def test_a_damaged_pr_number_is_no_pr(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1")])
+        path = store.HOME / s / "tickets" / "S-1.md"
+        path.write_text(path.read_text().replace("11:open", "x12:open, 11:open"))  # a hand edit gone wrong
+        self.assertEqual([x["key"] for x in data(s)["prs"]], ["a/x#11"])
+
     def test_a_tracker_with_no_pr_lists_none(self):
         self.assertEqual(data(self.tracker())["prs"], [])
 

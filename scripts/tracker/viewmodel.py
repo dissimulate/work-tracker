@@ -137,6 +137,8 @@ def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
 
     for t in tr.tickets:
         for n, state in t.prs.items():
+            if not n.isdigit():  # a hand edit gone wrong, which `sync` follows no more than this
+                continue
             x = row(tr.repo_of(t), n, t)
             x["state"] = x["state"] or state
         for link in linked_prs(t):
