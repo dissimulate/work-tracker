@@ -142,6 +142,8 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 - **Wait time** runs from when a ticket's issue was created (`issue_created_at`) to when the ticket started (`started_at`, which its first `tracker set <id> status=in-progress` records). **Cycle time** runs from that start to when its PR merged (`merged_at`). Above the filters, a line per time gives the median, the fastest ticket, and the median of those that ended in the last 7 days. An opened ticket gives its own. A ticket has none when it was dropped, lacks either exact time, or ends before it starts (its issue was created after the work started).
 - **Reference** (bottom): the closed decisions and actions, the rest of the README, the log.
 
+`tracker data` also gives `prs`: each PR a ticket names (from its branch or a `PR:` link), once, with its repo and number, title, state, move, the tickets that name it, and its history (its state changes and reviews, and its tickets' plan and code reviews). The view does not draw this list yet.
+
 ### Watch
 
 - `tracker watch [name]` prints each change as one line (a PR's new reviews in one batch, such as the first sync of a PR that has several, as one: the latest, and how many came before it); `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn.

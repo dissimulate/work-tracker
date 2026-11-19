@@ -3026,6 +3026,104 @@ class Ui(unittest.TestCase):
         run("--tracker", s, "new", "T-1", "--title", "One")
         return s
 
+    def pr_tracker(self, repos: str = "a/x") -> tuple[str, tuple[str, str]]:
+        """A tracker of `repos` whose S-1 is under way on branch f1."""
+        s, t = new_tracker("Pulls", repos)
+        run(*t, "new", "S-1", "--title", "One", "--branch", "f1", "--repo", repos.split(",")[0])
+        run(*t, "set", "S-1", "status=in-progress")
+        return s, t
+
+    def synced(self, t: tuple[str, str], prs: list[dict]) -> None:
+        with mock.patch.object(github, "gh", answers(prs)):
+            run(*t, "sync")
+
+    def test_the_view_data_lists_a_pr_once_with_each_ticket_that_names_it(self):
+        s, t = self.pr_tracker()
+        run(*t, "new", "S-2", "--title", "Two")
+        run(*t, "set", "S-2", "status=in-progress")
+        run(*t, "add", "S-2", "link", "PR: [Part one](https://github.com/A/X/pull/11)")
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        [row] = data(s)["prs"]
+        self.assertEqual({k: row[k] for k in ("key", "repo", "number", "url", "state", "tickets")},
+                         {"key": "a/x#11", "repo": "a/x", "number": "11", "url": "https://github.com/a/x/pull/11",
+                          "state": "open", "tickets": ["S-1", "S-2"]})
+
+    def test_the_same_number_in_two_repos_is_two_prs(self):
+        s, t = self.pr_tracker("a/x,b/y")
+        run(*t, "new", "S-2", "--title", "Two", "--repo", "b/y")
+        run(*t, "add", "S-2", "link", "PR: [Other](https://github.com/b/y/pull/5)")
+        run(*t, "add", "S-1", "link", "PR: [Mine](https://github.com/a/x/pull/5)")
+        rows = data(s)["prs"]
+        self.assertEqual([(x["key"], x["tickets"], x["state"], x["move"]) for x in rows],
+                         [("a/x#5", ["S-1"], "", None), ("b/y#5", ["S-2"], "", None)])  # linked, never read
+
+    def test_an_open_prs_move_is_its_tickets(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        got = data(s)
+        self.assertEqual(got["prs"][0]["move"], got["records"]["S-1"]["move"])
+        self.assertEqual(got["prs"][0]["move"]["text"], "rev: review requested")
+
+    def test_a_merged_or_closed_pr_has_no_move_and_open_ones_come_first(self):
+        s, t = self.pr_tracker()
+        run(*t, "add", "S-1", "link", "PR: [Two](https://github.com/a/x/pull/12)")
+        run(*t, "add", "S-1", "link", "PR: [Three](https://github.com/a/x/pull/13)")
+        self.synced(t, [pull(11, branch="f1", state="MERGED", merged_at="2026-09-04T01:00:00Z"),
+                        pull(12, branch="other"), pull(13, branch="other", state="CLOSED")])
+        rows = data(s)["prs"]
+        self.assertEqual([(x["number"], x["state"]) for x in rows], [("12", "open"), ("11", "merged"),
+                                                                      ("13", "closed")])
+        self.assertIsNotNone(rows[0]["move"])
+        self.assertEqual([x["move"] for x in rows[1:]], [None, None])
+
+    def test_an_open_pr_not_read_yet_has_no_move(self):
+        s, t = self.pr_tracker()
+        tr = model.tracker_at(s)
+        tr.lookup("S-1").save({"pr": "11", "pr_state": "open"})  # an older format's one PR: its facts never read
+        tr.readme.save({"schema": 3})
+        run(*t, "list")  # migrates it
+        self.assertEqual((model.tracker_at(s).lookup("S-1").prs, model.tracker_at(s).prs), ({"11": "open"}, {}))
+        [row] = data(s)["prs"]
+        self.assertEqual((row["state"], row["move"]), ("open", None))
+
+    def test_a_pr_whose_tickets_are_not_under_way_has_no_move(self):
+        s, t = self.pr_tracker()
+        self.synced(t, [pull(11, branch="f1", requested=["rev"])])
+        run(*t, "set", "S-1", "status=done")
+        [row] = data(s)["prs"]
+        self.assertEqual((row["state"], row["move"]), ("open", None))
+
+    def test_a_prs_history_is_its_events_and_its_tickets_reviews(self):
+        s, t = self.pr_tracker()
+        run(*t, "new", "S-2", "--title", "Two")
+        run(*t, "submit", "S-2", "--what", "plan")  # another ticket's: not this PR's
+        run(*t, "submit", "S-1", "--what", "plan")
+        rounds = [review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")]  # older on GitHub than the submission
+        self.synced(t, [pull(11, branch="f1", rounds=rounds)])
+        run(*t, "review", "S-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        run(*t, "review", "S-1", "--what", "plan", "--fixed", "1")
+        run(*t, "step", "S-1", "Built it")  # the ticket's, not the PR's
+        [row] = data(s)["prs"]
+        self.assertEqual([x["kind"] for x in row["history"]],
+                         ["submission", "pr.state", "pr.review", "review", "finding.fixed"])  # as logged
+        self.assertEqual(row["history"][2]["text"], "PR #11 review by rev: approved")
+        self.assertEqual(set(row["history"][0]), {"at", "kind", "text"})
+
+    def test_a_prs_title_is_githubs_then_its_last_logged_then_its_links(self):
+        s, t = self.pr_tracker()
+        run(*t, "add", "S-1", "link", "PR: [Link text](https://github.com/a/x/pull/11)")
+        run(*t, "add", "S-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/7)")
+        self.synced(t, [pull(11, branch="f1", title="Old title")])
+        self.synced(t, [pull(11, branch="f1", title="New title")])  # no new state: no new event
+        titles = {x["key"]: x["title"] for x in data(s)["prs"]}
+        self.assertEqual(titles, {"a/x#11": "New title", "b/y#7": "Elsewhere"})
+        self.synced(t, [pull(11, branch="f1", title="Merged title", state="MERGED",
+                             merged_at="2026-09-04T01:00:00Z")])
+        self.assertEqual({x["key"]: x["title"] for x in data(s)["prs"]}["a/x#11"], "Merged title")
+
+    def test_a_tracker_with_no_pr_lists_none(self):
+        self.assertEqual(data(self.tracker())["prs"], [])
+
     def test_the_view_data_lists_open_items(self):
         s = self.tracker()
         run("--tracker", s, "set", "T-1", "status=in-progress")

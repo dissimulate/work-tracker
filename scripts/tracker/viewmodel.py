@@ -7,12 +7,12 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import (FACTS, LIVE_SYNC_S, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
     resolution_who, show_value)
-from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
-    read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import is_pr_link, linked_prs, owner_kind, question_key, Move
-from .session import ago, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
+from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
+    log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
+from .moves import is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
+from .session import ago, around, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -115,6 +115,50 @@ def pr_views(tr: Tracker, t: Record) -> list[dict]:
         pr = prs.setdefault(link.url.lower(), {"number": link.number, "url": link.url, "state": "", "text": ""})
         pr["text"] = link.text
     return list(prs.values())
+
+
+TICKET_HISTORY = ("submission", "review", "finding.fixed")  # a ticket's events that are its PR's history too
+
+
+def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
+    """Every PR a ticket names (the ones `sync` follows, and its `PR:` links), once each by pr_key, open ones first,
+    then by repo and number: its tickets; its state as `sync` read it ("" for a link never read); its title (GitHub's
+    as `sync` last kept it for an open PR, else as its last state event logged it, else its link's text); its move,
+    as a ticket's is worked out (`pr_move`), for an open PR that `sync` has read and a ticket under way names; and
+    its history from the log (`events`, in log order): its own events, and its tickets' plan and code reviews."""
+    rows: dict[str, dict] = {}
+
+    def row(repo: str, number: str, t: Record) -> dict:
+        x = rows.setdefault(pr_key(repo, number), {"repo": repo, "number": number, "state": "", "link": "",
+                                                   "tickets": []})
+        if t.id not in x["tickets"]:
+            x["tickets"].append(t.id)
+        return x
+
+    for t in tr.tickets:
+        for n, state in t.prs.items():
+            x = row(tr.repo_of(t), n, t)
+            x["state"] = x["state"] or state
+        for link in linked_prs(t):
+            x = row(link.repo, link.number, t)
+            x["link"] = x["link"] or link_title(link)
+    coordinated, items = around(tr)[0], items_of(tr)
+    out = []
+    for key, x in rows.items():
+        tickets = sorted(x["tickets"], key=sort_key)
+        own = [e for e in events if e.get("pr") == key or e["kind"] in TICKET_HISTORY and set(e["refs"]) & set(tickets)]
+        facts = tr.prs.get(key) if x["state"] in OPEN_PR else None
+        under_way = next((t for t in map(tr.lookup, tickets) if t.in_flight), None)
+        logged = next((e.get("title") for e in reversed(own) if e["kind"] == "pr.state" and e.get("title")), "")
+        out.append({
+            "key": key, "repo": x["repo"], "number": x["number"], "url": pr_url(x["repo"], x["number"]),
+            "title": (facts or {}).get("title") or logged or x["link"], "state": x["state"],
+            "move": move_view(pr_move(tr, under_way, facts, coordinated, items)) if facts is not None and under_way
+            else None,
+            "tickets": tickets,
+            "history": [{"at": e.get("at", ""), "kind": e["kind"], "text": e["text"]} for e in own],
+        })
+    return sorted(out, key=lambda x: (x["state"] not in OPEN_PR, x["repo"].lower(), int(x["number"])))
 
 
 def link_views(items: list[Link]) -> list[dict]:
@@ -303,6 +347,7 @@ def view_model(tr: Tracker) -> dict:
         "tickets": [ticket_view(tr, t, i, seq.step[t.id], links[t.id])
                     for i, t in enumerate(graph_order(tr, seq.waits, seq.step))],
         "decisions": [decision_view(tr, d) for d in tr.open_decisions()],
+        "prs": prs_view(tr, read_events(tr)),
         "reference": reference_view(tr),
         "records": {r.id: record_view(tr, r) for r in (*tr.tickets, *tr.decisions, *tr.actions)},
     }
