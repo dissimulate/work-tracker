@@ -168,6 +168,9 @@ def build_parser():
     sp.add_argument("--by", metavar="NAME", help="with --resolve: the human who decided")
     sp.add_argument("--source", metavar="WHERE", help="with --resolve: where the answer already is, when no human "
                                                       "decided it (the spec, a settled decision's id, a file)")
+    sp.add_argument("--cite", metavar="QUOTE", help="with --resolve and --by: a few words from the start of the "
+                                                   "human's message or answer that decided it, kept by this session; "
+                                                   "the resolution cites that message")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")
     sp.add_argument("--unref", **IDS, help="ticket ids to drop from refs")
     sp.add_argument("--blocks", **IDS, help="ticket ids that cannot proceed until it is settled (adds it to their "

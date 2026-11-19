@@ -193,7 +193,8 @@ EVENTS = {
     "decision.opened": "a decision opened (`decision`, its id)",
     "decision.updated": "a decision's notes, choices or recommendation changed (`decision`)",
     "decision.decided": "a decision settled (`decision`; `decided`: human, source or unattributed; `by`, the human "
-                        "named; `source`, where the answer was; `cited`: false while no human's word is cited)",
+                        "named; `source`, where the answer was; `cited`: whether a human's word is cited; `word`: the "
+                        "cited message's `fingerprint`, `at` and `excerpt`, as the session kept it)",
     "action.added": "an action for the user added (`action`, its id)",
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
@@ -528,9 +529,15 @@ def resolution_who(text: str | None) -> str | None:
 # A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
 COORDINATOR = "coordinator"
 # A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
-RESOLVE = ('`tracker decide D-<n> --resolve "..." --by <who decided>` (`--source "<where>"` when the spec, a settled '
-           'decision or the code already answered it)')
-DECIDED = '`tracker decide "<title>" --resolve "..." --by <who decided>`'  # a choice made on the spot, in one command
+CITE = '--cite "<a few words from the start of what they said>"'  # the human's message a resolution rests on
+RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` in place of both '
+           'when the spec, a settled decision or the code already answered it)')
+DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
+# A session keeps the human's last WORDS_KEPT messages and answers, each as a fingerprint and its first
+# WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. These
+# values are first guesses (the spec "the tracker as the channel", open question 3).
+WORDS_KEPT = 5
+WORD_EXCERPT_MAX = 200
 DECISION_BAR = (
     "A decision is a direction choice: it changes the Goal or Scope, a ticket's plan, order or split, a contract "
     "between tickets, a product, design or architecture rule, or it needs someone else's sign-off. Record it with "

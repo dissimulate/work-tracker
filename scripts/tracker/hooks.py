@@ -17,8 +17,8 @@ from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
-    get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
-    session_activity, take_over, watch, work_dir, Lag, Match)
+    get_mark, hand_over, in_repos, keep_word, lag, load_session, match_cwd, own_edit, record_commits, remember,
+    save_session, session_activity, take_over, watch, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -289,16 +289,18 @@ def watch_request(data: dict) -> bool:
 
 
 def hook_prompt(data: dict) -> None:
-    """On tracked work, each user message gets what other sessions or GitHub changed since its last message (or its
-    brief), `next_request` when commits (a subagent's too) passed `next`, the issue fields a Refresh asked for and an
-    issue update newly due (updates_told), each once. With a ticket under way, the first message and
-    every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
-    branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
-    way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a watch request first."""
+    """On tracked work, each user message is kept for `decide --cite` (`keep_word`), and gets what other sessions or
+    GitHub changed since its last message (or its brief), `next_request` when commits (a subagent's too) passed `next`,
+    the issue fields a Refresh asked for and an issue update newly due (updates_told), each once. With a ticket under
+    way, the first message and every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With
+    none, only work since the branch's mark brings it: at once, once per mark, then on those messages while the work
+    stays. With a ticket under way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a
+    watch request first."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
         return
+    keep_word(sid, str(data.get("prompt") or ""))
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
@@ -354,13 +356,21 @@ def approval_only(tool_input: dict) -> bool:
 
 
 def hook_answered(data: dict) -> None:
-    """The user answered a question the agent asked: an answer that settles direction is a decision made. A yes or no
-    to go ahead settles none."""
+    """The user answered a question the agent asked: an answer that settles direction is a decision made, and its
+    words can be cited (`keep_word`). A yes or no to go ahead settles none."""
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
+    keep_word(where(data)[1], answer_text(data.get("tool_response")))
     if match_cwd(*where(data)):
         emit_context("PostToolUse", f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, "
                      f"or {DECIDED} for one made on the spot.")
+
+
+def answer_text(response) -> str:
+    """The human's answers in a question tool's result, joined by "; ", never the questions: Claude Code's
+    AskUserQuestion gives them as `answers`, question to answer. "" for another shape (another host's tool)."""
+    answers = response.get("answers") if isinstance(response, dict) else None
+    return "; ".join(map(str, answers.values())) if isinstance(answers, dict) else ""
 
 
 def hook_subagent_start(data: dict) -> None:

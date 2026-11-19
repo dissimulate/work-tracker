@@ -4713,6 +4713,181 @@ class WhoDecided(unittest.TestCase):
                          f"{schema.today()} (Ryan, entered by an agent): SQS")
 
 
+class CitedWord(unittest.TestCase):
+    """A resolution entered on a human's word cites the message that word came in (R18): the hooks keep a fingerprint
+    and an excerpt of the human's last few messages and answers with the session, and `decide --cite` copies the one
+    that holds the quote into the resolution's event."""
+
+    STORE = {"questions": [{"question": "Which store for the app?",
+                            "options": [{"label": "Postgres"}, {"label": "SQLite"}]}]}
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Cited")
+        self.root = store.HOME / self.s
+        run(*self.t, "new", "T-1", "--title", "One")
+        run(*self.t, "decide", "Which store")
+        self.work = repo("main")
+        self.sid = f"cw{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.sid)
+        self.agent = {"TRACKER_SESSION": self.sid}
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", self.s, cwd=self.work)
+
+    def prompt(self, text: str) -> None:
+        hook("prompt", self.sid, self.work, prompt=text)
+
+    def decide(self, *flags: str, env: dict | None = None, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, self.agent if env is None else env):
+            return run(*self.t, "decide", "D-1", "--resolve", "Postgres", *flags, code=code)
+
+    def settled(self) -> tuple[str, dict]:
+        tr = model.tracker_at(self.s)
+        return model.resolution(tr.lookup("D-01")), model.read_events(tr)[-1]
+
+    def words(self) -> list[dict]:
+        return session.load_session(self.sid).get("words", [])
+
+    def unchanged(self):
+        return tree(self.root), session.load_session(self.sid)
+
+    def test_a_resolution_cites_the_message_that_holds_the_quote(self):
+        self.prompt("Use Postgres for the store, not SQLite")
+        self.decide("--by", "Ryan", "--cite", "use  POSTGRES")
+        line, e = self.settled()
+        self.assertEqual(line, f"{schema.today()} (Ryan, entered by an agent on their word): Postgres")
+        self.assertEqual((e["kind"], e["decided"], e["by"], e["cited"]), ("decision.decided", "human", "Ryan", True))
+        kept = self.words()[-1]
+        self.assertEqual(e["word"], kept)
+        self.assertEqual(set(kept), {"fingerprint", "at", "excerpt"})
+        self.assertEqual(kept["excerpt"], "Use Postgres for the store, not SQLite")
+        self.assertEqual(kept["fingerprint"],
+                         hashlib.sha256(b"Use Postgres for the store, not SQLite").hexdigest()[:12])
+        self.assertIsNotNone(schema.utc_seconds(kept["at"]))
+
+    def test_the_newest_message_that_holds_the_quote_is_cited(self):
+        self.prompt("Postgres or SQLite? Let me think")
+        self.prompt("Something else")
+        self.prompt("Go with postgres")
+        self.prompt("Unrelated")
+        self.decide("--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Go with postgres")
+
+    def test_a_quote_no_kept_message_holds_refuses_and_changes_nothing(self):
+        self.prompt("Use Postgres for the store")
+        before = self.unchanged()
+        out = self.decide("--by", "Ryan", "--cite", "use mysql", code=2)
+        self.assertIn("--cite", out)
+        self.assertIn("leave --cite out to enter the resolution uncited", out)
+        self.assertEqual(self.unchanged(), before)
+        for quote in ("", "  "):  # nothing to look for
+            with self.subTest(quote=quote):
+                self.decide("--by", "Ryan", "--cite", quote, code=2)
+                self.assertEqual(self.unchanged(), before)
+
+    def test_without_cite_the_resolution_is_uncited(self):
+        self.prompt("Use Postgres for the store")
+        self.decide("--by", "Ryan")
+        line, e = self.settled()
+        self.assertEqual(line, f"{schema.today()} (Ryan, entered by an agent): Postgres")
+        self.assertFalse(e["cited"])
+        self.assertNotIn("word", e)
+
+    def test_cite_needs_by_and_an_agent(self):
+        self.prompt("Use Postgres for the store")
+        before = self.unchanged()
+        for flags, env in ((["--source", "the spec", "--cite", "postgres"], None),
+                           (["--cite", "postgres"], None),
+                           (["--by", "Ryan", "--cite", "postgres"], {}),  # a terminal: no session's words
+                           # the view, opened from the agent's shell: a human answers there, not an agent
+                           (["--by", "Ryan", "--cite", "postgres"], {**self.agent, "TRACKER_VIA": "view"})):
+            with self.subTest(flags=flags, env=env):
+                self.assertIn("--cite", self.decide(*flags, env=env, code=2))
+                self.assertEqual(self.unchanged(), before)
+        self.assertIn("leave --cite out", self.decide("--by", "Ryan", "--cite", "postgres",
+                                                      env={**self.agent, "TRACKER_VIA": "view"}, code=2))
+        with mock.patch.dict(os.environ, self.agent):
+            out = run(*self.t, "decide", "D-1", "--note", "n", "--cite", "postgres", code=2)
+        self.assertIn("--cite", out)
+        self.assertEqual(self.unchanged(), before)
+
+    def test_only_the_last_five_are_kept_and_only_the_excerpt(self):
+        long = "Postgres " + "x" * 491
+        for i in range(5):
+            self.prompt(f"Message {i}")
+        self.prompt(long)
+        kept = self.words()
+        self.assertEqual(len(kept), 5)
+        self.assertEqual([w["excerpt"] for w in kept[:-1]], [f"Message {i}" for i in range(1, 5)])
+        self.assertEqual(kept[-1]["excerpt"], long[:200])
+        self.assertNotIn(long, session.session_path(self.sid).read_text())
+        self.decide("--by", "Ryan", "--cite", "message 0", code=2)  # the oldest went
+        self.decide("--by", "Ryan", "--cite", "message 1")
+
+    def test_an_answer_is_a_word_too(self):
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertEqual([w["excerpt"] for w in self.words()], ["Postgres"])  # the answer, never the question
+        self.decide("--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Postgres")
+        two = {"questions": [*self.STORE["questions"], {"question": "Which queue?", "options": [{"label": "SQS"}]}],
+               "answers": {"Which store for the app?": "SQLite", "Which queue?": "SQS"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=two, tool_response=two)
+        self.assertEqual(self.words()[-1]["excerpt"], "SQLite; SQS")
+        for response in ({}, {"tool_response": "Postgres"}, {"tool_response": {"answers": ["Postgres"]}}):
+            with self.subTest(response=response):  # another host's question tool: nothing to keep
+                tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, **response)
+                self.assertEqual(len(self.words()), 2)
+
+    def test_a_slash_command_is_no_word(self):
+        for text in ("/work-tracker:tracker index", "$work-tracker:tracker index", "  /compact", ""):
+            self.prompt(text)
+        self.assertEqual(self.words(), [])
+
+    def test_an_approval_or_a_subagent_keeps_no_word(self):
+        go = {"questions": [{"question": "Push?", "options": [{"label": "Yes, push"}, {"label": "Not now"}]}]}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=go, tool_response={**go, "answers": {"Push?": "Yes"}})
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, agent_id="a1", tool_input=self.STORE, tool_response=answer)
+        self.assertEqual(self.words(), [])
+
+    def test_a_session_on_no_tracker_keeps_no_word(self):
+        hook("waiting", self.sid, self.work, tool_name="AskUserQuestion")
+        hook("waiting", self.sid, self.work, tool_name="Bash", agent_id="sub")
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", "--clear", cwd=self.work)  # off its tracker; its file stays for the open waits
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertIn("sub", session.load_session(self.sid)["waits"])  # the subagent still asks: the file stays
+        self.assertEqual(self.words(), [])
+
+    def test_a_refused_tracker_is_left_as_it_is(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            with self.subTest(refuse.__name__):
+                self.setUp()
+                refuse(self, self.s)
+                before = tree(self.root)
+                self.prompt("Use Postgres for the store")  # `hook` checks that it exits 0
+                answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+                tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+                self.assertEqual(tree(self.root), before)
+
+    def test_words_survive_tracker_start(self):
+        self.prompt("Use Postgres for the store")
+        with mock.patch.dict(os.environ, self.agent):
+            run("start", self.s, "--on", "T-1", cwd=self.work)
+        self.decide("--by", "Ryan", "--cite", "use postgres")
+        self.assertTrue(self.settled()[1]["cited"])
+
+    def test_an_uncited_word_never_reaches_the_log(self):
+        self.prompt("Use Postgres for the store")
+        self.prompt("A secret aside")
+        self.decide("--by", "Ryan")
+        logged = (self.root / schema.EVENTS_FILE).read_text() + (self.root / "log.md").read_text()
+        for w in self.words():
+            self.assertNotIn(w["excerpt"], logged)
+            self.assertNotIn(w["fingerprint"], logged)
+
+
 class Handoffs(unittest.TestCase):
     """A ticket's plan or built code handed to its reviewer (`tracker submit`), and the review that answers it
     (`tracker review`): events on the ticket, and no file."""

@@ -17,7 +17,7 @@ from .markdown import (BULLET, format_value, headings, parse_links, render_front
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS,
     KINDS, LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET,
-    SCALES, SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
+    SCALES, SCHEMA, STAGES, STATUSES, WORDS_KEPT, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
     options_problems, parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
@@ -25,7 +25,7 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
     sort_key, tracker_at, unknown_dep, Record, Tracker)
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, find_tracker,
+from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
     in_repos, items_of, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
     record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
     work_dir)
@@ -347,18 +347,31 @@ SAY_WHO = ('say who decided: --by <name> when a human told you, or --source "<wh
            "decision or the code already answers it")
 
 
-def who_settled(by: str | None, source: str | None) -> tuple[str, dict]:
+def who_settled(by: str | None, source: str | None, cite: str | None = None) -> tuple[str, dict]:
     """Who settled a decision and how it was entered (R9), from `--by` or `--source` and `entered_via`: the `<who>` of
     its resolution line and its `decision.decided` event's data. In the view, a human (`by`, else "human"); through an
-    agent, the human it names (not cited yet) or the source it names, and one of them it must name; at a terminal,
-    unattributed, with what it names kept as said. Dies on flags that cannot say it: the caller writes nothing
-    before."""
+    agent, the human it names or the source it names, and one of them it must name; at a terminal, unattributed, with
+    what it names kept as said. A human named through an agent is cited (R18) when `cite` quotes a message the
+    session kept of theirs (`session.cited_word`), which the event then holds. Dies on flags that cannot say it: the
+    caller writes nothing before."""
     by, source = resolution_who(by), resolution_who(source)
     if by is None or source is None:
         die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
     if by and source:
         die("--by and --source: a human decided or a source did, not both")
     via = entered_via()
+    if cite is not None:
+        if via != "agent":
+            die("--cite quotes the human's message that an agent session kept: here there is none; leave --cite out")
+        if not by:
+            die("--cite quotes the human who decided: it goes with --by <name>"
+                + (", in place of --source" if source else ""))
+        word = cited_word(session_id(), cite)
+        if not word:
+            die(f'--cite "{short(cite, 40)}": no message the human sent in this session (the last {WORDS_KEPT}) '
+                "holds it. Quote a few words from the start of what they said, or leave --cite out to enter the "
+                "resolution uncited")
+        return f"{by}, entered by an agent on their word", {"decided": "human", "by": by, "cited": True, "word": word}
     if via == "view":
         by = by or "human"
         return f"{by}, in the view", {"decided": "human", "by": by}
@@ -784,7 +797,9 @@ def cmd_decide(args):
     tr = resolve(args)
     if (args.by or args.source) and not args.resolve:
         die("--by and --source say who settled it: pass them with --resolve")
-    settled = who_settled(args.by, args.source) if args.resolve else ("", {})
+    if args.cite is not None and not args.resolve:
+        die("--cite quotes the human who settled it: pass it with --resolve and --by")
+    settled = who_settled(args.by, args.source, args.cite) if args.resolve else ("", {})
     owner = resolution_who(args.owner)  # the view answers as the owner it names (`--by`)
     if owner is None:
         die('--owner takes no ": " or ")": the view gives the owner as who decided, in "<day> (<who>): <answer>"')
@@ -1183,8 +1198,9 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
+    words = load_session(sid).get("words")  # the human's words are the session's, on any tracker
     unlink_session(sid)  # a new start: nothing seen yet
-    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
+    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None, words=words)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
     record_commits(m, cwd)
     remember(sid, m, cwd)

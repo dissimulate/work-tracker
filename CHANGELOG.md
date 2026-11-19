@@ -14,6 +14,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - A ticket under way whose plan or built code was submitted is its reviewer's move until reviewed: the coordinator's while one watches, else yours. Findings of a review not yet fixed are the ticket's own move.
 - The watch, the view's data and `tracker check` show as stuck a submission or a question that the coordinator or a session left unanswered too long, or whose ticket is under way with no session on it, and a wait on you longer than 30 s. Nothing has to be running for this to be worked out.
 - `tracker history --kind` filters the log by kind of event.
+- A resolution entered on your word can cite your message: the session keeps the start of your last 5 messages and answers, and `tracker decide D-<n> --resolve "..." --by <name> --cite "<a few words you said>"` copies the one that holds those words into the log. Only a cited message reaches the log. A quote that no kept message holds is refused.
 
 ### Changed
 
