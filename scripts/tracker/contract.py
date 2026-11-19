@@ -494,17 +494,20 @@ class NewerFormat(Exception):
     """`refuse_newer` refused a write."""
 
 
-NEWER_FORMAT = ("{slug} was written by a newer version of the work-tracker plugin (tracker format {schema}; this "
-                "one writes {own}), so this one writes nothing to it: reload the plugin or restart the session")
+def newer_format(root: Path) -> str:
+    """Why this code writes nothing to the tracker at `root`, in one sentence: its format is newer than SCHEMA. A
+    session runs the plugin version it loaded until it reloads, and the newer version that migrated the tracker never
+    migrates it again: what this one wrote there would stay in the older format. Empty when this code may write it."""
+    newer = Tracker(root).schema
+    return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {newer}; this one "
+            f"writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the session"
+            if newer > SCHEMA else "")
 
 
 def refuse_newer(root: Path) -> None:
-    """Refuse a write into a tracker in a format newer than SCHEMA: raise NewerFormat. A session runs the plugin
-    version it loaded until it reloads, and the newer version that migrated the tracker never migrates it again: what
-    this one wrote there would stay in the older format."""
-    newer = Tracker(root).schema
-    if newer > SCHEMA:
-        raise NewerFormat(NEWER_FORMAT.format(slug=root.name, schema=newer, own=SCHEMA))
+    """Refuse a write into a tracker in a newer format (`newer_format`): raise NewerFormat."""
+    if why := newer_format(root):
+        raise NewerFormat(why)
 
 
 def upgrade_trackers() -> None:

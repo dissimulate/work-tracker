@@ -27,7 +27,7 @@ from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
     in_repos, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits, remember, resolve,
     save_session, session_id, session_tracker, trackers_for_repo, work_dir)
-from .contract import check, rules_lines
+from .contract import check, refuse_newer, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
@@ -578,10 +578,10 @@ def cmd_show(args):
 def append_evidence(folder: Path, file: str, text: str) -> str:
     """`attach --append`: add text at the end of a file the evidence/ folder holds, named by its path or its name
     there. Returns its name there."""
-    path = Path(file).expanduser().resolve()
-    name = str(path.relative_to(folder)) if path.is_relative_to(folder) else file
+    real, path = folder.resolve(), Path(file).expanduser().resolve()
+    name = str(path.relative_to(real)) if path.is_relative_to(real) else file
     dest = folder / name
-    if not SAFE_NAME.fullmatch(dest.name) or not dest.resolve().is_relative_to(folder) or not dest.is_file():
+    if not SAFE_NAME.fullmatch(dest.name) or not dest.resolve().is_relative_to(real) or not dest.is_file():
         die(f"no file {EVIDENCE_DIR}/{name} to append to: `tracker attach <file>` keeps a new one")
     old = dest.read_text()
     gap = "" if not old or old.endswith("\n\n") else "\n" if old.endswith("\n") else "\n\n"
@@ -592,8 +592,8 @@ def append_evidence(folder: Path, file: str, text: str) -> str:
 def cmd_attach(args):
     """Keep a file in the tracker's evidence/ folder and link it from the records it supports."""
     tr = resolve(args)
-    folder = (tr.root / EVIDENCE_DIR).resolve()
-    if not folder.is_relative_to(tr.root.resolve()):
+    folder = tr.root / EVIDENCE_DIR  # as named: a write resolves a path only to check it (`store.tracker_root`)
+    if not folder.resolve().is_relative_to(tr.root.resolve()):
         die(f"{EVIDENCE_DIR}/ must stay inside the tracker directory")
     recs = [tr.find(ident) for ident in ids_of(tr, args.ref, {"ticket", "decision"}, "--ref")]
     if args.append is not None:
@@ -620,17 +620,17 @@ def cmd_attach(args):
 
 def keep_evidence(args, folder: Path) -> str:
     """Copy the file into the evidence/ folder, unless it is there; its name there."""
-    src = Path(args.file).expanduser().resolve()
+    real, src = folder.resolve(), Path(args.file).expanduser().resolve()
     if not src.is_file():
         die(f"no file {args.file}")
-    if src.is_relative_to(folder):
-        name = str(src.relative_to(folder))
+    if src.is_relative_to(real):
+        name = str(src.relative_to(real))
     else:
         name = args.name or re.sub(r"[^A-Za-z0-9._-]+", "-", src.name)
         if not SAFE_NAME.fullmatch(name):
             die(f"'{name}' is not a file name: use letters, digits, `.`, `_` and `-`")
         dest = folder / name
-        if dest.is_symlink() or not dest.resolve().is_relative_to(folder):
+        if dest.is_symlink() or not dest.resolve().is_relative_to(real):
             die(f"refusing to write {EVIDENCE_DIR}/{name}: destination is a symlink or outside {EVIDENCE_DIR}/")
         if dest.exists() and dest.read_bytes() != src.read_bytes() and not args.force:
             die(f"{EVIDENCE_DIR}/{name} exists with other content: pass --name, --force to replace it, or `--append -` "
@@ -997,7 +997,8 @@ def cmd_start(args):
     """Tie a tracker to this agent session: its commands and hooks then use it; `--on` puts the session on some of
     its tickets alone. With no name: the tracker that holds the `--on` tickets, else the tracker with an open ticket
     on this branch; in a session that has a tracker, its brief. Never changes git; writes the tracker only to record a
-    branch that its PR ties to one ticket, and to log the branch's new commits, as the hooks do."""
+    branch that its PR ties to one ticket, and to log the branch's new commits, as the hooks do. A tracker in a newer
+    format refuses (`refuse_newer`) before the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
         drop_session(sid)
@@ -1036,6 +1037,7 @@ def cmd_start(args):
     if not sid:
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
+    refuse_newer(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
     drop_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
@@ -1125,11 +1127,12 @@ def cmd_use(args):
     branch = branch_of(cwd) or die("not on a git branch")
     key = worktree_key(cwd, branch)
     if args.clear:
-        for t in all_trackers():
-            state = t.state()
-            if state.get("use", {}).pop(key, None) is not None:
-                t.save_state(state)
-                print(f"{branch}: cleared the choice in {t.slug}")
+        chose = [(t, state) for t in all_trackers() if (state := t.state()).get("use", {}).pop(key, None) is not None]
+        for t, _ in chose:  # a refusal changes nothing: each tracker is checked before any is written
+            refuse_newer(t.root)
+        for t, state in chose:
+            t.save_state(state)
+            print(f"{branch}: cleared the choice in {t.slug}")
         return
     ids = id_list(args.ids)
     if not ids:
