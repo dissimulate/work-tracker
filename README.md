@@ -77,7 +77,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution (the day, who decided and how it was entered, and the answer) |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
-| `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. Each GitHub sync adds every review of a PR that approved it or requested changes, once, with its time on GitHub; a review that only comments is left out. Only the tool writes it |
+| `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. Each GitHub sync adds each review of a PR that approved it or requested changes, once, with its time on GitHub (of the PR's last 50 reviews, where every reply in a review thread counts as one); a review that only comments is left out. Only the tool writes it |
 | `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show, except what `tracker find` finds |
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
