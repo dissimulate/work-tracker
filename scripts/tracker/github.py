@@ -76,13 +76,14 @@ def own_prs(prs: list[dict]) -> list[dict]:
     return [p for p in prs if not p.get("isCrossRepository")]
 
 
-# What sync reads of each PR: its own state, base and head (pr_of, ticket_prs), and what a ticket's move needs
-# (review_facts, for moves.whose_move).
+# What sync reads of each PR: its own state, title, base and head (pr_of, ticket_prs), what a ticket's move needs
+# (review_facts, for moves.whose_move), and its reviews, each logged once (pr_reviews).
 PR_FRAGMENT = """fragment F on PullRequest {
-  number headRefName state isDraft mergedAt baseRefName isCrossRepository reviewDecision mergeStateStatus
+  number title headRefName state isDraft mergedAt baseRefName isCrossRepository reviewDecision mergeStateStatus
   reviewRequests(first: 20) { nodes { requestedReviewer {
     ... on User { login } ... on Team { name } ... on Bot { login } ... on Mannequin { login } } } }
   latestReviews(first: 50) { nodes { author { __typename login } state submittedAt } }
+  reviews(last: 50) { nodes { databaseId author { __typename login } state submittedAt } }
   reviewThreads(first: 100) { nodes { isResolved } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
 }"""
@@ -162,6 +163,21 @@ def review_facts(pr: dict) -> dict:
     return {k: v for k, v in facts.items() if v}
 
 
+def pr_reviews(pr: dict) -> list[dict]:
+    """A PR's reviews that approved or requested changes (REVIEW), oldest first, each with GitHub's id for it (`id`),
+    its author (`by`, and whether a bot: `bot`), its `result` in the tracker's words and when it was submitted
+    (`submitted_at`, UTC). A review that only comments is left out: every reply in a review thread is one. So is one
+    with no author (a deleted account) or no id."""
+    out = []
+    for r in (pr.get("reviews") or {}).get("nodes") or []:
+        author = (r or {}).get("author") or {}
+        if r and r.get("state") in REVIEW and author.get("login") and r.get("databaseId"):
+            out.append({"id": r["databaseId"], "by": author["login"], "result": REVIEW[r["state"]],
+                        "submitted_at": FORMS["time"].read("", r["submittedAt"]) if r.get("submittedAt") else "",
+                        "bot": author.get("__typename") == "Bot"})
+    return sorted(out, key=lambda x: x["submitted_at"])
+
+
 def pr_state(pr: dict) -> str:
     """A PR's state as gh gives it (PR_FRAGMENT), in the tracker's words."""
     return ("merged" if pr["state"] == "MERGED" else "closed" if pr["state"] == "CLOSED"
@@ -170,7 +186,7 @@ def pr_state(pr: dict) -> str:
 
 def pr_of(pr: dict) -> dict:
     """A PR as gh gives it (PR_FRAGMENT), in the tracker's words (model.apply_prs)."""
-    return {"number": pr["number"], "state": pr_state(pr),
+    return {"number": pr["number"], "state": pr_state(pr), "title": pr.get("title") or "",
             "merged_at": FORMS["time"].read("merged_at", pr["mergedAt"]) if pr.get("mergedAt") else ""}
 
 
@@ -184,9 +200,9 @@ def skipped(changes: list[str]) -> bool:
 
 def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S) -> list[str]:
     """Pull PR state from GitHub, unless the last sync is under `every` seconds old (0: always): each ticket's PRs into
-    its frontmatter (`prs`, `merged_at`), the open PRs' PR_FACTS into .state.json `prs` (`model.apply_prs`). Returns
-    change lines. GitHub is asked first, in one call (`gh_prs`) and without the lock; the tracker is then reloaded and
-    written under it."""
+    its frontmatter (`prs`, `merged_at`), the open PRs' PR_FACTS into .state.json `prs`, and each PR's reviews into the
+    log (`model.apply_prs`). Returns change lines. GitHub is asked first, in one call (`gh_prs`) and without the lock;
+    the tracker is then reloaded and written under it."""
     if not tr.repos:
         return []
     if every and time.time() - tr.state().get("last_sync", 0) < every:
@@ -204,16 +220,18 @@ def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S) -> list[str]:
               else [repo for repo, prs in prs_by_repo.items() if prs is None])
     if failed:
         return [f"{SKIPPED}: gh failed or timed out for {', '.join(failed)}"]
-    found, facts = {}, {}
+    found, facts, reviews = {}, {}, {}
     for t in tickets:
         repo = tr.repo_of(t)
         prs = ticket_prs(prs_by_repo.get(repo, []), t, repo)
         if prs:
             found[t.id] = (repo, [pr_of(p) for p in prs])
-            facts.update({pr_key(repo, p["number"]): {**review_facts(p), "base": p["baseRefName"]}
+            facts.update({pr_key(repo, p["number"]): {**review_facts(p), "base": p["baseRefName"],
+                                                      **({"title": p["title"]} if p.get("title") else {})}
                           for p in prs if pr_state(p) in OPEN_PR})
+            reviews.update({pr_key(repo, p["number"]): pr_reviews(p) for p in prs})  # a merged PR's last ones too
     with locked():
-        return apply_prs(Tracker(tr.root), found, facts)
+        return apply_prs(Tracker(tr.root), found, facts, reviews)
 
 
 def match_pr(m: Match, cwd: str | Path) -> tuple[Match, str]:

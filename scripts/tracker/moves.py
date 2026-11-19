@@ -25,6 +25,7 @@ PR_FACTS = {
     "merge": "what stops the merge: conflict, behind (its base) or blocked (by the repo's rules); none when it can",
     "threads": "how many review threads are unresolved",
     "draft": "the PR is a draft",
+    "title": "the PR's title, for the views; no move reads it",
     "base": "the branch the PR would merge into; a base that is other tickets' branch makes the ticket wait on them "
             "(computed; depends_on does not change)",
 }

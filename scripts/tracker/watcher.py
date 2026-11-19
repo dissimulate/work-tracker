@@ -138,8 +138,9 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
     open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's that
     another session wrote (`sid`: the watch's own), so a worker's question reaches it at once (`asks`). With no `tr`,
     no decision is looked up. A legacy event is the log from before the event file, which a migration writes all at
-    once: none is new. A QUIET_KINDS one is left out."""
-    out, commits = [], {}
+    once: none is new. A QUIET_KINDS one is left out. A PR's reviews are one, the latest's text with how many came
+    before it: the first sync of a PR logs every review it already has."""
+    out, commits, reviews = [], {}, {}  # reviews: per PR, its event's place in `out` and how many it holds
     live = coordinated(tr) if tr else False
     for e in events:
         if e["kind"] == "legacy" or e["kind"] in QUIET_KINDS:  # an agent's wait shows as the agent's line
@@ -147,6 +148,14 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
         key = e["refs"][0] if e["refs"] else "log"
         if e["kind"] == "commits":
             commits[key] = commits.get(key, 0) + e["count"]
+        elif e["kind"] == "pr.review":
+            at, n = reviews.get(e.get("pr"), (len(out), 0))
+            reviews[e.get("pr")] = (at, n + 1)
+            event = Event("log", key, False, short(e["text"], 120) + (f" (+{n} earlier)" if n else ""))
+            if n:
+                out[at] = event
+            else:
+                out.append(event)
         else:
             out.append(Event("log", key, e["kind"] == "action.added" or asks(tr, e, live, role, sid),
                              short(e["text"], 120)))

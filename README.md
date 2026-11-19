@@ -77,7 +77,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution (the day, who decided and how it was entered, and the answer) |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
-| `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. Only the tool writes it |
+| `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. Each GitHub sync adds every review of a PR that approved it or requested changes, once, with its time on GitHub; a review that only comments is left out. Only the tool writes it |
 | `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show, except what `tracker find` finds |
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
@@ -144,7 +144,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 ### Watch
 
-- `tracker watch [name]` prints each change as one line; `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn.
+- `tracker watch [name]` prints each change as one line (a PR's new reviews in one batch, such as the first sync of a PR that has several, as one: the latest, and how many came before it); `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn.
 - A `stuck <id>` line, once each time an item turns stuck, and in a new watch's first lines: a submission not reviewed or a question not answered past its deadline (`TRACKER_DEADLINE_SUBMISSION`, `TRACKER_DEADLINE_QUESTION`), or at once when its ticket is under way and no session is on it. Only one that is the coordinator's or a session's to answer turns stuck, and is then yours: one that is yours already is simply yours. A wait on you past 30 s is stuck too, and the watch says it as that agent's line, or as a `stuck` line when `--only` leaves agent lines out. Stuck is worked out from the log and the clock each time it is read, so nothing has to be running: the view's data and `tracker check` show it too. Several sessions can watch one tracker: one watch per session.
 - `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
 - `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.

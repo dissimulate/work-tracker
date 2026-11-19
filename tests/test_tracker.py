@@ -247,12 +247,19 @@ def pull(number: int, **facts) -> dict:
     return {"number": number, "headRefName": facts.get("branch", ""), "state": facts.get("state", "OPEN"),
             "mergedAt": facts.get("merged_at"), "baseRefName": "main", "isCrossRepository": False,
             "isDraft": facts.get("draft", False), "reviewDecision": facts.get("decision"),
+            "title": facts.get("title", f"Part {number}"), "reviews": {"nodes": facts.get("rounds", [])},
             "mergeStateStatus": facts.get("merge", "CLEAN"),
             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": x}} for x in facts.get("requested", [])]},
             "latestReviews": {"nodes": facts.get("reviews", [])},
             "reviewThreads": {"nodes": [{"isResolved": False}] * facts.get("threads", 0) + [{"isResolved": True}]},
             "commits": {"nodes": [{"commit": {"committedDate": facts.get("pushed", "2026-09-01T00:00:00Z"),
                                               "statusCheckRollup": {"state": facts.get("checks", "SUCCESS")}}}]}}
+
+
+def review_round(rid: int, by: str, state: str, at: str, bot: bool = False) -> dict:
+    """One review of a PR as sync's query answers it (`reviews` in github.PR_FRAGMENT)."""
+    return {"databaseId": rid, "author": {"__typename": "Bot" if bot else "User", "login": by}, "state": state,
+            "submittedAt": at}
 
 
 def answers(prs: list[dict]):
@@ -598,6 +605,128 @@ class Moves(unittest.TestCase):
                             ["S-1 move now: you — checks failing"])):
             self.assertEqual(session.changes_since(tr, own, {"S-1": {"role": "own", **now}}), said_)
 
+
+    def reviewed(self, *tickets: str, repos: str = "a/x") -> tuple[str, tuple[str, str]]:
+        """A tracker of `repos` whose tickets are under way: the first on branch f1, each other with a `PR:` link to
+        PR 11 of the first repo."""
+        s, t = new_tracker("Reviews", repos)
+        first = repos.split(",")[0]
+        for i, ident in enumerate(tickets or ("S-1",)):
+            run(*t, "new", ident, "--title", ident, "--repo", first, *(["--branch", "f1"] if not i else []))
+            run(*t, "set", ident, "status=in-progress")
+            if i:
+                run(*t, "add", ident, "link", f"PR: [Part one](https://github.com/{first}/pull/11)")
+        return s, t
+
+    def synced(self, t: tuple[str, str], prs: list[dict], code: int = 0) -> str:
+        with mock.patch.object(github, "gh", answers(prs)):
+            return run(*t, "sync", code=code)
+
+    def review_events(self, s: str) -> list[dict]:
+        return [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.review"]
+
+    def test_a_review_is_logged_once(self):
+        s, t = self.reviewed()
+        prs = [pull(11, branch="f1", decision="CHANGES_REQUESTED",
+                    rounds=[review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")])]
+        self.synced(t, prs)
+        self.synced(t, prs)
+        model.EVENTS_READ.clear()  # as a new process reads it: the log says which reviews it holds
+        self.synced(t, prs)
+        [e] = self.review_events(s)
+        self.assertEqual({k: e[k] for k in ("text", "refs", "pr", "review", "by", "result", "submitted_at", "bot")},
+                         {"text": "PR #11 review by rev: changes requested", "refs": ["S-1"], "pr": "a/x#11",
+                          "review": 101, "by": "rev", "result": "changes", "submitted_at": "2026-09-02T01:02:03Z",
+                          "bot": False})
+        self.assertIn("PR #11 review by rev: changes requested", (store.HOME / s / "log.md").read_text())
+        # Another PR's review with the same id is another review
+        run(*t, "new", "S-2", "--title", "Two", "--branch", "f2")
+        run(*t, "set", "S-2", "status=in-progress")
+        prs.append(pull(12, branch="f2", rounds=[review_round(101, "rev", "APPROVED", "2026-09-03T00:00:00Z")]))
+        self.synced(t, prs)
+        self.assertEqual([(e["pr"], e["review"]) for e in self.review_events(s)], [("a/x#11", 101), ("a/x#12", 101)])
+
+    def test_a_later_review_is_logged_as_another(self):
+        s, t = self.reviewed()
+        first = review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", rounds=[first])])
+        later = review_round(102, "rev", "APPROVED", "2026-09-03T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", rounds=[first, later])])
+        self.assertEqual([(e["review"], e["result"], e["text"]) for e in self.review_events(s)],
+                         [(101, "changes", "PR #11 review by rev: changes requested"),
+                          (102, "approved", "PR #11 review by rev: approved")])
+        # The sync that sees the merge still logs the last review
+        last = review_round(103, "lead", "APPROVED", "2026-09-04T00:00:00Z")
+        self.synced(t, [pull(11, branch="f1", state="MERGED", merged_at="2026-09-04T01:00:00Z",
+                             rounds=[first, later, last])])
+        self.assertEqual([e["review"] for e in self.review_events(s)], [101, 102, 103])
+
+    def test_a_comment_pending_or_dismissed_review_is_not_logged(self):
+        s, t = self.reviewed()
+        at = "2026-09-02T00:00:00Z"
+        rounds = [review_round(101, "rev", "COMMENTED", at), review_round(102, "rev", "PENDING", at),
+                  review_round(103, "rev", "DISMISSED", at), {**review_round(104, "x", "APPROVED", at), "author": None},
+                  {**review_round(105, "rev", "APPROVED", at), "databaseId": None}]
+        self.synced(t, [pull(11, branch="f1", rounds=rounds)])
+        self.assertEqual(self.review_events(s), [])
+
+    def test_a_bots_review_is_logged_and_marked(self):
+        s, t = self.reviewed()
+        self.synced(t, [pull(11, branch="f1")])
+        tr = model.tracker_at(s)
+        before = moves.whose_move(tr, tr.lookup("S-1")).text()
+        bot = review_round(101, "lint", "CHANGES_REQUESTED", "2026-09-02T00:00:00Z", bot=True)
+        self.synced(t, [pull(11, branch="f1", rounds=[bot], reviews=[bot])])
+        [e] = self.review_events(s)
+        self.assertEqual((e["by"], e["result"], e["bot"]), ("lint", "changes", True))
+        tr = model.tracker_at(s)
+        self.assertEqual(moves.whose_move(tr, tr.lookup("S-1")).text(), before)  # a bot's review moves nothing
+
+    def test_a_review_on_a_pr_of_two_tickets_names_both(self):
+        s, t = self.reviewed("S-1", "S-2")
+        self.synced(t, [pull(11, branch="f1", rounds=[review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")])])
+        [e] = self.review_events(s)
+        self.assertEqual(e["refs"], ["S-1", "S-2"])
+
+    def test_a_review_in_a_tracker_of_two_repos_names_its_repo(self):
+        s, t = self.reviewed(repos="a/x,b/y")
+        self.synced(t, [pull(11, branch="f1", rounds=[review_round(101, "rev", "APPROVED", "2026-09-02T00:00:00Z")])])
+        self.assertEqual([e["text"] for e in self.review_events(s)], ["PR a/x#11 review by rev: approved"])
+
+    def test_reviews_already_there_come_as_one_watch_line(self):
+        s, t = self.reviewed()
+        rounds = [review_round(100 + i, "rev", "CHANGES_REQUESTED" if i < 4 else "APPROVED",
+                               f"2026-09-0{i + 1}T00:00:00Z") for i in range(5)]
+        prs = [pull(11, branch="f1", rounds=rounds)]
+        w, now = watcher.Watcher(model.tracker_at(s)), time.time()
+        w.claim(now)
+        w.synced = now  # the watch's own sync is not due: this test syncs
+        self.synced(t, prs)
+        self.assertEqual(w.poll(now), [])  # the change settles first
+        lines = w.poll(now + watcher.SETTLE_S)
+        self.assertEqual(len([x for x in lines if "review by" in x]), 1, lines)
+        self.assertEqual("".join(lines).count("review by"), 1, lines)
+        self.assertIn("S-1: ", lines[0])
+        self.assertIn("PR #11 review by rev: approved (+4 earlier)", lines[0])
+        self.assertEqual(len(self.review_events(s)), 5)
+
+    def test_a_sync_that_gh_fails_logs_no_review(self):
+        s, t = self.reviewed()
+        with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False: None):
+            self.assertIn("sync skipped", run(*t, "sync"))
+        self.assertEqual(self.review_events(s), [])
+
+    def test_the_title_is_kept_with_the_pr(self):
+        s, t = self.reviewed()
+        self.synced(t, [pull(11, branch="f1", title="Add the parser")])
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.raw_state()["prs"]["a/x#11"]["title"], "Add the parser")
+        [e] = [e for e in model.read_events(tr) if e["kind"] == "pr.state"]
+        self.assertEqual(e["title"], "Add the parser")
+        self.synced(t, [pull(11, branch="f1", title="Add the parser", state="MERGED",
+                             merged_at="2026-09-04T01:00:00Z")])
+        merged = [e for e in model.read_events(model.tracker_at(s)) if e["kind"] == "pr.state"][-1]
+        self.assertEqual((merged["state"], merged["title"]), ("merged", "Add the parser"))
 
     def test_stale_sync_refreshes_in_the_background(self):
         (s, _), (local, _) = new_tracker("Fresh", "a/x"), new_tracker("Local")

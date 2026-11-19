@@ -198,7 +198,10 @@ EVENTS = {
     "action.added": "an action for the user added (`action`, its id)",
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
-    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`)",
+    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`)",
+    "pr.review": "a review of a PR that approved it or requested changes, as `sync` read it, once each (`pr`; "
+                 "`review`: the forge's id for it; `by`; `result`: approved or changes; `submitted_at`: the forge's "
+                 "time for it; `bot`: whether a bot wrote it)",
     "branch.set": "the branch a ticket is built on (`branch`)",
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
@@ -244,8 +247,8 @@ STATE_RULES = {
                "session; the brief shows it first; the next `step` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
-    "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
-           "tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
+    "prs": "per open PR (`owner/name#n`), what `sync` last read of its title, reviews, checks and merge state, in "
+           "the tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
               "UI's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
