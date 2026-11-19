@@ -15,7 +15,7 @@ from pathlib import Path
 from .system import alive, die, session_id
 from .store import HOME, locked, read_json, write_json
 from .schema import STAGES, stage_of
-from .model import (SAFE_NAME, all_trackers, append_log, archived_at, branch_entry, commits_text, load_record,
+from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
     put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
 from .moves import whose_move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
@@ -418,7 +418,7 @@ def new_commits(cwd: str | Path, mark: dict) -> list[tuple[str, str]]:
 
 
 def log_commits(tr: Tracker, branch: str, commits: list[tuple[str, str]], refs: list[str]) -> None:
-    append_log(tr, commits_text(branch, commits), refs)
+    append_event(tr, "commits", commits_text(branch, commits), refs, branch=branch, count=len(commits))
 
 
 def record_commits(m: Match, cwd: str | Path) -> list[tuple[str, str]]:
@@ -472,7 +472,7 @@ def mark_up_to_date(m: Match, cwd: str | Path, handoff_text: str | None = None,
     if handoff_text or had:
         set_handoff(tr, cwd, m.branch, handoff_text)
     if handoff_text:
-        append_log(tr, f"Paused on {m.branch}: {short(handoff_text)}", refs)
+        append_event(tr, "paused", f"Paused on {m.branch}: {short(handoff_text)}", refs, branch=m.branch)
         done.append("handoff left")
     elif had:
         done.append("handoff cleared")

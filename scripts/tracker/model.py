@@ -18,7 +18,7 @@ from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_
 from .store import HOME, append, atomic_write, read_json, write_json
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR,
     PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day,
-    show_value, stage_of, today, utc_now, utc_seconds, Stage)
+    show_value, stage_of, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -798,27 +798,21 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------- the log
-# log.md holds one line per change, `- <day> [<ids>] <text>`: append_log writes it and LOG_LINE reads it back. Most
-# texts are for people. Those that code reads back have a LogForm in LOG, which both writes them and reads them, so a
+# Each change is one event in the event file (EVENTS_FILE) and one line in log.md, `- <day> [<ids>] <text>`:
+# append_event writes both, and LOG_LINE reads log.md back. Most texts are for people. Those that code reads back have a LogForm in LOG, which both writes them and reads them, so a
 # change of words cannot part the two: `context` and the brief leave out the lines of a decision they show, and
 # the watcher counts the commits and marks a new action as one for the user.
 
 LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
 
 
-def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
-    line = f"- {today()}" + (f" [{' '.join(refs)}]" if refs else "") + f" {' '.join(msg.split())}"
-    append(tr.root / "log.md", line + "\n")
-    return line
-
-
 def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
-    """Record a change as the next event of the tracker's event file (EVENTS_FILE), and return it: its number, the
-    time in UTC, its kind (one of EVENTS), the session and plugin version that wrote it, its repo, the records it
-    concerns (`refs`), the text on one line, then `data`, the kind's own fields. The repo is the first ticket's in
-    `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number is one past the file's
-    last, so two writers at once would share it. ValueError for a kind not in EVENTS, or `data` that names a field
-    above."""
+    """Record a change as the next event of the tracker's event file (EVENTS_FILE), then as its line in log.md, and
+    return it: its number, the time in UTC, its kind (one of EVENTS), the session and plugin version that wrote it,
+    its repo, the records it concerns (`refs`), the text on one line, then `data`, the kind's own fields. The repo is
+    the first ticket's in `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number
+    is one past the file's last, so two writers at once would share it. ValueError for a kind not in EVENTS, or
+    `data` that names a field above."""
     if kind not in EVENTS:
         raise ValueError(f"no event kind {kind!r} (EVENTS)")
     ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
@@ -831,6 +825,9 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
     path = tr.root / EVENTS_FILE
     # A writer killed part way leaves a last line with no newline: the new event starts a line of its own.
     append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
+    # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (no code reads it
+    # back); regenerate it from the events on each write if drift is ever seen.
+    append(tr.root / "log.md", log_line(e) + "\n")
     return e
 
 
@@ -944,7 +941,7 @@ PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a d
 
 def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None) -> list[str]:
     """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PRs (each with `number`;
-    `state`: one of PR_EVENT; `merged_at`, UTC), each PR's new state a log line; and the open PRs' PR_FACTS by pr_key
+    `state`: one of PR_EVENT; `merged_at`, UTC), each PR's new state an event; and the open PRs' PR_FACTS by pr_key
     (None: the forge did not answer, so the last ones stay). Returns the change lines."""
     changes, events = [], {}
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
@@ -967,9 +964,9 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
         for x in now:
             if old.get(str(x["number"])) != x["state"]:
                 name = f"{repo}#{x['number']}" if len(tr.repos) > 1 else f"#{x['number']}"
-                events.setdefault((name, x["state"]), []).append(t.id)
-    for (name, pr_state), ids in events.items():
-        append_log(tr, f"PR {name} {PR_EVENT[pr_state]}", ids)
+                events.setdefault((pr_key(repo, x["number"]), x["state"]), (name, []))[1].append(t.id)
+    for (pr, pr_state), (name, ids) in events.items():
+        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state)
     changes += unblocked(tr, blocked)
     state = tr.state()
     state["last_sync"] = time.time()
@@ -991,8 +988,9 @@ def close_action(tr: Tracker, a: Record, status: str, notes: list[str] | None = 
         die(f"{a.id} is {a.get('status')} already")
     a.change(a.status_update(status))
     append_notes(a, notes or [])
-    append_log(tr, f"{a.id} {status}: {a.get('title')}" + (f" → {short('; '.join(notes))}" if notes else ""),
-               [a.id, *a.list("refs")])
+    append_event(tr, "action.closed", f"{a.id} {status}: {a.get('title')}"
+                 + (f" → {short('; '.join(notes))}" if notes else ""), [a.id, *a.list("refs")], action=a.id,
+                 status=status)
     return f"{a.id} {status}"
 
 
@@ -1009,7 +1007,8 @@ def set_branch(tr: Tracker, t: Record, branch: str, note: str = "") -> None:
     """Record the branch a ticket is built on, where sync finds its PR and every worktree finds the ticket; log it,
     with `note` (how the branch was found)."""
     t.change({"branch": branch})
-    append_log(tr, f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id])
+    append_event(tr, "branch.set", f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id],
+                 branch=branch)
 
 
 def short(text: str, n: int = 90) -> str:

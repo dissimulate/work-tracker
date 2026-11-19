@@ -18,7 +18,7 @@ from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS
     RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
     STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
     valid_value, value_form)
-from .model import (LOG, all_trackers, append_log, append_to_section, archived_trackers, blocker_link, level, names,
+from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, level, names,
     norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
 from .moves import MOVE_RULE
 
@@ -403,7 +403,7 @@ def upgrade(tr: Tracker) -> None:
             shutil.copytree(tr.root, backup, ignore=lambda folder, names: {
                 x for x in names if x == ".DS_Store" or x.endswith(".tmp") or folder == top and x == EVIDENCE_DIR})
         migrate(tr)
-        append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
+        append_event(tr, "migrated", f"Migrated to tracker format {SCHEMA} (backup {backup})", [], schema=SCHEMA)
 
 
 def prune_backups() -> None:

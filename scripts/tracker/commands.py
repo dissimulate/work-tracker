@@ -19,10 +19,10 @@ from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISS
     MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA,
     STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
     parse_options, read_value, stage_of, today, utc_now, Option)
-from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_log, append_notes, append_to_section, archived_at,
-    archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record, names,
-    put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, tracker_at,
-    unknown_dep, Record, Tracker)
+from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
+    archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
+    names, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
+    tracker_at, unknown_dep, Record, Tracker)
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
     in_repos, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits, remember, resolve,
@@ -229,7 +229,8 @@ def cmd_set(args):
     if updates.get("issue_updates") == "on":
         tr.start_issue_updates()
     if moved:
-        append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
+        append_event(tr, "status", status_line(rec), [] if rec.kind == "tracker" else [rec.id],
+                     status=str(rec.get("status")))
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if starts:
@@ -289,7 +290,7 @@ def base_notes(tr: Tracker, t: Record) -> list[str]:
 def cmd_log(args):
     tr = resolve(args)
     refs = [tr.find(r).id for r in id_list(args.ref)]
-    append_log(tr, args.message, refs)
+    append_event(tr, "note", args.message, refs)
     print("logged" + (f" [{' '.join(refs)}]" if refs else ""))
 
 
@@ -329,7 +330,8 @@ def cmd_new(args):
     if (args.plan or "").strip():
         put_section(t, "Plan", args.plan.strip("\n"))
     add_waits(tr, t, deps)
-    append_log(tr, f"Added {args.id} {args.title}" + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
+    append_event(tr, "ticket.added", f"Added {args.id} {args.title}"
+                 + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
     print(f"created {args.id}: {t.path}")
 
 
@@ -337,8 +339,9 @@ def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> s
     who = f" ({by})" if by else ""
     rec.change(rec.status_update("closed"))
     append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_log(tr, LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who, answer=short(answer)),
-               [rec.id, *tr.touched_by(rec)])
+    append_event(tr, "decision.decided", LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who,
+                                                             answer=short(answer)),
+                 [rec.id, *tr.touched_by(rec)], decision=rec.id)
     return f"{rec.id} closed"
 
 
@@ -375,7 +378,8 @@ def cmd_wait(args):
             link = None if tr.lookup(x) else blocker_link(t, x)
             if link:
                 relabel(t, link, "Related")
-        append_log(tr, f"{t.id} no longer waits on {', '.join(args.items)}", [t.id])
+        append_event(tr, "wait.removed", f"{t.id} no longer waits on {', '.join(args.items)}", [t.id],
+                     on=[tr.canonical(x) for x in args.items])
     else:
         items = []
         external = [x for x in args.items if not tr.lookup(x) and not blocker_link(t, x)]
@@ -402,7 +406,7 @@ def cmd_wait(args):
         for d in (tr.lookup(x) for x in added):
             if d and t.id in d.list("refs"):  # a decision's or action's: depends_on now says so
                 d.change({"refs": [r for r in d.list("refs") if r != t.id]})
-        append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
+        append_event(tr, "wait.added", f"{t.id} now waits on {', '.join(added)}", [t.id], on=added)
     print("\n".join(dep_lines(tr, t)) or f"{t.id} waits on nothing")
 
 
@@ -505,7 +509,8 @@ def section_done(tr: Tracker, rec: Record, heading: str, why: str | None, did: s
     rec.change()
     if why:
         readme = rec.kind == "tracker"
-        append_log(tr, f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id])
+        append_event(tr, "body.changed", f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id],
+                     heading=heading)
     print(f"{rec.id} {heading}: {did}")
 
 
@@ -607,7 +612,8 @@ def cmd_attach(args):
             append_to_section(rec, "Notes", f"- {today()}: {EVIDENCE}: {link}")
         rec.change()
         refs.append(rec.id)
-    append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
+    append_event(tr, "evidence.attached", f"{attached} {EVIDENCE_DIR}/{name}"
+                 + (f": {short(args.note)}" if args.note else ""), refs, file=f"{EVIDENCE_DIR}/{name}")
     print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
 
 
@@ -686,7 +692,7 @@ def blocks_line(tr: Tracker, rec: Record, blocks: list[str]) -> str:
     if not newly:
         return ""
     msg = f"{', '.join(newly)} now {'waits' if len(newly) == 1 else 'wait'} on {rec.id}"
-    append_log(tr, msg, [rec.id, *newly])
+    append_event(tr, "wait.added", msg, [rec.id, *newly], on=[rec.id])
     return msg
 
 
@@ -747,7 +753,8 @@ def cmd_decide(args):
             append_to_section(d, "Notes", f"- {dated(args.note)}")
             said.append(short(args.note))
         if said:
-            append_log(tr, f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)])
+            append_event(tr, "decision.updated", f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)],
+                         decision=d.id)
         if msg := blocks_line(tr, d, blocks):
             print(msg)
         print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
@@ -766,8 +773,8 @@ def cmd_decide(args):
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)
-        append_log(tr, LOG["opened"].text(id=d.id, title=args.target)
-                   + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly])
+        append_event(tr, "decision.opened", LOG["opened"].text(id=d.id, title=args.target)
+                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id)
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
@@ -787,21 +794,24 @@ def cmd_act(args):
         if args.title:
             old = a.get("title")
             a.change({"title": " ".join(args.title.split())})
-            append_log(tr, f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")],
+                         action=a.id)
         if refs or unrefs or blocks:
             a.change({"refs": refs_after(tr, a, refs, unrefs, blocks)})
         if msg := blocks_line(tr, a, blocks):
             print(msg)
         if due is not None:
             a.change({"due": due})
-            append_log(tr, f"{a.id} due {due}" if due else f"{a.id} has no due date now", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"{a.id} due {due}" if due else f"{a.id} has no due date now",
+                         [a.id, *a.list("refs")], action=a.id)
         if args.done or args.drop:
             print(close_action(tr, a, "done" if args.done else "dropped", notes))
             return
         if notes:
             append_notes(a, notes)
             a.change()
-            append_log(tr, f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")],
+                         action=a.id)
         print(f"{a.id} updated")
         return
     if args.done or args.drop or args.title or unrefs:
@@ -810,8 +820,8 @@ def cmd_act(args):
     a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
     append_notes(a, notes)
     newly = block_tickets(tr, a.id, blocks)
-    append_log(tr, LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
-               + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly])
+    append_event(tr, "action.added", LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
+                 + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly], action=a.id)
     print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
 
 
@@ -934,10 +944,10 @@ def cmd_step(args):
     if updates or args.carry:
         t.change(updates)
     if args.message:
-        append_log(tr, args.message, [t.id])
+        append_event(tr, "step", args.message, [t.id])
         done.append("logged")
     if args.done:
-        append_log(tr, status_line(t), [t.id])
+        append_event(tr, "status", status_line(t), [t.id], status=str(t.get("status")))
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))

@@ -1384,6 +1384,96 @@ class Events(unittest.TestCase):
         self.assertEqual(model.log_line(self.append(text="a b c")), f"- {schema.today()} a b c")
         self.assertEqual(model.log_line({**e, "day": "2025-01-02"}), "- 2025-01-02 [T-1 D-2] a b c")
 
+    def test_no_caller_writes_the_log_directly(self):
+        appends = []
+        for path in sorted((ROOT / "scripts/tracker").glob("*.py")):
+            text = path.read_text()
+            self.assertNotIn("append_log(", text, path.name)
+            appends += [path.name for line in text.splitlines()
+                        if '"log.md"' in line and re.search(r'\bappend\(|open\(.*"a"', line)]
+        self.assertEqual(appends, ["model.py"])
+
+    # Each write, the kind of its event and the event's own fields.
+    KINDS_WRITTEN = [
+        (["new", "T-1", "--title", "One"], "ticket.added", {}),
+        (["new", "T-2", "--title", "Two"], "ticket.added", {}),
+        (["set", "T-1", "status=in-progress"], "status", {"status": "in-progress"}),
+        (["step", "T-1", "Built it"], "step", {}),
+        (["log", "A note", "--ref", "T-1"], "note", {}),
+        (["wait", "T-2", "on", "T-1"], "wait.added", {"on": ["T-1"]}),
+        (["wait", "T-2", "off", "t-1"], "wait.removed", {"on": ["T-1"]}),
+        (["put", "T-1", "plan", "Another way", "--why", "The first failed"], "body.changed", {"heading": "Plan"}),
+        (["decide", "Which store", "--refs", "T-2"], "decision.opened", {"decision": "D-01"}),
+        (["decide", "D-01", "--note", "S3 is cheap"], "decision.updated", {"decision": "D-01"}),
+        (["decide", "D-01", "--blocks", "T-2"], "wait.added", {"on": ["D-01"]}),
+        (["decide", "D-01", "--resolve", "S3", "--by", "me"], "decision.decided", {"decision": "D-01"}),
+        (["act", "Ask Sam"], "action.added", {"action": "A-01"}),
+        (["act", "A-01", "--title", "Ask Sam again"], "action.updated", {"action": "A-01"}),
+        (["act", "A-01", "--due", "2099-01-01"], "action.updated", {"action": "A-01"}),
+        (["act", "A-01", "--note", "Asked"], "action.updated", {"action": "A-01"}),
+        (["act", "A-01", "--done"], "action.closed", {"action": "A-01", "status": "done"}),
+        (["step", "T-1", "--done", "Delivered"], "status", {"status": "done"}),
+        (["set", "tracker", "status=active"], "status", {"status": "active"}),
+    ]
+
+    def run_writes(self) -> list[dict]:
+        """Run KINDS_WRITTEN, each write's events after the one before."""
+        written, seen = [], 0
+        for args, kind, fields in self.KINDS_WRITTEN:
+            run(*self.t, *args)
+            events = model.read_events(self.tr, seen)
+            seen = events[-1]["seq"] if events else seen
+            written.append((args, [(e["kind"], {k: e[k] for k in fields if k in e}) for e in events]))
+        return written
+
+    def test_each_command_writes_its_kind(self):
+        self.assertEqual(self.run_writes(), [(args, [(kind, fields)]) for args, kind, fields in self.KINDS_WRITTEN])
+
+    def test_log_md_is_the_events_rendered(self):
+        self.run_writes()
+        log = [ln for ln in (store.HOME / self.s / "log.md").read_text().splitlines() if ln.startswith("- ")]
+        self.assertEqual(log, [model.log_line(e) for e in model.read_events(self.tr)])
+        self.assertEqual(len(log), len(self.KINDS_WRITTEN))
+
+    def test_the_branch_commits_and_pause_of_a_step(self):
+        work = repo("feat/T-1")
+        run(*self.t, "new", "T-1", "--title", "One")
+        run(*self.t, "set", "T-1", "status=in-progress", cwd=work)
+        run(*self.t, "step", cwd=work)  # the baseline mark
+        commit(work, "one")
+        run(*self.t, "step", "T-1", "--pause", "Half done", cwd=work)
+        run(*self.t, "use", "T-1", cwd=repo("feat/other"))
+        got = [(e["kind"], e.get("branch"), e.get("count")) for e in model.read_events(self.tr)][-3:]
+        self.assertEqual(got, [("commits", "feat/T-1", 1), ("paused", "feat/T-1", None),
+                               ("branch.set", "feat/other", None)])
+
+    def test_attach_names_its_file(self):
+        run(*self.t, "new", "T-1", "--title", "One")
+        evidence = Path(tempfile.mkdtemp(dir=BASE)) / "run.log"
+        evidence.write_text("a run")
+        run(*self.t, "attach", str(evidence), "--ref", "T-1")
+        e = model.read_events(self.tr)[-1]
+        self.assertEqual((e["kind"], e["file"], e["refs"]), ("evidence.attached", "evidence/run.log", ["T-1"]))
+
+    def test_sync_writes_a_prs_new_state(self):
+        s, t = new_tracker("Synced", "a/x")
+        run(*t, "new", "K-1", "--title", "One", "--branch", "feat/K-1")
+        run(*t, "set", "K-1", "status=in-progress")
+        with mock.patch.object(github, "gh", answers([pull(11, branch="feat/K-1", state="MERGED",
+                                                           merged_at="2026-10-01T06:30:00Z")])):
+            run(*t, "sync")
+        e = model.read_events(model.tracker_at(s))[-1]
+        self.assertEqual((e["kind"], e["pr"], e["state"], e["refs"], e["repo"], e["text"]),
+                         ("pr.state", "a/x#11", "merged", ["K-1"], "a/x", "PR #11 merged"))
+
+    def test_commits_event_counts_every_commit(self):
+        commits = [(f"c{i}", f"commit {i}") for i in range(11)]
+        with store.locked():
+            session.log_commits(self.tr, "feat/x", commits, [])
+        e = model.read_events(self.tr)[-1]
+        self.assertEqual((e["kind"], e["branch"], e["count"]), ("commits", "feat/x", 11))
+        self.assertTrue(e["text"].endswith("and 3 more"), e["text"])
+
 
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""
@@ -2675,7 +2765,9 @@ class Watch(unittest.TestCase):
 
         run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
         run(*self.t, "step", "W-1", "Built the parser", "--next", "Test it", cwd=self.work)
-        model.append_log(model.Tracker(self.root), "Commits on feat/W-1: a1 one; b2 two; and 3 more", ["W-1"])
+        with store.locked():
+            model.append_event(model.Tracker(self.root), "commits", "Commits on feat/W-1: a1 one; b2 two; and 3 more",
+                               ["W-1"], branch="feat/W-1", count=5)
         run(*self.t, "decide", "Pick a store", "--refs", "W-2")
         lines = w.poll(now)
         w1 = next(x for x in lines if " W-1: " in x)
