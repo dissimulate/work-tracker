@@ -73,16 +73,22 @@ def offer(found: list[Match]) -> tuple[str, str]:
     """For a session with no tracker on a branch with open tickets: the model's request to ask the user whether to
     link it, and the line the user sees at once (a hook cannot start a model turn in an interactive session, so the
     model asks at the first message). Only the user's answer links; the hook writes nothing. A sure match
-    (`sure_link`) links without the question."""
+    (`sure_link`) links without the question. A tracker in a newer format is told (`contract.newer_format`), not
+    offered: its `start` would refuse."""
+    why = {m.tracker.slug: newer_format(m.tracker.root) for m in found}
+    newer = "".join(f"\n[work-tracker] {x}." for x in why.values() if x)
+    found = [m for m in found if not why[m.tracker.slug]]
+    if not found:
+        return newer.lstrip(), newer.lstrip()
     names = "; ".join(f"{m.tracker.slug} ({m.tracker.title}): {m.summary()}" for m in found[:3])
     options = [f'"Link {m.tracker.slug}" (run `tracker start {m.tracker.slug}`, which prints the brief)'
                for m in found[:3]]
     ask = (f"[work-tracker] This session is on no tracker. Branch `{found[0].branch}` has open tickets in {names}.\n"
            "In your first reply, before other work, use the host's question tool to ask whether to link this session "
            f"to it. Options: {', '.join(options)}, and \"Not now\" (run `tracker start --decline`: no link or offer "
-           "on this branch for a day). Skip the question when the user's message already answers it.")
+           "on this branch for a day). Skip the question when the user's message already answers it.") + newer
     return ask, (f"[work-tracker] Branch `{found[0].branch}` has open tickets in {names}. The agent asks at your first "
-                 "message whether to link this session.")
+                 "message whether to link this session.") + newer
 
 
 def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
@@ -284,9 +290,7 @@ def hook_prompt(data: dict) -> None:
     issue update newly due (updates_told), each once. With a ticket under way, the first message and
     every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
     branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
-    way, a stale GitHub sync starts in the background (`sync_later`)."""
-    if watch_request(data):
-        return
+    way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a watch request first."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
@@ -383,11 +387,13 @@ CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
 
 def tell_newer(data: dict, event: str, why: str) -> None:
     """The session's tracker takes no write from this code (`contract.newer_format` says `why`): tell the model and the
-    user, once per session, at the first handler that can tell the model. Not a subagent's: the session reloads, not
-    it."""
+    user, once per context, at the first handler that can tell the model. A session start is a new context, after
+    compaction too: it is told again, with the command prefix (`emit_context`). Not a subagent's: the session reloads,
+    not it."""
     sid = where(data)[1]
     text = f"[work-tracker] {why}."
-    if event not in CONTEXT_EVENTS or data.get("agent_id") or load_session(sid).get("told_newer") == text:
+    told = event != "session-start" and load_session(sid).get("told_newer") == text
+    if event not in CONTEXT_EVENTS or data.get("agent_id") or told:
         warn(f"hook {event}: {why}")
         return
     save_session(sid, told_newer=text)
@@ -428,8 +434,8 @@ def run_hook(*events: str) -> None:
             status = STATUS_OF.get(event)
             if event == "session-end" and not data.get("agent_id"):
                 session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
-            try:
-                if not newer_told(data, event):
+            try:  # a watch request writes nothing to the tracker: `stop` ends the watch on a newer one too
+                if not (event == "prompt" and watch_request(data)) and not newer_told(data, event):
                     HOOKS[event](data)
             except NewerFormat as exc:  # it wrote nothing to the tracker; the session's own files go on
                 tell_newer(data, event, str(exc))
