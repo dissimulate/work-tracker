@@ -42,7 +42,10 @@ def guard_writes(check) -> None:
 
 def tracker_root(path: Path) -> Path | None:
     """The folder of the tracker that holds `path`; None outside HOME and in HOME's own files and folders: sessions,
-    watches, the archive. A tracker's folder can be a link out of HOME, so the path counts first as it is named."""
+    watches, the archive. `path` counts as it is named, so a tracker's folder can be a link out of HOME; else as it
+    resolves, for a path that names HOME another way (HOME, or a folder above it, can be a link). A path named by a
+    linked folder's target is outside HOME: each write names its path through HOME (`Tracker.root`), and resolves it
+    only to check where it leads."""
     for named, home in ((Path(os.path.abspath(path)), Path(os.path.abspath(HOME))), (path.resolve(), HOME.resolve())):
         if named.is_relative_to(home):
             parts = named.relative_to(home).parts
@@ -68,8 +71,7 @@ def will_write(path: Path) -> None:
 def append(path: Path, text: str) -> None:
     """Add text at the end of a file. guard_writes' check sees it; first_writes' callback does not, as no record
     changes."""
-    root = tracker_root(path) if _guard else None
-    if root:
+    if _guard and (root := tracker_root(path)):
         _guard(root)
     with open(path, "a", encoding="utf-8", newline="\n") as f:  # Windows: no CRLF
         f.write(text)

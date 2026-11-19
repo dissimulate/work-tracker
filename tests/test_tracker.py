@@ -1224,6 +1224,79 @@ class NewerFormat(unittest.TestCase):
                 self.assertIn(RELOAD, run(*t, *args, code=watcher.REFUSED))
         self.assertEqual(tree(target), before)
 
+    def test_attach_to_a_linked_tracker_folder_writes_nothing(self):
+        s, t = self.tracker()
+        target = Path(tempfile.mkdtemp(dir=BASE)) / s  # outside HOME: the link's target is no tracker's path
+        (store.HOME / s).rename(target)
+        (store.HOME / s).symlink_to(target, target_is_directory=True)
+        src = Path(tempfile.mkdtemp(dir=BASE))
+        (src / "kept.log").write_text("kept")
+        (src / "run.log").write_text("a run")
+        run(*t, "attach", str(src / "kept.log"), "--ref", "N-1")
+        self.newer(s)
+        before = tree(target)
+        for args in ([str(src / "run.log"), "--ref", "N-1"], ["kept.log", "--append", "more"],
+                     [str(target / schema.EVIDENCE_DIR / "kept.log"), "--append", "more"]):  # named by its target
+            with self.subTest(args=args):
+                self.assertIn(RELOAD, run(*t, "attach", *args, code=watcher.REFUSED))
+        self.assertEqual(tree(target), before)
+
+    def test_use_clear_refused_in_one_tracker_clears_none(self):
+        work = repo("main")
+        (a, ta), (b, tb) = sorted((self.tracker(), self.tracker()))  # `use --clear` reaches a first
+        for t in (ta, tb):
+            run(*t, "use", "N-1", cwd=work)
+        self.newer(b)
+        before = {s: tree(store.HOME / s) for s in (a, b)}
+        said = run("use", "--clear", cwd=work, code=watcher.REFUSED)
+        self.assertRegex(said, rf"\Atracker: {b} {NEWER}[^\n]*: {RELOAD}\n\Z")  # and no "cleared the choice"
+        self.assertEqual({s: tree(store.HOME / s) for s in (a, b)}, before)
+
+    def test_start_on_a_newer_tracker_changes_nothing(self):
+        (old, _), (s, _) = self.tracker(), self.tracker()
+        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")  # a branch s has not seen: its first mark
+        own = session.session_path(sid)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run("start", old, cwd=work)
+            self.newer(s)
+            before, held = tree(store.HOME / s), own.read_bytes()
+            said = run("start", s, cwd=work, code=watcher.REFUSED)
+        self.assertRegex(said, rf"\Atracker: {s} {NEWER}[^\n]*: {RELOAD}\n\Z")
+        self.assertEqual(own.read_bytes(), held)  # still on its tracker: it was not moved
+        self.assertEqual(tree(store.HOME / s), before)
+
+    def test_a_refusal_at_stop_is_told_at_the_next_prompt_which_asks_for_no_write(self):
+        s, _ = self.tracker()
+        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        hook("session-start", sid, work, source="startup")  # the branch's mark
+        self.newer(s)
+        before = tree(store.HOME / s)
+        commit(work, "on a newer tracker")
+        self.assertIsNone(hook("stop", sid, work))  # refused: a Stop hook cannot tell the model
+        told = hook("prompt", sid, work, prompt="go")
+        self.assertEqual(told["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        self.assertEqual(told["hookSpecificOutput"]["additionalContext"],
+                         f"[work-tracker] {s} {NEWER} (tracker format {schema.SCHEMA + 1}; this one writes "
+                         f"{schema.SCHEMA}), so this one writes nothing to it: {RELOAD}.")  # no step to record
+        self.assertIn(RELOAD, told["systemMessage"])
+        self.assertIsNone(hook("prompt", sid, work, prompt="again"))  # once per session
+        self.assertEqual(tree(store.HOME / s), before)
+
+    def test_a_session_that_links_a_newer_tracker_at_its_start_is_told_not_briefed(self):
+        s, _ = self.tracker()
+        sid, work = f"new{time.monotonic_ns()}", repo("feat/N-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        hook("session-start", sid, work, source="startup")  # the branch's mark: no commit waits to be logged
+        self.newer(s)
+        before = tree(store.HOME / s)
+        hook("session-end", sid, work, reason="clear")  # /clear: the next session takes the tracker over
+        cleared = hook("session-start", f"{sid}b", work, source="clear")
+        self.assertIn(RELOAD, cleared["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("Tracker protocol", said(cleared))  # no brief, which asks for writes
+        self.assertEqual(session.load_session(f"{sid}b")["tracker"], s)
+        self.assertEqual(tree(store.HOME / s), before)
+
     def test_an_equal_or_older_format_writes_and_an_older_one_migrates_first(self):
         s, t = self.tracker()
         for args in self.WRITES:
