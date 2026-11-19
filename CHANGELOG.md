@@ -11,11 +11,11 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Changed
 
 - A tracker's log is now kept as typed events in `events.jsonl`, each with a time, the session and the plugin version that wrote it. `log.md` reads the same as before and is written from the events; editing it by hand no longer changes what `tracker history` shows.
-- A tracker that cannot be brought to the current format (a README with a key twice, say) now takes no write until it can: its commands refuse before they change anything and say to run `tracker check`, which names what to fix, and its hooks write nothing and say so once. Commands that only read still run.
+- A tracker that cannot be brought to the current format (a README with a key twice, say) now takes no write until it can: its commands refuse before they change anything and say to run `tracker check`, which names what to fix, and its hooks write nothing, say so once per context (again after compaction), and offer no link to it. Commands that only read still run, and say so where they print the brief.
 
 ### Fixed
 
-- A session that still runs an older plugin version no longer writes its own format into a tracker that a newer version migrated: its commands refuse and say to reload the plugin or restart the session, and its hooks write nothing and say so once. Only this version and later refuse: 0.32.0 and earlier still write.
+- A session that still runs an older plugin version no longer writes its own format into a tracker that a newer version migrated: its commands refuse and say to reload the plugin or restart the session, and its hooks write nothing, say so once per context (again after compaction), and offer no link to such a tracker. Only this version and later refuse: 0.32.0 and earlier still write.
 - A write to a tracker whose folder is a link now ends with what it unblocked and whether `check` found new problems, as in any other tracker.
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
 
