@@ -3011,6 +3011,53 @@ class SessionNews(TwoSessions):
         hook("prompt", c, then, env=no_gh(), prompt="go on")
         self.assertEqual(session.load_session(c)["cwd"], str(then))
 
+    def explore(self) -> Path:
+        """A closes T-1 and sends a message in its folder, then works in a new checkout, `explore`, on no ticket: a
+        prompt and a turn's end there, which marks its branch."""
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        self.message()
+        b = repo("explore")
+        hook("prompt", self.a, b, env=no_gh(), prompt="go on")
+        hook("stop", self.a, b, env=no_gh(), stop_hook_active=False)
+        return b
+
+    def test_a_new_checkout_with_no_ticket_is_the_sessions_work(self):
+        b = self.explore()
+        commit(b, "untracked work")
+        told = said(hook("prompt", self.a, b, env=no_gh(), prompt="more"))
+        self.assertIn("No ticket in progress on explore; 1 commit(s) not logged", told)
+        self.assertEqual(session.load_session(self.a)["cwd"], str(b))
+        brief = said(hook("session-start", self.a, b, env=no_gh(), source="compact"))
+        self.assertIn("explore", brief)
+
+    def test_commits_in_a_new_checkout_are_logged_once_its_ticket_starts(self):
+        b = self.explore()
+        commit(b, "untracked work")  # in the terminal: no post-bash hook sees it
+        hook("stop", self.a, b, env=no_gh(), stop_hook_active=False)
+        self.as_a(*self.t, "use", "T-2", cwd=b)
+        self.as_a(*self.t, "set", "T-2", "status=in-progress", cwd=b)
+        hook("stop", self.a, b, env=no_gh(), stop_hook_active=False)
+        logged = [(e["refs"], e["text"]) for e in model.read_events(model.tracker_at(self.s)) if e["kind"] == "commits"]
+        self.assertEqual(len(logged), 1, logged)
+        self.assertEqual(logged[0][0], ["T-2"])
+        self.assertIn("Commits on explore: ", logged[0][1])
+
+    def test_a_turn_that_ends_in_another_repo_leaves_the_sessions_folder(self):
+        self.setUp("a/x")
+        other = repo("main")  # a repo the tracker does not name, on a branch: not its work
+        subprocess.run(["git", "-C", str(other), "remote", "add", "origin", "git@github.com:b/y.git"], check=True)
+        hook("stop", self.a, other, env=no_gh(), stop_hook_active=False)
+        self.assertEqual(session.load_session(self.a)["cwd"], str(self.work))
+
+    def test_a_folder_it_worked_in_that_is_gone_is_not_its_work(self):
+        sub = self.work / "sub"
+        sub.mkdir()
+        hook("prompt", self.a, sub, env=no_gh(), prompt="go on")  # it works in a folder inside the checkout
+        sub.rmdir()  # which is then deleted
+        plain = Path(tempfile.mkdtemp(dir=BASE))
+        hook("prompt", self.a, plain, env=no_gh(), prompt="go on")
+        self.assertEqual(session.load_session(self.a)["cwd"], str(plain))
+
     def test_a_session_on_no_ticket_in_the_tracker_folder_is_nudged_for_its_branch(self):
         b = repo("explore")
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):

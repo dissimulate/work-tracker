@@ -311,15 +311,20 @@ def match_cwd(cwd: str | Path, sid: str | None = None, tracker: Tracker | None =
 
 def work_match(cwd: str | Path, sid: str) -> tuple[Match | None, Path]:
     """What a hook of the session works on, and in which folder: its tickets in `cwd` (inside $TRACKER_HOME, in the
-    folder it last worked in: `work_dir`). In a folder that holds none of its tickets (a scratch folder), the folder it
-    last worked in is still its work, when that one holds some: so a turn or a message there moves neither its news
-    baseline nor its asks, nor the folder its own watch matches in."""
+    folder it last worked in: `work_dir`). A checkout of the tracker's work (a git branch, in a repo the tracker names)
+    is the session's work even with no ticket on its branch yet. A folder that is neither, and holds none of its
+    tickets (a folder with no git, another repo), is not: the folder it last worked in still is, when that one holds
+    some of them, so a turn or a message there moves neither its news baseline nor its asks, nor the folder its own
+    watch matches in."""
     here = work_dir(cwd)
     m = match_cwd(here, sid)
     saved = load_session(sid).get("cwd") or ""
-    if m and not m.tickets and saved and Path(saved) != here and Path(saved).is_dir():
+    elsewhere = m and not m.tickets and not (m.branch and in_repos(m.tracker, here))
+    # is_dir: `git.worktree` reads the branch from the nearest parent with a .git, so a deleted folder inside a repo
+    # would still match that repo's branch.
+    if elsewhere and saved and Path(saved) != here and Path(saved).is_dir():
         there = match_cwd(saved, sid)
-        if there and there.tickets:
+        if there.tickets:
             return there, Path(saved)
     return m, here
 
