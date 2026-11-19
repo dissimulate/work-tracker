@@ -1664,7 +1664,7 @@ class Events(unittest.TestCase):
     def test_check_reports_a_damaged_event_file(self):
         for _ in range(2):
             self.append()
-        jumped = json.dumps({"seq": 4, "kind": "note", "refs": [], "text": "x"}) + "\n"
+        jumped = json.dumps({"seq": 4, "kind": "note", "refs": [], "text": "x", "at": "2026-01-01T00:00:00Z"}) + "\n"
         with open(self.file, "a") as f:
             f.write("not an event\n" + jumped + jumped)  # a garbage line, a jump, and a number again
         errors = [x for x in contract.check(self.tr)[0] if x.startswith(schema.EVENTS_FILE)]
@@ -3063,6 +3063,39 @@ class Watch(unittest.TestCase):
         lines = again.poll(now)
         self.assertEqual(len(lines), 1)
         self.assertIn("W-2: A note", lines[0])
+
+    def test_lines_that_are_no_event_are_skipped_by_every_reader_and_reported_by_check(self):
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        file = self.root / schema.EVENTS_FILE
+        n = len(file.read_bytes().splitlines())
+        odd = [{"seq": n + 1}, {"seq": n + 2, "kind": "nope", "refs": [], "text": "x", "at": "2026-01-01T00:00:00Z"},
+               {"seq": n + 3, "kind": "note"}, {"seq": n + 4, "kind": "note", "refs": [], "text": "x", "at": "x"}]
+        with file.open("a") as f:
+            f.write("".join(json.dumps(e) + "\n" for e in odd))
+        with store.locked():
+            model.append_event(model.Tracker(self.root), "note", "After the odd lines", ["W-2"])
+        self.assertIn("After the odd lines", run(*self.t, "history"))
+        self.assertIn("After the odd lines", json.dumps(data(self.s)))
+        self.assertIn("W-2: After the odd lines", "".join(w.poll(now)))
+        said = run(*self.t, "check", code=1)
+        for k in range(1, 5):
+            self.assertIn(f"{schema.EVENTS_FILE}:{n + k}: not an event", said)
+
+    def test_a_watch_sees_new_events_after_the_event_file_got_shorter(self):
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        file = self.root / schema.EVENTS_FILE
+        backup = file.read_bytes()
+        for text in ("One", "Two"):
+            with store.locked():
+                model.append_event(model.Tracker(self.root), "note", text, ["W-2"])
+        w.poll(now)
+        file.write_bytes(backup)  # restored from a backup: the watch has seen past its end
+        self.assertEqual(w.poll(now), [])
+        with store.locked():
+            model.append_event(model.Tracker(self.root), "note", "After the restore", ["W-2"])
+        self.assertIn("W-2: After the restore", "".join(w.poll(now)))
 
     def test_the_watch_counts_commits_from_the_event(self):
         commits = {"kind": "commits", "refs": ["W-1"], "text": "Commits on feat/W-1: a1 one", "count": 11}

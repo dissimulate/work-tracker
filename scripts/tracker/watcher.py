@@ -381,8 +381,13 @@ class Watcher:
         if force or self.changed and now - self.changed >= SETTLE_S:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
+            # An event file shorter than the watch has seen (restored from a backup) numbers its new events again.
+            # ponytail: what it holds at this look counts as seen, one written since the restore too; keep a hash of
+            # the last event seen to tell a restore apart if that is ever missed.
+            self.st["seq"] = min(self.st["seq"], last_seq(tr))
             logged = read_events(tr, self.st["seq"])
-            self.st["seq"] = logged[-1]["seq"] if logged else self.st["seq"]
+            if logged:
+                self.st["seq"] = logged[-1]["seq"]
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged)
             self.st["snapshot"] = new
         events += self.agents(tr, now)

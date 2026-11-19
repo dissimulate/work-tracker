@@ -831,21 +831,31 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
 
 
 def event_of(line: bytes) -> dict | None:
-    """A line of the event file as its event; None for a line that is none, such as a half-written last line."""
+    """A line of the event file as its event; None for a line that is none, such as a half-written last line: `check`
+    reports it and every reader skips it. An event is a JSON object with the fields every reader reads: an int `seq`,
+    a `kind` of EVENTS, a list of `refs`, a `text`, and its time (`at`) or, for a legacy event, its `day`."""
     try:
         e = json.loads(line)
     except ValueError:
         return None
-    return e if isinstance(e, dict) and isinstance(e.get("seq"), int) else None
+    if not isinstance(e, dict):
+        return None
+    timed = isinstance(e["day"], str) if "day" in e else utc_seconds(e.get("at")) is not None
+    whole = isinstance(e.get("seq"), int) and e.get("kind") in EVENTS and isinstance(e.get("refs"), list)
+    return e if whole and timed and isinstance(e.get("text"), str) else None
+
+
+def event_lines(tr: Tracker) -> list[dict | None]:
+    """Each line of the event file, as its event or None (`event_of`)."""
+    try:
+        return [event_of(line) for line in (tr.root / EVENTS_FILE).read_bytes().splitlines()]
+    except FileNotFoundError:
+        return []
 
 
 def read_events(tr: Tracker, after: int = 0) -> list[dict]:
     """The events numbered past `after`, oldest first; a line that is no event is left out."""
-    try:
-        lines = (tr.root / EVENTS_FILE).read_bytes().splitlines()
-    except FileNotFoundError:
-        return []
-    return [e for line in lines if (e := event_of(line)) and e["seq"] > after]
+    return [e for e in event_lines(tr) if e and e["seq"] > after]
 
 
 def last_seq(tr: Tracker) -> int:
