@@ -351,7 +351,7 @@ class Watcher:
             self.sig = files_hash(tr.data_files())
             self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
-            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now)[0], now)  # each stuck item, once
+            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now), now)  # each stuck item, once
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
@@ -403,15 +403,22 @@ class Watcher:
             logged = read_events(tr, self.st["seq"])
             if logged:
                 self.st["seq"] = logged[-1]["seq"]
-            events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role, self.sid)
+            moved = ticket_events(self.st.get("snapshot", {}), new)
+            settled = True
+            events += log_events(logged, tr, self.role, self.sid)
             self.st["snapshot"] = new
-        events += self.agents(tr, now)
-        stuck, about = self.stuck(tr, now)
-        # A move that turned stuck at this look is its item's stuck line to say (`ticket_events` knows only the last
-        # move it saw, and one stuck at once never showed its move before)
-        facts = self.st.get("snapshot", {}).get("tickets", {})
-        events = [e for e in events if not (e.kind == "ticket" and e.key in about and facts[e.key].get("stuck_from")
-                                            and e.text == f"move: {facts[e.key]['move']}")] + stuck
+        else:
+            moved, settled = [], False
+        agents = self.agents(tr, now)
+        stuck = self.stuck(tr, now)
+        if settled:
+            # A move that turned stuck is its item's stuck line to say, when that line was shown since the last
+            # snapshot: the files settle a few looks after the line, and `ticket_events` knows only the last move it
+            # saw, which for one stuck at once is not the move it turned stuck from.
+            about, facts = set(self.st.pop("stuck_about", [])), new["tickets"]
+            events += [e for e in moved if not (e.key in about and facts.get(e.key, {}).get("stuck_from")
+                                                and e.text == f"move: {facts[e.key]['move']}")]
+        events += agents + stuck
         named = {e.key for e in events}
         for sid, a in self.st.get("agents", {}).items():
             if named & set(a["on"]):
@@ -495,17 +502,17 @@ class Watcher:
         self.st.update(agents=agents, shared=shared)
         return out
 
-    def stuck(self, tr: Tracker, now: float) -> tuple[list[Event], set[str]]:
+    def stuck(self, tr: Tracker, now: float) -> list[Event]:
         """A line for each open item that is stuck (`items_of`, with the clock at each look and the log read only when
         it changed), said once each time it turns stuck, and in a new watch's first lines: its key stays in the state
         while it is stuck, so one that comes back, or turns stuck anew, is said again.
-        With them, the tickets those lines are about. Nothing is written to the tracker. A wait whose session the
-        agent line already shows waiting is that line's to say, when `only` keeps agent lines, and the watch's own
-        session's waits are not news to it."""
+        The tickets of the lines `only` keeps wait in the state for `batch`. Nothing is written to the tracker. A
+        wait whose session the agent line already shows waiting is that line's to say, when `only` keeps agent lines,
+        and the watch's own session's waits are not news to it."""
         items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]
         told, agents = set(self.st.get("stuck", [])), self.st.get("agents", {})
         asks_shown = self.wanted(Event("agent", "", True, ""))
-        out, about = [], set()
+        out, about = [], set(self.st.get("stuck_about", []))
         for i in items:
             if not i.stuck or i.key in told:
                 continue
@@ -516,9 +523,11 @@ class Watcher:
                 else:
                     name = i.refs[0] if i.refs else ""
                 out.append(Event("stuck", f"stuck {name}".strip(), True, i.what))  # a line of its own
-                about.update(i.refs)
+                if self.wanted(out[-1]):
+                    about.update(i.refs)
         self.st["stuck"] = sorted(told & {i.key for i in items if i.stuck})  # stuck again later: said again
-        return out, about
+        self.st["stuck_about"] = sorted(about)
+        return out
 
     def run(self, once: bool) -> None:
         """A session's watch stops when the user ends it (/work-tracker:watch stop)."""

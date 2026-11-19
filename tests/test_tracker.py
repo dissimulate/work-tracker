@@ -3564,13 +3564,26 @@ class Watch(unittest.TestCase):
     def test_a_move_that_turns_stuck_at_once_is_said_by_the_stuck_line_alone(self):
         self.coordinator()
         run(*self.t, "set", "W-1", "status=in-progress")  # under way, no session on it
-        w, now = self.watcher(), time.time()
+        for settle in (0, 5):  # the files settle at the look of the stuck line, or a few looks after it
+            with self.subTest(settle=settle), mock.patch.object(watcher, "SETTLE_S", settle):
+                w, now = self.watcher(), time.time()
+                w.claim(now)
+                w.poll(now)
+                run(*self.t, "submit", "W-1", "--what", "plan")  # the coordinator's move is never seen: stuck at once
+                lines = [x for s in (1, 3, 7, 9, 20) for x in w.poll(now + s)]
+                self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
+                self.assertEqual([x for x in lines if "move:" in x], [], lines)
+                run(*self.t, "review", "W-1", "--what", "plan", "--verdict", "pass")
+
+    def test_a_watch_of_ticket_lines_alone_keeps_a_move_that_turns_stuck(self):
+        self.coordinator()
+        run(*self.t, "set", "W-1", "status=in-progress")
+        w, now = watcher.Watcher(model.Tracker(self.root), only=frozenset({"ticket"})), time.time()
         w.claim(now)
         w.poll(now)
-        run(*self.t, "submit", "W-1", "--what", "plan")  # the coordinator's move is never seen: stuck at once
-        lines = w.poll(now + 1)
-        self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
-        self.assertEqual([x for x in lines if "move:" in x], [], lines)
+        run(*self.t, "submit", "W-1", "--what", "plan")
+        lines = [x for s in (1, 3) for x in w.poll(now + s)]  # no stuck line is shown: the move line says it
+        self.assertEqual(len([x for x in lines if "move: human" in x and "stuck with coordinator" in x]), 1, lines)
 
     def test_a_deadline_passing_is_seen_without_a_read(self):
         w, now = self.watcher(), time.time()
@@ -3671,7 +3684,7 @@ class Watch(unittest.TestCase):
         looks = [[item], [dataclasses.replace(item, stuck=False)], [item]]  # passed on, then left again
         w = self.watcher()
         with mock.patch.object(watcher, "items_of", side_effect=looks):
-            said = [len(w.stuck(model.Tracker(self.root), time.time())[0]) for _ in looks]
+            said = [len(w.stuck(model.Tracker(self.root), time.time())) for _ in looks]
         self.assertEqual(said, [1, 0, 1])
 
     def opened(self, *flags: str) -> list[dict]:
@@ -5163,7 +5176,7 @@ class OpenItems(unittest.TestCase):
     def test_a_pid_that_is_no_whole_number_runs_no_watch(self):
         path = watcher.state_path(self.s, "old")
         self.addCleanup(path.unlink, True)
-        for bad in ("true", '"1"', "1.9", "1", "1e300", "1" + "0" * 40):  # as pid 1, which always runs, or too large
+        for bad in ("true", '"1"', "1.9", "1e300", "1" + "0" * 40):  # as pid 1, which mostly runs, or too large
             with self.subTest(pid=bad):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f'{{"who": "session old", "sid": "old", "pid": {bad}, "role": "coordinator"}}')

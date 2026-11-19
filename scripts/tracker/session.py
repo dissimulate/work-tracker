@@ -527,9 +527,9 @@ def watch_running(st: dict) -> bool:
 
 def state_pid(st: dict) -> int:
     """A watch state's process id; 0 for none, and for a damaged one: only a whole number a process can have counts
-    (`true`, "1" and 1.9 would all read as 1, which always runs)."""
+    (`true`, "1" and 1.9 would all read as 1, which mostly runs)."""
     pid = st.get("pid")
-    return pid if type(pid) is int and 1 < pid < 2 ** 32 else 0
+    return pid if type(pid) is int and 0 < pid < 2 ** 32 else 0
 
 
 def coordinated(tr: Tracker) -> bool:
