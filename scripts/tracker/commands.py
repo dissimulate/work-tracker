@@ -360,17 +360,15 @@ def who_settled(by: str | None, source: str | None, cite: str | None = None) -> 
     if by and source:
         die("--by and --source: a human decided or a source did, not both")
     via = entered_via()
-    if cite is not None:
-        if via != "agent":
-            die("--cite quotes the human's message that an agent session kept: here there is none; leave --cite out")
+    if cite is not None:  # `cmd_decide` refused it outside an agent session
         if not by:
             die("--cite quotes the human who decided: it goes with --by <name>"
                 + (", in place of --source" if source else ""))
         word = cited_word(session_id(), cite)
         if not word:
-            die(f'--cite "{short(cite, 40)}": no message the human sent in this session (the last {WORDS_KEPT}) '
-                "holds it. Quote a few words from the start of what they said, or leave --cite out to enter the "
-                "resolution uncited")
+            die(f'--cite "{short(cite, 40)}": no message of the human\'s that this session kept (its last '
+                f"{WORDS_KEPT}) holds it. Quote a few words from the start of what they said, or leave --cite out to "
+                "enter the resolution uncited")
         return f"{by}, entered by an agent on their word", {"decided": "human", "by": by, "cited": True, "word": word}
     if via == "view":
         by = by or "human"
@@ -797,6 +795,8 @@ def cmd_decide(args):
     tr = resolve(args)
     if (args.by or args.source) and not args.resolve:
         die("--by and --source say who settled it: pass them with --resolve")
+    if args.cite is not None and entered_via() != "agent":
+        die("--cite quotes the human's message that an agent session kept: here there is none; leave --cite out")
     if args.cite is not None and not args.resolve:
         die("--cite quotes the human who settled it: pass it with --resolve and --by")
     settled = who_settled(args.by, args.source, args.cite) if args.resolve else ("", {})
@@ -1198,7 +1198,7 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    words = load_session(sid).get("words")  # the human's words are the session's, on any tracker
+    words = load_session(sid).get("words")  # the words a session kept go with it to the tracker it moves to
     unlink_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None, words=words)
     m, found = match_pr(match_cwd(cwd, sid), cwd)

@@ -5225,6 +5225,12 @@ class CitedWord(unittest.TestCase):
             out = run(*self.t, "decide", "D-1", "--note", "n", "--cite", "postgres", code=2)
         self.assertIn("--cite", out)
         self.assertEqual(self.unchanged(), before)
+        for env in ({}, {**self.agent, "TRACKER_VIA": "view"}):  # no agent: no flag added makes it work
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                out = run(*self.t, "decide", "D-1", "--note", "n", "--cite", "postgres", code=2)
+                self.assertIn("leave --cite out", out)
+                self.assertNotIn("--resolve", out)
+        self.assertEqual(self.unchanged(), before)
 
     def test_only_the_last_five_are_kept_and_only_the_excerpt(self):
         long = "Postgres " + "x" * 491
