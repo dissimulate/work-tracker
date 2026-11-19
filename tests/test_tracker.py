@@ -3011,6 +3011,27 @@ class SessionNews(TwoSessions):
         hook("prompt", c, then, env=no_gh(), prompt="go on")
         self.assertEqual(session.load_session(c)["cwd"], str(then))
 
+    def test_a_session_on_no_ticket_in_the_tracker_folder_is_nudged_for_its_branch(self):
+        b = repo("explore")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):
+            run("start", self.s, cwd=b)  # B: on the tracker, on no ticket, in its own checkout
+        hook("prompt", self.b, b, env=no_gh(), prompt="go on")
+        hook("stop", self.b, b, env=no_gh(), stop_hook_active=False)
+        commit(b, "untracked work")
+        told = said(hook("prompt", self.b, store.HOME / self.s, env=no_gh(), prompt="more"))  # after a `cd` there
+        self.assertIn("No ticket in progress on explore", told)
+
+    def test_a_turn_that_ends_in_the_tracker_folder_logs_the_branchs_commits(self):
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):
+            run("start", self.s, "--on", "T-1", cwd=self.work)  # its focus ticket matches in every folder
+        hook("prompt", self.b, self.work, env=no_gh(), prompt="go on")
+        hook("stop", self.b, self.work, env=no_gh(), stop_hook_active=False)
+        commit(self.work, "terminal work")
+        hook("stop", self.b, store.HOME / self.s, env=no_gh(), stop_hook_active=False)  # after a `cd` there
+        logged = [e["text"] for e in model.read_events(model.tracker_at(self.s)) if e["kind"] == "commits"]
+        self.assertEqual(len(logged), 1, logged)
+        self.assertIn("terminal work", logged[0])
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE
