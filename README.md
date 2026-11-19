@@ -73,7 +73,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 |---|---|
 | `README.md` | the work: Context, Goal, Scope; optionally Instructions, this work's standing rules for the agent, which every brief prints |
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
-| `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution |
+| `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution (the day, who decided and how it was entered, and the answer) |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
 | `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. Only the tool writes it |
 | `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show, except what `tracker find` finds |
@@ -82,6 +82,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 
 `tracker rules` prints the full format: every key and what writes it, and each rule below in full.
 
+- **Who decided.** A decision's resolution says who settled it and how it was entered: you in the view; you through an agent, which names you (`--by`); an agent that names the source that already answered it (`--source`: the spec, a settled decision, the code); or, from a terminal with no session, unattributed, never taken for a person. An agent that resolves a decision must name one of the two. Who entered it comes from the session's environment, so it guards against mistakes, not against an agent that sets out to deceive.
 - **Actions** are tasks for you that the agent cannot or should not do: talk to a person, get an access or a sign-off. The agent asks before it adds one, and closes it when you say it is done or no longer needed. An action can have a due day, and can block tickets as an open decision does. The agent asks you about one past its due day, or with none, open longer than a week.
 - **Priority** is a number from 0 (most urgent) to 4 (least), shown as P0 to P4. **Size** is a number from 1 (XS) to 5 (XL), as an amount of work: XS an hour or two, S about a day, M a few days, L about a week, XL more. The scales are the same for every issue tracker, so values compare, sort and add up across them.
 - **Issue fields.** A ticket with an `Issue:` link takes its issue's priority, estimate (as its size), due day and creation time. The tracker never calls an issue tracker: the agent reads the issue with its own tool for it (such as an MCP server you have signed in to), maps each value by what it means on that issue tracker's scale (High is 1; 5 Fibonacci points are L), and records it with `tracker issue`. With no such tool, the fields stay empty.

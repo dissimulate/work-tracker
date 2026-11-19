@@ -11,7 +11,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .system import ROOT, die, open_with_system
+from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
@@ -338,13 +338,45 @@ def cmd_new(args):
     print(f"created {args.id}: {t.path}")
 
 
-def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
-    who = f" ({by})" if by else ""
+SAY_WHO = ('say who decided: --by <name> when a human told you, or --source "<where>" when the spec, a settled '
+           "decision or the code already answers it")
+
+
+def who_settled(by: str | None, source: str | None) -> tuple[str, dict]:
+    """Who settled a decision and how it was entered (R9), from `--by` or `--source` and `entered_via`: the `<who>` of
+    its resolution line and its `decision.decided` event's data. In the view, a human (`by`, else "human"); through an
+    agent, the human it names (not cited yet) or the source it names, and one of them it must name; at a terminal,
+    unattributed, with what it names kept as said. Dies on flags that cannot say it: the caller writes nothing
+    before."""
+    by, source = (" ".join((x or "").split()) for x in (by, source))  # one line: the resolution line holds it
+    if by and source:
+        die("--by and --source: a human decided or a source did, not both")
+    if any(bad in x for x in (by, source) for bad in (": ", ")")):
+        # model.answer reads the answer from the first ": ", after `(<who>)`
+        die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
+    via = entered_via()
+    if via == "view":
+        by = by or "human"
+        return f"{by}, in the view", {"decided": "human", "by": by}
+    if via == "agent":
+        if by:
+            return f"{by}, entered by an agent", {"decided": "human", "by": by, "cited": False}
+        if source:
+            return f"from {source}, entered by an agent", {"decided": "source", "source": source}
+        die(SAY_WHO)
+    said = f", said {by}" if by else f", from {source}" if source else ""
+    return f"unattributed{said}", {"decided": "unattributed", **({"by": by} if by else {}),
+                                   **({"source": source} if source else {})}
+
+
+def resolve_decision(tr: Tracker, rec: Record, answer: str, settled: tuple[str, dict]) -> str:
+    """Close a decision with its answer and who settled it (`who_settled`)."""
+    who, data = settled
     rec.change(rec.status_update("closed"))
-    append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=who,
+    append_to_section(rec, "Resolution", f"{today()} ({who}): {answer.strip()}")
+    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=f" ({who})",
                                                                answer=short(answer)),
-                 [rec.id, *tr.touched_by(rec)], decision=rec.id)
+                 [rec.id, *tr.touched_by(rec)], decision=rec.id, **data)
     return f"{rec.id} closed"
 
 
@@ -737,6 +769,9 @@ def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str
 
 def cmd_decide(args):
     tr = resolve(args)
+    if (args.by or args.source) and not args.resolve:
+        die("--by and --source say who settled it: pass them with --resolve")
+    settled = who_settled(args.by, args.source) if args.resolve else ("", {})
     refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
@@ -760,7 +795,7 @@ def cmd_decide(args):
                          decision=d.id)
         if msg := blocks_line(tr, d, blocks):
             print(msg)
-        print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
+        print(resolve_decision(tr, d, args.resolve, settled) if args.resolve else f"{d.id} updated")
         return
     if unrefs:
         die("--unref changes an existing decision; pass its D-id")
@@ -772,7 +807,7 @@ def cmd_decide(args):
     if args.note:
         append_to_section(d, "Notes", f"- {dated(args.note)}")
     if args.resolve:
-        resolve_decision(tr, d, args.resolve, args.by)
+        resolve_decision(tr, d, args.resolve, settled)
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)

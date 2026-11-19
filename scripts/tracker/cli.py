@@ -161,7 +161,9 @@ def build_parser():
     sp.add_argument("--recommend", metavar="CHOICE", help="the choice you recommend; added when it is new")
     sp.add_argument("--note", help="a fact, proposal or finding; a dated line in ## Notes")
     sp.add_argument("--resolve", help="the answer; closes the decision")
-    sp.add_argument("--by", help="who decided")
+    sp.add_argument("--by", metavar="NAME", help="with --resolve: the human who decided")
+    sp.add_argument("--source", metavar="WHERE", help="with --resolve: where the answer already is, when no human "
+                                                      "decided it (the spec, a settled decision's id, a file)")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")
     sp.add_argument("--unref", **IDS, help="ticket ids to drop from refs")
     sp.add_argument("--blocks", **IDS, help="ticket ids that cannot proceed until it is settled (adds it to their "

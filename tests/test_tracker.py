@@ -673,7 +673,7 @@ class Flow(unittest.TestCase):
         t2 = model.tracker_at(s).lookup("T-2")
         self.assertEqual((t2.get("next"), t2.carry_forward), ("Auth middleware", ["GET /users is public"]))
         self.assertEqual(data(s)["records"]["T-2"]["line"], {"label": "next", "text": "Auth middleware"})
-        self.assertIn("Decided D-01 Auth scheme (me): JWT", log)
+        self.assertIn("Decided D-01 Auth scheme (unattributed, said me): JWT", log)  # a terminal: never a human
 
 
 class FileSafety(unittest.TestCase):
@@ -3910,6 +3910,125 @@ class DecisionOptions(unittest.TestCase):
         self.assertIn("## Options", d["body"])
         self.assertEqual(markdown.headings(model.tracker_at(s).lookup("D-01").body),
                          ["Question", "Options", "Notes", "Resolution"])
+
+
+AGENT, VIEW, TERMINAL = {"TRACKER_SESSION": "s1"}, {"TRACKER_VIA": "view"}, {}
+
+
+class WhoDecided(unittest.TestCase):
+    """A resolution records who decided and how it was entered (R9): a human in the view, a human through an agent, an
+    agent from a source it names, or a terminal, which is never taken for a human."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Who")
+        run(*self.t, "decide", "Auth scheme")
+
+    def decide(self, env: dict, *args: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, env):
+            return run(*self.t, "decide", *args, code=code)
+
+    def resolved(self, env: dict, *flags: str) -> tuple[str, dict]:
+        """D-01 resolved with JWT: its resolution line, and the event that settled it."""
+        self.decide(env, "D-1", "--resolve", "JWT", *flags)
+        tr = model.tracker_at(self.s)
+        d = tr.lookup("D-01")
+        self.assertEqual(model.answer(d), "JWT")  # the answer reads back without who
+        return model.resolution(d), model.read_events(tr)[-1]
+
+    def unchanged(self):
+        """The tracker's files and the agent session's file, as they are now."""
+        return tree(store.HOME / self.s), session.load_session("s1")
+
+    def test_a_human_in_the_view(self):
+        line, e = self.resolved(VIEW, "--by", "user")
+        self.assertEqual(line, f"{schema.today()} (user, in the view): JWT")
+        self.assertEqual((e["kind"], e["decided"], e["by"], e["via"]), ("decision.decided", "human", "user", "view"))
+        self.assertIn("Decided D-01 Auth scheme (user, in the view): JWT", e["text"])
+
+    def test_the_view_with_no_name_is_a_human(self):
+        line, e = self.resolved(VIEW)
+        self.assertEqual(line, f"{schema.today()} (human, in the view): JWT")
+        self.assertEqual((e["decided"], e["by"]), ("human", "human"))
+
+    def test_a_human_through_an_agent(self):
+        line, e = self.resolved(AGENT, "--by", "Ryan")
+        self.assertEqual(line, f"{schema.today()} (Ryan, entered by an agent): JWT")
+        self.assertEqual((e["decided"], e["by"], e["cited"], e["session"], e["via"]),
+                         ("human", "Ryan", False, "s1", "agent"))
+
+    def test_an_agent_from_a_source(self):
+        line, e = self.resolved(AGENT, "--source", "spec section 4")
+        self.assertEqual(line, f"{schema.today()} (from spec section 4, entered by an agent): JWT")
+        self.assertEqual((e["decided"], e["source"]), ("source", "spec section 4"))
+        self.assertNotIn("by", e)
+        self.assertNotIn("cited", e)
+
+    def test_a_terminal_is_never_a_human(self):
+        line, e = self.resolved(TERMINAL, "--by", "Ryan")
+        self.assertEqual(line, f"{schema.today()} (unattributed, said Ryan): JWT")
+        self.assertEqual((e["decided"], e["by"], e["via"]), ("unattributed", "Ryan", "terminal"))
+        run(*self.t, "decide", "Queue")
+        self.decide(TERMINAL, "D-2", "--resolve", "SQS")
+        tr = model.tracker_at(self.s)
+        self.assertEqual(model.resolution(tr.lookup("D-02")), f"{schema.today()} (unattributed): SQS")
+        e = model.read_events(tr)[-1]
+        self.assertEqual(e["decided"], "unattributed")
+        self.assertNotIn("by", e)
+
+    def test_a_terminal_keeps_the_source_it_names(self):
+        line, e = self.resolved(TERMINAL, "--source", "the spec")
+        self.assertEqual(line, f"{schema.today()} (unattributed, from the spec): JWT")
+        self.assertEqual((e["decided"], e["source"]), ("unattributed", "the spec"))
+
+    def test_an_agent_must_say_who(self):
+        before = self.unchanged()
+        out = self.decide(AGENT, "D-1", "--resolve", "JWT", code=2)
+        self.assertIn('say who decided: --by <name> when a human told you, or --source "<where>" when the spec, a '
+                      "settled decision or the code already answers it", out)
+        self.assertEqual(self.unchanged(), before)
+        self.assertFalse(model.tracker_at(self.s).lookup("D-01").closed)
+
+    def test_by_and_source_together_are_refused(self):
+        before = self.unchanged()
+        for env in (AGENT, VIEW, TERMINAL):
+            with self.subTest(env=env):
+                out = self.decide(env, "D-1", "--resolve", "JWT", "--by", "Ryan", "--source", "spec", code=2)
+                self.assertIn("--by and --source: a human decided or a source did, not both", out)
+        self.assertEqual(self.unchanged(), before)
+
+    def test_who_needs_a_resolve(self):
+        before = self.unchanged()
+        for flag in ("--by", "--source"):
+            with self.subTest(flag=flag):
+                out = self.decide(AGENT, "D-1", "--note", "n", flag, "x", code=2)
+                self.assertIn("--by and --source say who settled it: pass them with --resolve", out)
+        self.assertEqual(self.unchanged(), before)
+
+    def test_who_cannot_break_the_resolution_line(self):
+        before = self.unchanged()
+        for flag, bad in (("--source", "spec.md: R7"), ("--by", "Ryan (PM)"), ("--by", "Ryan:\nPM")):
+            with self.subTest(bad=bad):
+                self.assertIn('": " or ")"', self.decide(AGENT, "D-1", "--resolve", "JWT", flag, bad, code=2))
+        self.assertEqual(self.unchanged(), before)
+        line, e = self.resolved(AGENT, "--source", "spec.md\n  R7")  # one line
+        self.assertEqual(line, f"{schema.today()} (from spec.md R7, entered by an agent): JWT")
+        self.assertEqual(e["source"], "spec.md R7")
+
+    def test_a_refused_resolve_changes_nothing(self):
+        run(*self.t, "new", "T-1", "--title", "One")
+        before = self.unchanged()
+        self.decide(AGENT, "D-1", "--note", "n", "--option", "JWT", "--owner", "Sam", "--refs", "T-1",
+                    "--question", "Which?", "--resolve", "x", code=2)
+        self.assertEqual(self.unchanged(), before)
+
+    def test_decided_on_the_spot_follows_the_same_rules(self):
+        before = self.unchanged()
+        self.decide(AGENT, "Queue", "--resolve", "SQS", code=2)
+        self.assertEqual(self.unchanged(), before)
+        self.assertIsNone(model.tracker_at(self.s).lookup("D-02"))
+        self.decide(AGENT, "Queue", "--resolve", "SQS", "--by", "Ryan")
+        self.assertEqual(model.resolution(model.tracker_at(self.s).lookup("D-02")),
+                         f"{schema.today()} (Ryan, entered by an agent): SQS")
 
 
 if __name__ == "__main__":

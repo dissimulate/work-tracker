@@ -55,7 +55,7 @@ Record each fact at the moment it forms, in its home:
 - **Decisions** are *direction* choices only (`tracker rules` gives the bar); a choice inside one ticket's build goes in its Plan or `next`. Record each one when it is raised or settled, in chat, in an answered question or in review:
   - raised: `tracker decide "<title>" --refs <ids> --question "<what and why it matters>" --option "<choice> — <what it costs>" --option "..." --recommend "<choice>" [--owner <who>]`; it stops tickets: `--blocks <ids>`. Each `--option` is one choice the user can pick as the answer
   - new choice: `tracker decide D-<n> --option "..."` (`--recommend "<choice>"` marks the one you recommend); new fact or proposal: `tracker decide D-<n> --note "..."`
-  - settled: `tracker decide D-<n> --resolve "<answer>" --by <who>`; settled on the spot: `tracker decide "<title>" --resolve "..." --by <who>`
+  - settled: `tracker decide D-<n> --resolve "<answer>" --by <who decided>`, or `--source "<where>"` in place of `--by` when the spec, a settled decision or the code already answered it; settled on the spot: `tracker decide "<title>" --resolve "..." --by <who decided>`
 - **Actions** are few and only the user's: never your own next step (`next`), a wait the PR shows (a review, checks) or a choice (a decision). Before you add one, check the open ones in the brief or `tracker actions`:
   - added: `tracker act "<what to do, with whom>" --refs <ids>`, with `--due YYYY-MM-DD` only when the user gives a day; it stops tickets: `--blocks <ids>`
   - a fact: `tracker act A-<n> --note "..."`, one fact per note (the context when you add it, the reply when it comes); a new text: `--title "..."`
