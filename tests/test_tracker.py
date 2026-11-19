@@ -3561,6 +3561,14 @@ class Watch(unittest.TestCase):
         self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
         self.assertEqual(w.poll(now + 41), [])  # said once
 
+    def test_a_damaged_time_in_its_own_state_stops_no_watch(self):
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        w.release(now)
+        path = watcher.state_path(self.s, "")
+        store.write_json(path, {**json.loads(path.read_text()), "at": "x"})
+        self.assertTrue(self.watcher().claim(now + 1))  # as a new watch: its first lines
+
     def test_a_deadline_passing_is_seen_without_a_read(self):
         w, now = self.watcher(), time.time()
         w.claim(now)
@@ -4902,6 +4910,16 @@ class HumanWaits(unittest.TestCase):
         self.assertEqual(self.waits(), [])
         self.assertNotIn("waits", session.load_session(self.sid))
 
+    def test_a_wait_ends_in_the_tracker_it_started_in(self):
+        other, _ = new_tracker("Elsewhere")
+        hook("waiting", self.sid, self.work, tool_name="Bash")  # for a command that moves the session
+        session.save_session(self.sid, tracker=other)
+        hook("resumed", self.sid, self.work, tool_name="Bash")
+        start, end = self.waits()
+        self.assertEqual((end["kind"], end["of"]), ("human.wait.end", start["seq"]))
+        elsewhere = model.read_events(model.Tracker(store.HOME / other))
+        self.assertEqual([e for e in elsewhere if e["kind"] in schema.QUIET_KINDS], [])
+
     def test_a_refused_tracker_gets_no_wait_event(self):
         for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
             with self.subTest(refuse.__name__):
@@ -5160,6 +5178,7 @@ class OpenItems(unittest.TestCase):
                 self.assertFalse(session.coordinated(model.tracker_at(self.s)))
         self.assertFalse(session.is_time(True))
         self.assertEqual(session.state_pid({"pid": os.getpid()}), os.getpid())
+        self.assertEqual(session.state_pid({"pid": 1}), 1)  # a watch can be a container's first process
 
     def test_a_running_watch_with_a_damaged_start_names_no_time(self):
         self.coordinator()

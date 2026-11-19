@@ -776,7 +776,7 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
         entry = load_session(sid)
         if not entry.get("tracker"):
             return
-        waits = dict(entry.get("waits") or {})  # asker: [the seq of its human.wait (0: none written), its epoch]
+        waits = dict(entry.get("waits") or {})  # asker: [its human.wait's seq (0: none written), epoch, tracker]
         if asker is None:
             starting, ending = [], list(waits)
         elif status == "waiting":
@@ -803,28 +803,31 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
 def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: list[str], tool: str,
               failed: str) -> None:
     """Log the waits on a human that end and start, on the session's tickets, and keep `waits` to match: a wait
-    whose start was written ends with `of` its seq. A tracker the format guard refuses gets no event, and a wait
-    started there keeps seq 0, so no end is written for it. It runs at every permission, so it reads none of the
-    event file but its end (`model.last_seq` numbers the event)."""
-    tr, now = tracker_at(entry["tracker"]), time.time()
-    refs = agent_tickets(tr, entry.get("cwd", ""), sid) if tr else []
+    whose start was written ends with `of` its seq, in the tracker it started in (the command it asked about may
+    have moved the session to another, where that seq is another event's). A tracker the format guard refuses gets no
+    event, and a wait started there keeps seq 0, so no end is written for it. It runs at every permission, so it reads
+    none of the event file but its end (`model.last_seq` numbers the event)."""
+    now = time.time()
 
-    def logged(kind: str, text: str, **data) -> int:
+    def logged(slug: str, kind: str, text: str, **data) -> int:
+        tr = tracker_at(slug)
+        if not tr:
+            return 0
         try:
-            return append_event(tr, kind, text, refs, **data)["seq"] if tr else 0
+            return append_event(tr, kind, text, agent_tickets(tr, entry.get("cwd", ""), sid), **data)["seq"]
         except OtherFormat:
             return 0
 
     for who in ending:
-        seq, at = waits.pop(who)
+        seq, at, slug = waits.pop(who)
         seconds = max(0, int(now - at))
         error = {"failed": short(failed)} if failed else {}
         if seq:
-            logged("human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
+            logged(slug, "human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
                    asker=who, of=seq, seconds=seconds, **error)
     for who in starting:
-        waits[who] = [logged("human.wait", "Waiting on a human" + (f": {tool}" if tool else ""), asker=who, why=tool),
-                      now]
+        text = "Waiting on a human" + (f": {tool}" if tool else "")
+        waits[who] = [logged(entry["tracker"], "human.wait", text, asker=who, why=tool), now, entry["tracker"]]
 
 
 @dataclass

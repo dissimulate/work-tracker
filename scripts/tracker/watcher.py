@@ -332,7 +332,8 @@ class Watcher:
             if pid and pid != os.getpid() and alive(pid):
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
-            again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
+            at = st.get("at")  # a damaged one is of no watch to catch up from
+            again = type(at) in (int, float) and now - at < CATCH_UP_S and "snapshot" in st
             # Since when this watch has watched: a session's that ran on until now, in the same role, keeps its start.
             # Saved before the first lines, whose moves read it for a coordinator (`session.coordinator_since`).
             kept = again and self.sid and watch_running(st) and str(st.get("role") or "") == self.role
