@@ -2997,6 +2997,12 @@ class SessionNews(TwoSessions):
         self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
         self.assertIn("T-1 move now: you", self.message())
 
+    def test_a_compaction_in_the_tracker_folder_keeps_the_sessions_ticket(self):
+        self.message()  # its folder is kept
+        brief = said(hook("session-start", self.a, store.HOME / self.s, env=no_gh(), source="compact"))
+        self.assertIn("T-1 in-progress", brief)
+        self.assertNotIn("on no ticket", brief)
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE

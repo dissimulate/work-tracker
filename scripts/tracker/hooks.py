@@ -114,6 +114,7 @@ def hook_session_start(data: dict) -> None:
     cwd, sid = where(data)
     source = data.get("source")
     kept = take_over(sid, cwd) if source == "clear" and sid else ""  # /clear keeps the session's tracker
+    cwd = work_dir(cwd)  # a compaction after a `cd` to the tracker: the folder the session works in
     m = match_cwd(cwd, sid)
     note, notice = "", f"[work-tracker] This session stays on {kept} after /clear." if kept else ""
     if not m:
