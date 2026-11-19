@@ -511,20 +511,6 @@ def other_format(root: Path) -> str:
     return ""
 
 
-# What the model does after `other_format`'s sentence until the user acts (`refusal_request`): for a newer format the
-# user reloads; for an older one that could not migrate, no reload helps, and the user fixes what `check` reports. A
-# reload or a fix may start no new session, so no SessionStart brings the brief: `tracker start` prints it.
-RELOAD_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
-                  "plugin or restart the session, then run `tracker start`, which prints the brief.")
-REPAIR_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to fix what "
-                  "`tracker check` reports, then run `tracker start`, which prints the brief.")
-
-
-def refusal_request(root: Path) -> str:
-    """The model's request for the tracker at `root`, which `other_format` refuses."""
-    return RELOAD_REQUEST if Tracker(root).schema > SCHEMA else REPAIR_REQUEST
-
-
 def refuse_other_format(root: Path) -> None:
     """Refuse a write into a tracker in another format (`other_format`): raise OtherFormat."""
     if why := other_format(root):

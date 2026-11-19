@@ -1326,7 +1326,7 @@ class NewerFormat(unittest.TestCase):
     def refusals(self) -> tuple:
         """Each way a tracker takes no write from this code, how to make it so, and what the model is asked to do: a
         newer format, and an older one that could not migrate."""
-        return (self.newer, contract.RELOAD_REQUEST), (self.unmigrated, contract.REPAIR_REQUEST)
+        return (self.newer, hooks.RELOAD_REQUEST), (self.unmigrated, hooks.REPAIR_REQUEST)
 
     def why(self, s: str) -> str:
         """The sentence every reader gets for tracker `s`: a command, a hook, a UI, `check`."""
