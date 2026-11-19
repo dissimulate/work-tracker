@@ -2990,6 +2990,13 @@ class SessionNews(TwoSessions):
         tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
         self.assertNotIn("Changed on", self.message())
 
+    def test_a_message_from_the_tracker_folder_keeps_the_baseline(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.message()
+        hook("prompt", self.a, store.HOME / self.s, env=no_gh(), prompt="go on")  # after a `cd` there
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        self.assertIn("T-1 move now: you", self.message())
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE
@@ -5032,6 +5039,12 @@ class WatchAsk(TwoSessions):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
         self.asked(self.stop(cwd=other), "T-1")
         self.assertEqual(session.load_session(self.a)["cwd"], str(other))
+
+    def test_a_stop_in_the_tracker_folder_does_not_ask_again(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        self.assertIsNone(self.stop(cwd=store.HOME / self.s))  # a `cd` there: the same session, on the same wait
+        self.assertIsNone(self.stop())
 
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")

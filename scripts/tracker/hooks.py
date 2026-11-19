@@ -196,8 +196,10 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
     the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
     asks. Then, at a turn's end (`ask`), the reminder to watch (`watch_ask`): the one time a hook holds a session
     back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`.
-    Whether it held the turn, which then goes on."""
+    Whether it held the turn, which then goes on. A cwd inside $TRACKER_HOME (a `cd` to the tracker) stands for the
+    folder the session works in (`work_dir`)."""
     cwd, sid = where(data)
+    cwd = work_dir(cwd)
     m = match_cwd(cwd, sid)
     if not m:
         return False
@@ -368,8 +370,10 @@ def hook_prompt(data: dict) -> None:
     way, the first message and every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With
     none, only work since the branch's mark brings it: at once, once per mark, then on those messages while the work
     stays. With a ticket under way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a
-    watch request first."""
+    watch request first. A cwd inside $TRACKER_HOME (a `cd` to the tracker) stands for the folder the session works in
+    (`work_dir`), as for a command."""
     cwd, sid = where(data)
+    cwd = work_dir(cwd)
     m = match_cwd(cwd, sid)
     if not m:
         return

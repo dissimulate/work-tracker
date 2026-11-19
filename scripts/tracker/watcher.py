@@ -491,6 +491,8 @@ class Watcher:
         m = match_cwd(entry.get("cwd") or work_dir(), self.sid, tr)
         # The end waits for a change of the files to settle like any other: a hand edit is written before its hook
         # counts it as the session's own (`own_edit`). With no change pending (a branch switch), it ends at once.
+        # ponytail: the wait runs from the first change seen, so an own hand edit just before an earlier change settles
+        # can still be told back once; restart the wait on each new signature if that is ever seen.
         if not settled and self.changed:
             return []
         if not m.active:
