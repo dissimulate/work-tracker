@@ -15,18 +15,20 @@ from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
-from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS,
-    LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES,
-    SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
-    parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS,
+    KINDS, LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET,
+    SCALES, SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
+    options_problems, parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
-    names, put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key,
-    tracker_at, unknown_dep, Record, Tracker)
+    names, put_section, read_events, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short,
+    sort_key, tracker_at, unknown_dep, Record, Tracker)
+from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
-    in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
-    remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
+from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, find_tracker,
+    in_repos, items_of, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
+    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
+    work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -301,7 +303,10 @@ def cmd_history(args):
     tr = resolve(args)
     if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
         die("--since takes a date: YYYY-MM-DD")
-    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last)
+    kinds = csv(args.kind)
+    if unknown := [k for k in kinds if k not in EVENTS]:
+        die(f"no event kind {', '.join(unknown)}: the kinds are {', '.join(EVENTS)}")
+    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last, kinds=kinds)
     print("\n".join(lines) if lines else "no log lines")
 
 
@@ -913,9 +918,15 @@ def problem_lines(tr: Tracker) -> list[str]:
 
 
 def cmd_check(args):
+    """The tracker's problems (`contract.check`), then the open items that are stuck (`items_of`): those are no
+    problem in its files, so neither a write's report nor a brief, which ask the agent to fix what `check` finds,
+    shows them."""
     tr = resolve(args)
     lines = problem_lines(tr)
     print("\n".join(lines) or " · ".join(["ok", *(f"{len(tr.records_of(k))} {KINDS[k].folder}" for k in KINDS)]))
+    stuck = [f"stuck: {i.what}" for i in items_of(tr) if i.stuck]
+    if stuck:
+        print("\n".join(stuck))
     sys.exit(1 if any(x.startswith("✗") for x in lines) else 0)
 
 
@@ -968,6 +979,74 @@ def issue_urls(t: Record) -> str:
     return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
 
 
+def only_tickets(r: Record) -> None:
+    """Refuse a record that is no ticket, naming the command that takes a note on it."""
+    if r.kind != "ticket":
+        die(f"{r.id} is {a_kind(r.kind)}: `tracker {KINDS[r.kind].command} {r.id} --note \"...\"`")
+
+
+def open_ticket(args) -> tuple[Tracker, Record]:
+    """The ticket a submission or review is about: refused when it is no ticket or is closed."""
+    tr, t = locate(args, args.id)
+    only_tickets(t)
+    if t.closed:
+        die(f"{t.id} is closed: a closed ticket takes no submission or review")
+    return tr, t
+
+
+def cmd_submit(args):
+    """Hand a ticket's plan or built code to its reviewer: an event on the ticket, which its move then shows."""
+    tr, t = open_ticket(args)
+    note = f": {args.note}" if args.note else ""
+    append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
+    print(f"submitted {t.id}'s {args.what}")
+
+
+def numbered(word: str, numbers: list[int]) -> str:
+    """`finding 2`, `findings 1, 3`."""
+    return f"{word}{'s' * (len(numbers) > 1)} {', '.join(map(str, numbers))}"
+
+
+def cmd_review(args):
+    """Record a review of a ticket's plan or built code, with its numbered findings, answering the submission before it
+    (`last_submission`); or, with --fixed, mark findings of the latest review fixed. Every check runs before the
+    write."""
+    if args.fixed is not None and (args.verdict or args.finding):
+        die("--fixed marks findings of the latest review fixed, and a new review takes --verdict (with --finding): "
+            "pass one or the other")
+    if args.fixed is None and not args.verdict:
+        die("give the review's --verdict pass|changes, or --fixed <numbers> to mark its findings fixed")
+    if args.verdict == "changes" and not args.finding:
+        die("a review that asks for changes lists them: one --finding per change")
+    if args.verdict == "pass" and args.finding:
+        die("a finding is a change asked for: use --verdict changes, or leave the finding out")
+    if empty := [i for i, x in enumerate(args.finding or [], 1) if not x.strip()]:
+        die(f"a finding says what to change: {numbered('finding', empty)} {'are' if len(empty) > 1 else 'is'} empty")
+    tr, t = open_ticket(args)
+    events, name = read_events(tr), HANDED[args.what].review
+    if args.fixed is not None:
+        review = last_review(events, t.id, args.what) or die(f"{t.id} has no {name} whose findings to mark fixed")
+        have = finding_numbers(review)
+        given = csv(args.fixed)
+        if not given or any(not x.isdigit() or int(x) not in have for x in given):
+            die(f"{t.id}'s latest {name} has " + (f"{numbered('finding', have)}: --fixed takes "
+                                                    f"{'those numbers' if len(have) > 1 else 'that number'}"
+                                                    if have else "no findings"))
+        fixed = list(dict.fromkeys(int(x) for x in given))
+        listed = numbered("finding", fixed)
+        append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
+                     of=review["seq"], findings=fixed)
+        print(f"marked {listed} of {t.id}'s {name} fixed")
+        return
+    findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
+    said = f"{args.verdict}, {count(len(findings), 'finding')}" if findings else args.verdict
+    listed = "; ".join(f"{f['n']}. {f['text']}" for f in findings)
+    submission = last_submission(events, t.id, args.what)
+    append_event(tr, "review", f"{t.id} {name}: {said}" + (f": {listed}" if listed else ""), [t.id], what=args.what,
+                 verdict=args.verdict, findings=findings, of=submission["seq"] if submission else 0)
+    print(f"reviewed {t.id}'s {args.what}: {said}")
+
+
 def cmd_step(args):
     """A step in one command: the ticket's next action (or its close), Carry forward and a log line; then, when the
     ticket is on the current branch, the branch's commits that the hooks have not logged are logged, its mark moves
@@ -979,8 +1058,7 @@ def cmd_step(args):
         return
     fit("next", args.next)
     tr, t = named_or_own(args)
-    if t.kind != "ticket":
-        die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")
+    only_tickets(t)
     if args.done and (args.next or args.pause):
         die("--done closes the ticket: a closed ticket has no next action, and its branch keeps no handoff. Pass "
             "--next or --pause without --done")
@@ -1060,7 +1138,7 @@ def cmd_start(args):
     the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
-        drop_session(sid)
+        unlink_session(sid)
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
         return
     if args.decline:
@@ -1068,7 +1146,7 @@ def cmd_start(args):
         decline(cwd)
         own = session_tracker(sid)
         if own:  # any link goes; most often one the session start made (AUTO_LINKED)
-            drop_session(sid)
+            unlink_session(sid)
         print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
               f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
         return
@@ -1105,7 +1183,7 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    drop_session(sid)  # a new start: nothing seen yet
+    unlink_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
     record_commits(m, cwd)

@@ -16,11 +16,11 @@ from typing import NamedTuple
 from .system import alive, die, entered_via, env_int
 from .store import files_hash, locked, read_json, write_json
 from .git import forget
-from .schema import COORDINATOR, LIVE_SYNC_S, STATE_KEEP_DAYS
+from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEEP_DAYS
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
-from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, claude_sessions, coordinated, grant_path, granted,
-    live_sessions, match_cwd, session_id, ticket_facts, watch_running, Live)
+from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
+    granted, is_time, items_of, state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -28,7 +28,7 @@ from .github import SKIPPED, budget, skipped, sync
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
-ASKING_S = 30  # an agent that asks this long gets no answer soon: a prompt the user is at needs no notification
+ASKING_S = DEADLINE_S["wait"]  # an agent that asks this long gets no answer soon: a prompt the user is at needs none
 BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing recorded: it may be stuck
 CHANGE_POLL_S = 1  # `await_change`: how often it looks at the files
 CHANGE_WAIT_S = 15  # when it ends with no change (ui/view.js AT_LEAST_MS): a UI that has gone leaves no process
@@ -78,7 +78,7 @@ def session_name(sid: str) -> str:
 
 class Event(NamedTuple):
     kind: str  # one of EVENT_KINDS: what `--only` picks
-    key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`
+    key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`, `stuck <id>`
     urgent: bool  # it needs a human: `!`
     text: str
 
@@ -87,7 +87,8 @@ EVENT_KINDS = {"ticket": "a ticket's stage, move or next, or that it can start",
                "log": "a new log line, the commits logged",
                "agent": "an agent session that starts, ends its turn, waits on the user, seems stuck or ends",
                "github": "a sync that fails or works again",
-               "check": "a new `check` error"}
+               "check": "a new `check` error",
+               "stuck": "a submission, a question or a wait on a human left too long"}
 URGENT = "urgent"  # to `--only`: any event that needs a human, of any kind
 
 
@@ -118,7 +119,8 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
             continue
         if was["stage"] != now["stage"]:
             out.append(Event("ticket", ident, False, f"{was['stage']} → {now['stage']}"))
-        if now.get("move") and now["move"] != was.get("move"):
+        # A move that only turned stuck is said by its item's own stuck line (`Watcher.stuck`)
+        if now.get("move") and now["move"] != was.get("move") and now.get("stuck_from") != was.get("move"):
             # A move that comes back from someone else (a reviewer, CI, a decision's owner) needs the user too.
             back = bool(was.get("move")) and not was.get("mine")
             out.append(Event("ticket", ident, needs_you(now) or now["mine"] and back, f"move: {now['move']}"))
@@ -136,11 +138,11 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
     open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's that
     another session wrote (`sid`: the watch's own), so a worker's question reaches it at once (`asks`). With no `tr`,
     no decision is looked up. A legacy event is the log from before the event file, which a migration writes all at
-    once: none is new."""
+    once: none is new. A QUIET_KINDS one is left out."""
     out, commits = [], {}
     live = coordinated(tr) if tr else False
     for e in events:
-        if e["kind"] == "legacy":
+        if e["kind"] == "legacy" or e["kind"] in QUIET_KINDS:  # an agent's wait shows as the agent's line
             continue
         key = e["refs"][0] if e["refs"] else "log"
         if e["kind"] == "commits":
@@ -163,12 +165,6 @@ def asks(tr: Tracker | None, e: dict, live: bool, role: str, sid: str = "") -> b
     return move.human or (role == COORDINATOR and move.who == COORDINATOR and not own)
 
 
-def agent_tickets(tr: Tracker, x: Live) -> list[str]:
-    """The tickets a session has under way, as a UI shows them."""
-    m = match_cwd(x.cwd, x.sid, tr)
-    return [t.id for t in m.active] if m else []
-
-
 def agent_state(x: Live, now: float) -> str:
     """`<name> <status> <n> min`: the name is the one the host lists the session by."""
     return f"{x.name} {x.status if x.status in ('busy', 'waiting') else 'idle'}" + \
@@ -180,7 +176,7 @@ def agents_lines(tr: Tracker, now: float) -> list[str]:
     program that reaches an agent knows it by (Claude Code's session name, Herdr's terminal); its transcript."""
     out = []
     for x in live_sessions(tr.slug):
-        on = agent_tickets(tr, x)
+        on = agent_tickets(tr, x.cwd, x.sid)
         facts = [f"on {', '.join(on)}" if on else "", f"branch {x.branch}" if x.branch else "", x.cwd,
                  f"claude {x.claude}" if x.claude else "", f"herdr {x.terminal}" if x.terminal else "",
                  f"transcript {x.transcript}" if x.transcript else ""]
@@ -205,7 +201,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.in_flight]
-    on = {x.sid: agent_tickets(tr, x) for x in live}
+    on = {x.sid: agent_tickets(tr, x.cwd, x.sid) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]
 
@@ -268,13 +264,13 @@ def watches_of(tr: Tracker) -> list[dict]:
     out = []
     for f in (WATCH_DIR / tr.slug).glob("*.json"):
         st = read_json(f)
-        ended = st.get("ended") or 0
-        if not st.get("who") or not isinstance(ended, (int, float)):  # not a watch's state, or a damaged one
+        if not st.get("who"):  # not a watch's state
             continue
-        running = watch_running(st)
-        if running or time.time() - ended <= 86400:
+        running, ended = watch_running(st), st.get("ended") or 0
+        if running or is_time(ended) and time.time() - ended <= 86400:  # a damaged end is of no watch that ran
+            started = st.get("started")
             out.append({"who": st["who"], "role": str(st.get("role") or ""), "running": running,
-                        "since": st.get("started", 0), "ended": 0 if running else ended})
+                        "since": started if is_time(started) else 0, "ended": 0 if running else ended})
     return sorted(out, key=lambda w: w["since"])
 
 
@@ -332,14 +328,19 @@ class Watcher:
         read it (`session.coordinated`)."""
         with locked():  # the test and the claim are one step; the rest runs outside the lock (sync asks GitHub)
             st = load_state(self.slug, self.sid)
-            pid = int(st.get("pid") or 0)
+            pid = state_pid(st)
             if pid and pid != os.getpid() and alive(pid):
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
+            at = st.get("at")  # a damaged one is of no watch to catch up from
+            again = type(at) in (int, float) and now - at < CATCH_UP_S and "snapshot" in st
+            # Since when this watch has watched: a session's that ran on until now, in the same role, keeps its start.
+            # Saved before the first lines, whose moves read it for a coordinator (`session.coordinator_since`).
+            kept = again and self.sid and watch_running(st) and str(st.get("role") or "") == self.role
+            started = st["started"] if kept and is_time(st.get("started")) else now
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
             set_grant(self.sid, True)  # a session's watch holds it; a watch refused above gives none
-            write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid()}))
-        again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
+            write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid(), "started": started}))
         if again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
                 st["seq"] = last_seq(self.tracker())
@@ -351,9 +352,8 @@ class Watcher:
             self.sig = files_hash(tr.data_files())
             self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
-            lines = summary(tr, self.others(), now)
-        self.st.update(pid=os.getpid(), sid=self.sid, who=self.who,
-                       started=st.get("started", now) if again and self.sid else now)
+            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now), now)  # each stuck item, once
+        self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
         self.save(now)
@@ -407,6 +407,7 @@ class Watcher:
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role, self.sid)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
+        events += self.stuck(tr, now)
         named = {e.key for e in events}
         for sid, a in self.st.get("agents", {}).items():
             if named & set(a["on"]):
@@ -449,7 +450,7 @@ class Watcher:
             self.st.setdefault("activity", {})
         agents, out = {}, []
         for x in self.others():
-            on = agent_tickets(tr, x)
+            on = agent_tickets(tr, x.cwd, x.sid)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
             was = old.get(x.sid)
@@ -488,6 +489,29 @@ class Watcher:
         out += [Event("agent", i, False, f"{len(names)} agents on it: {', '.join(names)}")
                 for i, names in shared.items() if self.st.get("shared", {}).get(i) != names]
         self.st.update(agents=agents, shared=shared)
+        return out
+
+    def stuck(self, tr: Tracker, now: float) -> list[Event]:
+        """A line for each open item that is stuck (`items_of`, with the clock at each look and the log read only when
+        it changed), said once each time it turns stuck, and in a new watch's first lines: its key stays in the state
+        while it is stuck, so one that comes back, or turns stuck anew, is said again.
+        Nothing is written to the tracker. A wait whose session the agent line already shows waiting is that line's
+        to say, when `only` keeps agent lines, and the watch's own session's waits are not news to it."""
+        items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]
+        told, agents = set(self.st.get("stuck", [])), self.st.get("agents", {})
+        asks_shown = self.wanted(Event("agent", "", True, ""))
+        out = []
+        for i in items:
+            if not i.stuck or i.key in told:
+                continue
+            told.add(i.key)
+            if i.kind != "wait" or not asks_shown or agents.get(i.session, {}).get("status") != "waiting":
+                if i.kind == "question":
+                    name = i.key.split(":", 1)[1]  # its decision
+                else:
+                    name = i.refs[0] if i.refs else ""
+                out.append(Event("stuck", f"stuck {name}".strip(), True, i.what))  # a line of its own
+        self.st["stuck"] = sorted(told & {i.key for i in items if i.stuck})  # stuck again later: said again
         return out
 
     def run(self, once: bool) -> None:

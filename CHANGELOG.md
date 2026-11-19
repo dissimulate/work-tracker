@@ -9,6 +9,11 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker check` reports a damaged event file.
 - `tracker check` warns about an open decision a human must answer that has fewer than two options or none recommended, with the command that adds what is missing.
 - `tracker watch --as coordinator`: a session takes the coordinator role for a tracker. An open decision with no owner is then the coordinator's move, and a human's again when no coordinator is watching.
+- `tracker submit` hands a ticket's plan or built code to its reviewer, and `tracker review` records the verdict and its numbered findings, each as an event on the ticket.
+- Each time a session waits on you for a permission or an answer, the tracker records when the wait started and how long it lasted. They are not in `log.md`, and `tracker history` shows them only when `--kind` names them.
+- A ticket under way whose plan or built code was submitted is its reviewer's move until reviewed: the coordinator's while one watches, else yours. Findings of a review not yet fixed are the ticket's own move.
+- The watch, the view's data and `tracker check` show as stuck a submission or a question that the coordinator or a session left unanswered too long, or whose ticket is under way with no session on it, and a wait on you longer than 30 s. Nothing has to be running for this to be worked out.
+- `tracker history --kind` filters the log by kind of event.
 
 ### Changed
 

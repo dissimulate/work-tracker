@@ -8,16 +8,17 @@ import json
 import os
 import re
 import time
+import weakref
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .system import alive, descendants, die, session_id
-from .store import HOME, locked, read_json, write_json
+from .store import HOME, locked, read_json, write_json, OtherFormat
 from .schema import COORDINATOR, STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
-    put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
-from .moves import whose_move, Move
+    put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
+from .moves import open_items, whose_move, Item, Move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
 
@@ -125,6 +126,30 @@ def drop_session(sid: str) -> None:
     path = session_path(sid)
     if path:
         path.unlink(missing_ok=True)
+
+
+def unlink_session(sid: str) -> None:
+    """Take the session off its tracker and forget what it saw there, as `drop_session` does, but keep its open waits
+    on a human, as a session that waits from now: the command that moves a session is often the one it asked a
+    permission for, and that wait has still to end, in the tracker it started in (`session_activity`)."""
+    path = session_path(sid)
+    with locked():
+        entry = load_session(sid)
+        waits = open_waits(entry)
+        if not waits or not path:
+            drop_session(sid)
+            return
+        # Written over the file, which a hook's shell filter tests without the lock. It waits from now: where it goes
+        # next, nobody has seen it ask. Its folder names the tickets of each wait's end.
+        now = time.time()
+        kept = {"waits": waits, "activity": {"status": "waiting", "since": now, "at": now}, "cwd": entry.get("cwd")}
+        write_json(path, {k: v for k, v in kept.items() if v is not None})
+
+
+def open_waits(entry: dict) -> dict:
+    """A session entry's open waits on a human, by asker: [its human.wait's seq (0: none written), epoch, tracker].
+    A damaged one is no wait."""
+    return {k: v for k, v in (entry.get("waits") or {}).items() if isinstance(v, list) and len(v) == 3}
 
 
 # "Not now" to the offer to link a session to a tracker, per repo and branch: no link or offer there for DECLINE_S.
@@ -520,24 +545,69 @@ def granted(sid: str) -> bool:
 def watch_running(st: dict) -> bool:
     """A watch's saved state (WATCH_DIR) is of one that runs: its process does, or it is a session's that holds the
     grant and ended within REARM_S, so it starts again. A state that is damaged runs none: no view stops for it."""
-    try:
-        return alive(int(st.get("pid") or 0)) or (
-            granted(str(st.get("sid") or "")) and time.time() - float(st.get("ended") or 0) < REARM_S)
-    except (TypeError, ValueError):
-        return False
+    return alive(state_pid(st)) or (
+        granted(str(st.get("sid") or "")) and is_time(st.get("ended")) and time.time() - st["ended"] < REARM_S)
+
+
+def state_pid(st: dict) -> int:
+    """A watch state's process id; 0 for none, and for a damaged one: only a whole number a process can have counts
+    (`true`, "1" and 1.9 would all read as 1, which mostly runs)."""
+    pid = st.get("pid")
+    return pid if type(pid) is int and 0 < pid < 2 ** 32 else 0
 
 
 def coordinated(tr: Tracker) -> bool:
     """A session watches the tracker as its coordinator (`tracker watch --as coordinator`), now. Read from the watches'
     state each time, never stored: a coordinator that stops hands its decisions back to a human by itself."""
+    return bool(coordinator_since(tr))
+
+
+def coordinator_since(tr: Tracker) -> float:
+    """Since when a coordinator has watched the tracker (`coordinated`), as its running watch's start (epoch s); 0
+    with none."""
     # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
-    return any(st.get("role") == COORDINATOR and watch_running(st)
-               for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json")))
+    starts = [st.get("started") for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
+              if st.get("role") == COORDINATOR and watch_running(st)]
+    # A start that is no time (a damaged state) counts as long ago: no view stops for it (`watch_running`)
+    return min((x if is_time(x) else 1.0 for x in starts), default=0.0)
+
+
+TIME_SLACK_S = 60  # another clock may run a little ahead of this one
+
+
+def is_time(x) -> bool:
+    """A watch state's time is an epoch time up to now: a damaged state can hold any JSON, infinity or a time in
+    milliseconds too. Every such time is past."""
+    return type(x) in (int, float) and 0 < x <= time.time() + TIME_SLACK_S  # NaN fails both; `true` is no time
+
+
+# Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
+# move, and reading the live sessions each time made `tracker data` some eight times slower; a command, a hook or a
+# watch's look reads the tracker once, so it reads them once.
+AROUND: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str], float]:
+    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions have under way, those
+    sessions' names by id, and since when the coordinator watches, as read once for this Tracker object (AROUND)."""
+    if tr not in AROUND:
+        live, since = live_sessions(tr.slug), coordinator_since(tr)
+        AROUND[tr] = (bool(since), {i for x in live for i in agent_tickets(tr, x.cwd, x.sid)},
+                      {x.sid: x.name for x in live}, since)
+    return AROUND[tr]
+
+
+def items_of(tr: Tracker, now: float | None = None) -> list[Item]:
+    """The tracker's open items at `now` (default: the time now), as `moves.open_items` works them out from the log
+    and who is around (`around`). The log comes from one read per process while the event file does not change
+    (`model.read_events`); the clock applies at each call, so nothing caches a verdict."""
+    return open_items(tr, read_events(tr), time.time() if now is None else now, *around(tr))
 
 
 def move_of(tr: Tracker, t: Record) -> Move | None:
-    """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker: what every view shows."""
-    return whose_move(tr, t, coordinated(tr))
+    """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker and the open items
+    (`items_of`): what every view shows."""
+    return whose_move(tr, t, around(tr)[0], items_of(tr)) if t.in_flight else None
 
 
 def ticket_facts(tr: Tracker, t: Record) -> dict:
@@ -547,7 +617,8 @@ def ticket_facts(tr: Tracker, t: Record) -> dict:
     move = move_of(tr, t)
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
-            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human} if move else {})}
+            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human,
+                "stuck_from": move.stuck_from.text(" — ") if move.stuck_from else ""} if move else {})}
 
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, dict]:
@@ -709,31 +780,82 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
     return slugs.pop() if len(slugs) == 1 else ""
 
 
-def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None) -> None:
+def agent_tickets(tr: Tracker, cwd: str, sid: str) -> list[str]:
+    """The tickets a session in `cwd` has under way, as a UI shows them."""
+    m = match_cwd(cwd, sid, tr)
+    return [t.id for t in m.active] if m else []
+
+
+def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None, tool: str = "",
+                     failed: str = "") -> None:
     """Keep a tracked session's status from its hooks, and when the status last changed; whether Claude Code keeps a
     process file for it (`native`), until it is seen to; and `where` it runs, for `tracker agents`: `transcript`, its
     transcript's file (an empty one keeps the last), and `terminal`, its Herdr terminal (none: it left Herdr).
-    `asker`: for a wait that starts or ends, the agent it concerns ("" for the session's own). The session stays
-    `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait."""
-    entry = load_session(sid)
-    if not entry.get("tracker"):
-        return
-    asking = set(entry.get("asking", [])) if asker is not None else set()
-    if asker is not None:
-        (asking.add if status == "waiting" else asking.discard)(asker)
-        status = "waiting" if asking else status
+    `asker`: for a wait on a human that starts or ends, the agent it concerns ("" for the session's own). The session
+    stays `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait. Each
+    wait is logged at its start and its end (`log_waits`; `tool`, what it asks about; `failed`, the error of the tool
+    it asked about, when that failed: a refused permission or a tool that failed once allowed, which the hook cannot
+    tell apart). One lock around the whole: two hooks of one session do not interleave."""
+    with locked():
+        entry = load_session(sid)
+        waits = open_waits(entry)
+        linked = bool(entry.get("tracker"))
+        if not linked and not waits:
+            return
+        if asker is None:
+            starting, ending = [], list(waits)
+        elif status == "waiting":
+            starting, ending = [asker] if linked and asker not in waits else [], []
+        else:
+            starting, ending = [], [asker] if asker in waits else []
+        if starting or ending:
+            log_waits(sid, entry, waits, starting, ending, tool, failed)
+        if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file
+            save_session(sid, waits=waits) if waits else drop_session(sid)
+            return
+        status = "waiting" if waits else status
+        now = time.time()
+        old = entry.get("activity", {})
+        since = old.get("since", now) if old.get("status") == status else now
+        native = entry.get("native") or None
+        if not native and status != "ended":
+            native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
+        where = where or {}
+        places = {"transcript": where["transcript"]} if where.get("transcript") else {}
+        if "terminal" in where:
+            places["terminal"] = where["terminal"] or None
+        save_session(sid, activity={"status": status, "since": since, "at": now}, native=native, waits=waits or None,
+                     **places)
+
+
+def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: list[str], tool: str,
+              failed: str) -> None:
+    """Log the waits on a human that end and start, on the session's tickets, and keep `waits` to match: a wait
+    whose start was written ends with `of` its seq, in the tracker it started in (the command it asked about may
+    have moved the session to another, where that seq is another event's). A tracker the format guard refuses gets no
+    event, and a wait started there keeps seq 0, so no end is written for it. It runs at every permission, so it reads
+    none of the event file but its end (`model.last_seq` numbers the event)."""
     now = time.time()
-    old = entry.get("activity", {})
-    since = old.get("since", now) if old.get("status") == status else now
-    native = entry.get("native") or None
-    if not native and status != "ended":
-        native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
-    where = where or {}
-    places = {"transcript": where["transcript"]} if where.get("transcript") else {}
-    if "terminal" in where:
-        places["terminal"] = where["terminal"] or None
-    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native,
-                 asking=sorted(asking) or None, **places)
+
+    def logged(slug: str, kind: str, text: str, **data) -> int:
+        tr = tracker_at(slug)
+        if not tr:
+            return 0
+        try:
+            return append_event(tr, kind, text, agent_tickets(tr, entry.get("cwd", ""), sid), **data)["seq"]
+        except OtherFormat:
+            return 0
+
+    for who in ending:
+        seq, at, slug = waits.pop(who)
+        seconds = max(0, int(now - at))
+        error = {"failed": short(failed)} if failed else {}
+        if seq:
+            logged(slug, "human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
+                   asker=who, of=seq, seconds=seconds, **error)
+    for who in starting:
+        text = "Waiting on a human" + (f": {tool}" if tool else "")
+        waits[who] = [logged(entry["tracker"], "human.wait", text, asker=who, why=tool), now, entry["tracker"]]
 
 
 @dataclass

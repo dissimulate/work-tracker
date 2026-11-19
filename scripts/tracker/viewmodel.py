@@ -7,12 +7,12 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+from .schema import (FACTS, LIVE_SYNC_S, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
     read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import decision_move, is_pr_link, linked_prs, owner_kind, Move
-from .session import ago, coordinated, live_by_tracker, live_sessions, match_cwd, move_of, Live
+from .moves import is_pr_link, linked_prs, owner_kind, question_key, Move
+from .session import ago, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -142,8 +142,8 @@ def record_view(tr: Tracker, r: Record) -> dict:
     asks = r.kind == "decision" and not r.closed
     if r.kind == "ticket":
         move = move_of(tr, r)
-    elif asks:
-        move = decision_move(tr, r, coordinated(tr))
+    elif asks:  # as an open item: a stuck question is a human's
+        move = next(i.move for i in items_of(tr) if i.key == question_key(r.id))
     else:
         move = None
     # The view's answer goes as `--by`: a person the owner names, else `user`, never what would be refused
@@ -203,8 +203,9 @@ def decision_view(tr: Tracker, d: Record) -> dict:
 
 def now_view(tr: Tracker) -> dict:
     """Work under way (your move first, then the others' by who, then the tickets whose PR GitHub has not been read
-    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, and the
-    watch."""
+    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, the
+    watch, and `open`: every open item (`items_of`: a submission, findings, a question, a wait on a human), stuck
+    first, with its move and its age."""
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     moves = {t.id: move_of(tr, t) for t in tr.tickets if t.in_flight}
@@ -244,10 +245,13 @@ def now_view(tr: Tracker) -> dict:
     watches = watches_of(tr)  # `tracker watch`: who watches the tracker, or when the last watch ended
     running = [w for w in watches if w["running"]]
     last = max(watches, key=lambda w: w["ended"], default=None)
-    watch = {"running": True, "text": "Watched by " + ", ".join(f"{w['who']} since {clock(w['since'])}"
-                                                                 for w in running)} if running else \
+    watch = {"running": True, "text": "Watched by " + ", ".join(  # a damaged start names no time
+        f"{w['who']} since {clock(w['since'])}" if w["since"] else w["who"] for w in running)} if running else \
         {"running": False, "text": f"Watch by {last['who']} ended {clock(last['ended'])}"} if last else None
-    return {"items": items, "idle": idle, "watch": watch}
+    now = time.time()
+    opened = [{"kind": i.kind, "refs": i.refs, "what": i.what, "move": move_view(i.move), "stuck": i.stuck,
+               "age_s": int(now - i.at)} for i in items_of(tr, now)]
+    return {"items": items, "idle": idle, "watch": watch, "open": opened}
 
 
 def issue_state(tr: Tracker) -> str:
@@ -266,14 +270,14 @@ def issue_state(tr: Tracker) -> str:
 
 
 def reference_view(tr: Tracker) -> dict:
-    """What is settled or past: closed decisions and actions, the rest of the README, the log."""
+    """What is settled or past: closed decisions and actions, the rest of the README, the log (no QUIET_KINDS)."""
     closed = sorted((a for a in tr.actions if a.closed),
                     key=lambda a: (str(a.get("closed_at")), sort_key(a.id)), reverse=True)
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
     extra = strip_comments(extra).strip()
-    log = [log_line(e)[2:] for e in read_events(tr)]
+    log = [log_line(e)[2:] for e in read_events(tr) if e["kind"] not in QUIET_KINDS]
     return {"decisions": [decision_view(tr, d) for d in tr.decisions if d.closed],
             "actions": [action_view(tr, a) for a in closed],
             "more": {"body": extra} if headings(extra) else None,

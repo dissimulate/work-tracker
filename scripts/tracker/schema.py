@@ -201,10 +201,23 @@ EVENTS = {
     "branch.set": "the branch a ticket is built on (`branch`)",
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
+    "submission": "a ticket's plan or built code handed to its reviewer (`what`: one of SUBMIT_WHAT)",
+    "review": "a review of a ticket's plan or built code (`what`; `verdict`: one of VERDICTS; `findings`: the changes "
+              "it asks for, each `{n, text}` numbered from 1; `of`: the seq of the submission it answers, 0 for none)",
+    "finding.fixed": "findings of a review marked fixed (`what`; `of`: the review's seq; `findings`: their numbers)",
+    "human.wait": "an agent of a session began to wait on a human for a permission or an answer (`asker`: \"\" for the "
+                  "session itself, else its subagent's id; `why`: the tool it asked about, else \"\")",
+    "human.wait.end": "that wait ended (`asker`; `of`: the wait's seq; `seconds`: how long it lasted; `failed`: the "
+                      "tool's error, when it failed: a refused permission, or a tool that failed once allowed)",
     "migrated": "the tracker brought to a newer format (`schema`)",
     "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",
 }
+# Kinds that a log shown to a person or an agent leaves out unless asked for by kind: a wait on a human starts and ends
+# at every permission prompt. No log.md line either.
+QUIET_KINDS = ("human.wait", "human.wait.end")
+SUBMIT_WHAT = ("plan", "code")  # what `tracker submit` hands to a reviewer: a ticket's plan, or its built code
+VERDICTS = ("pass", "changes")  # a review's verdict: `changes` lists the changes it asks for as findings
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
@@ -460,6 +473,11 @@ STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
+# How long an open item may wait for its reply, in seconds, before it is stuck (`moves.open_items`): a submission for
+# its review, a question for its answer, a wait on a human for its end. These values are still open (the spec "the
+# tracker as the channel", open question 2). The watch's "asks for a permission or an answer" line uses the wait's.
+DEADLINE_S = {"submission": env_int("TRACKER_DEADLINE_SUBMISSION", 1800),
+              "question": env_int("TRACKER_DEADLINE_QUESTION", 1800), "wait": 30}
 
 
 def dated(text: str) -> str:

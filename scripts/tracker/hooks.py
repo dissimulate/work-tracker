@@ -12,14 +12,14 @@ import time
 from pathlib import Path
 
 from .system import env_int, spawn, warn
-from .store import locked, record_cli
+from .store import locked, record_cli, OtherFormat
 from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, drop_session,
+from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
     get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
     session_activity, take_over, watch, work_dir, Lag, Match)
-from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers, OtherFormat
+from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -127,7 +127,7 @@ def hook_session_start(data: dict) -> None:
             elif command_context():
                 emit_context("SessionStart", "")
             return
-        drop_session(sid)
+        unlink_session(sid)  # a wait it left open ends at its next event
         save_session(sid, tracker=sure.tracker.slug)
         m = match_cwd(cwd, sid)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
@@ -463,7 +463,8 @@ def run_hook(*events: str) -> None:
             if status and event != "session-end" and (not data.get("agent_id") or asker is not None):
                 places = {} if data.get("agent_id") else {  # a subagent's transcript is not the session's
                     "transcript": str(data.get("transcript_path") or ""), "terminal": os.environ.get("HC_TERMINAL_ID")}
-                session_activity(sid, status, asker, places)
+                failed = str(data.get("error") or "") if data.get("hook_event_name") == "PostToolUseFailure" else ""
+                session_activity(sid, status, asker, places, str(data.get("tool_name") or ""), failed)
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         warn(f"hook {event} failed: {exc}")
         sys.exit(0)

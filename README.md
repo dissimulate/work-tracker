@@ -38,14 +38,16 @@ Talk to the agent. It runs the `tracker` CLI for you.
 | `tracker decisions --all` | the decisions, open and settled |
 | `tracker actions` | your open actions (`--all`: the closed ones too) |
 | `tracker find <text>` | search a tracker (`--all`: every tracker) |
-| `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`) |
+| `tracker history` | the log's last lines (`--ref <ids>`, `--since <date>`, `--kind <kinds>`) |
+| `tracker submit <id> --what plan` | hand a ticket's plan, or with `--what code` its built code, to its reviewer: the coordinator, else you |
+| `tracker review <id> --what plan --verdict pass` | record a review of it; `--verdict changes` takes a `--finding` per change asked for |
 | `tracker open [id]` | the live view: a tab in Herdr when Herdr is open, else its own window; `--window` for the window also when Herdr is open |
 | `tracker install-window` | download what the view's own window needs, once |
 | `tracker install-mod` | install the view as a Herdr mod, once: each later plugin version updates it |
 | `tracker archive <slug>` | put a tracker away: out of every list, lookup and hook, still in the view; `tracker unarchive <slug>` brings it back |
 | `tracker delete <slug>` | move a tracker's folder, archived or not, to the system's trash (only in a terminal; refused while a session or a watch is on it) |
 | `tracker issue` | the issue fields to read and, with issue updates on, the updates to write, with how to record them |
-| `tracker check` | problems in the tracker's files |
+| `tracker check` | problems in the tracker's files, then what is stuck |
 | `tracker rules` | the full format: keys, statuses, sections, text limits |
 | `tracker <command> --help` | the syntax of a command |
 
@@ -108,10 +110,10 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 |---|---|
 | SessionStart | Gives the session its command prefix or shell environment. With a tracker: logs new commits and injects the brief, with the issue fields to read and the issue updates to write, then syncs PR state in the background (at most every 10 min): the next message reports what changed. With none: links the session, or has the agent offer the link ([Usage](#usage) step 2). |
 | UserPromptSubmit | Reports what other sessions or GitHub changed on the session's tickets since the brief: a move that became yours, a ticket that ended, a dependency's state or Carry forward, a decision; a watching session has these from its watch. Once each: an issue update newly due, the issue fields the view's Refresh asked for. A state line with the work the tracker may not show (unlogged commits, uncommitted files): with a ticket under way, on the first message and every 5th; with none, only when there is such work. With a ticket under way, starts a stale GitHub sync in the background. Handles `/work-tracker:watch`. |
-| PostToolUse | One hook for every tool, which starts Python only when one of these applies. Bash: after a commit, logs it, and once per next action asks whether a step ended; after `git push` or `gh pr …`, records the branch on its ticket and syncs PR state. Edit, Write, MultiEdit, apply_patch: counts a hand edit of a tracker file as this session's own. AskUserQuestion, request_user_input: asks the agent to record the answer when it settles a direction decision. Any tool: ends that agent's "needs you" mark. |
+| PostToolUse | One hook for every tool, which starts Python only when one of these applies. Bash: after a commit, logs it, and once per next action asks whether a step ended; after `git push` or `gh pr …`, records the branch on its ticket and syncs PR state. Edit, Write, MultiEdit, apply_patch: counts a hand edit of a tracker file as this session's own. AskUserQuestion, request_user_input: asks the agent to record the answer when it settles a direction decision. Any tool: ends that agent's "needs you" mark, and logs that its wait ended. |
 | SubagentStart | Tells a subagent the tracker and ticket, and that it writes nothing to them. |
-| PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you. |
-| PostToolUseFailure, SubagentStop | Ends that agent's mark, in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
+| PermissionRequest, PreToolUse (AskUserQuestion, request_user_input) | Marks the session as needing you, and logs that the agent began to wait on you. The wait ends when that agent goes on, or at the session's next message, turn end, start (a resume, a compaction) or end, which ends every wait. Neither is in `tracker history` or `log.md` unless `--kind` names it. |
+| PostToolUseFailure, SubagentStop | Ends that agent's mark and logs that its wait ended (with the tool's error after a failed tool: a refusal or a failure, which the hook cannot tell apart), in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
 | Stop | Logs the commits no other hook saw. |
 | StopFailure | Marks the session idle after a failed turn. |
 | SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
@@ -142,7 +144,8 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 ### Watch
 
-- `tracker watch [name]` prints each change as one line; `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn. Several sessions can watch one tracker: one watch per session.
+- `tracker watch [name]` prints each change as one line; `!` marks what needs a human, such as a question with no one else to answer it, also an agent that has asked for a permission or an answer for 30 s. It also says when an agent ends its turn.
+- A `stuck <id>` line, once each time an item turns stuck, and in a new watch's first lines: a submission not reviewed or a question not answered past its deadline (`TRACKER_DEADLINE_SUBMISSION`, `TRACKER_DEADLINE_QUESTION`), or at once when its ticket is under way and no session is on it. Only one that is the coordinator's or a session's to answer turns stuck, and is then yours: one that is yours already is simply yours. A wait on you past 30 s is stuck too, and the watch says it as that agent's line, or as a `stuck` line when `--only` leaves agent lines out. Stuck is worked out from the log and the clock each time it is read, so nothing has to be running: the view's data and `tracker check` show it too. Several sessions can watch one tracker: one watch per session.
 - `--only <kinds>` prints only those kinds of change (`tracker watch --help` lists them). `--hold <seconds>` prints the changes that do not need you as one batch, at most that often; a `!` line comes at once.
 - `tracker agents [name]` lists the agent sessions on a tracker: status, tickets, branch, folder, its Claude Code session name and Herdr terminal when it has them, and its transcript file.
 - `--as coordinator`, in an agent session: the session takes the tracker's coordinator role while its watch runs. A decision with no owner (or the owner `coordinator`) is then the coordinator's move, to answer from the spec, a settled decision or the code, or to pass to a person with `tracker decide D-<n> --owner <name>`; when no coordinator is watching, it is yours. On the coordinator's own watch, `!` also marks a question another session opened or changed that is the coordinator's to triage. A decision's owner can also be a ticket, meaning the session on it while it is under way.
@@ -164,6 +167,8 @@ Environment variables. All are optional.
 | `TRACKER_SYNC` | 120 | seconds (at least 30) between GitHub syncs while the view or a watch is open (a session's hooks sync at most every 10 min) |
 | `TRACKER_WATCH_IDLE` | 600 | seconds before an idle agent that waits on you is reported |
 | `TRACKER_WATCH_BUSY` | 2700 | seconds a busy agent can record nothing before it is reported |
+| `TRACKER_DEADLINE_SUBMISSION` | 1800 | seconds a submitted plan or built code can wait for the coordinator's review, from the later of its submission and the coordinator's start, before it is stuck |
+| `TRACKER_DEADLINE_QUESTION` | 1800 | seconds an open decision for the coordinator or a session can wait for its answer, from when it became theirs (opened, passed on, the coordinator's start, the owner ticket's start), before it is stuck |
 
 ## Develop
 

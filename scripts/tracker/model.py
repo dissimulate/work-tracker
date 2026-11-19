@@ -17,8 +17,8 @@ from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, append, atomic_write, read_json, write_json
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR,
-    PR_MATCH_TTL_S, PR_STAGE, PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day,
-    show_value, stage_of, utc_now, utc_seconds, Stage)
+    PR_MATCH_TTL_S, PR_STAGE, PR_STATES, QUIET_KINDS, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names,
+    parse_day, show_value, stage_of, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -806,10 +806,11 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 
 def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
-    """Record a change as the next event of the tracker's event file (EVENTS_FILE), then as its line in log.md, and
-    return it; `data` holds the kind's own fields. The repo is the first ticket's in `refs`, else the tracker's only
-    one, else "". The caller holds `store.locked()`: the number is one past the file's last, so two writers at once
-    would share it. ValueError for a kind not in EVENTS, or `data` that names an event's own field."""
+    """Record a change as the next event of the tracker's event file (EVENTS_FILE), then as its line in log.md (none
+    for a QUIET_KINDS one), and return it; `data` holds the kind's own fields. The repo is the first ticket's in
+    `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number is one past the
+    file's last, so two writers at once would share it. ValueError for a kind not in EVENTS, or `data` that names an
+    event's own field."""
     if kind not in EVENTS:
         raise ValueError(f"no event kind {kind!r} (EVENTS)")
     ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
@@ -824,7 +825,8 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
     append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
     # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (only `tracker
     # find` reads it back); regenerate it from the events on each write if drift is ever seen.
-    append(tr.root / "log.md", log_line(e) + "\n")
+    if kind not in QUIET_KINDS:
+        append(tr.root / "log.md", log_line(e) + "\n")
     return e
 
 
@@ -851,9 +853,28 @@ def event_lines(tr: Tracker) -> list[dict | None]:
         return []
 
 
+# Per tracker folder: the event file's size and modified time when `event_lines` last read it, and what it read.
+EVENTS_READ: dict[Path, tuple[tuple[int, int], list[dict | None]]] = {}
+
+
+def cached_event_lines(tr: Tracker) -> list[dict | None]:
+    """`event_lines`, read again only when the file's size or modified time changed: one read per process however
+    many views and tickets ask, also in a watch that runs on. The list is shared: do not change it.
+    ponytail: the whole event file is read when it changes; keep a tail index if a tracker's log outgrows that."""
+    try:
+        st = (tr.root / EVENTS_FILE).stat()
+    except FileNotFoundError:
+        return []
+    key = (st.st_size, st.st_mtime_ns)
+    hit = EVENTS_READ.get(tr.root)
+    if not hit or hit[0] != key:
+        hit = EVENTS_READ[tr.root] = (key, event_lines(tr))
+    return hit[1]
+
+
 def read_events(tr: Tracker, after: int = 0) -> list[dict]:
     """The events numbered past `after`, oldest first; a line that is no event is left out."""
-    return [e for e in event_lines(tr) if e and e["seq"] > after]
+    return [e for e in cached_event_lines(tr) if e and e["seq"] > after]
 
 
 def last_seq(tr: Tracker) -> int:
