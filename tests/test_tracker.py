@@ -3305,7 +3305,8 @@ class Ui(unittest.TestCase):
         s, t = self.pr_tracker()
         self.synced(t, [pull(11, branch="f1")])
         path = store.HOME / s / "tickets" / "S-1.md"
-        path.write_text(path.read_text().replace("11:open", "x12:open, 11:open"))  # a hand edit gone wrong
+        damaged = "x12:open, ²:open, 011:open, 11:open"  # hand edits gone wrong
+        path.write_text(path.read_text().replace("11:open", damaged))
         self.assertEqual([x["key"] for x in data(s)["prs"]], ["a/x#11"])
 
     def test_a_tracker_with_no_pr_lists_none(self):
