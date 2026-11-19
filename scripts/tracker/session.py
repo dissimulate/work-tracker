@@ -155,13 +155,15 @@ def keep_word(sid: str, text: str) -> bool:
     (WORDS_KEPT of them, the newest last): a fingerprint of the whole text, when it was kept and its start
     (WORD_EXCERPT_MAX characters, on one line). None of it reaches the log unless `decide --cite` copies it there. A
     slash command or a skill call is no ruling, and keeps nothing. Whether it kept the text."""
-    excerpt = " ".join(text.split())[:WORD_EXCERPT_MAX]
+    # A lone surrogate (half an emoji) can come in JSON: hashed as sent, shown as "?" in UTF-8, which the log holds.
+    raw = text.encode("utf-8", "surrogatepass")
+    excerpt = " ".join(text.encode("utf-8", "replace").decode().split())[:WORD_EXCERPT_MAX]
     if not excerpt or COMMAND_CALL.match(excerpt) or not session_path(sid):
         return False
     with locked():
         if not context_tracker(sid):
             return False
-        word = {"fingerprint": hashlib.sha256(text.encode()).hexdigest()[:12], "at": utc_now(), "excerpt": excerpt}
+        word = {"fingerprint": hashlib.sha256(raw).hexdigest()[:12], "at": utc_now(), "excerpt": excerpt}
         save_session(sid, words=[*kept_words(load_session(sid)), word][-WORDS_KEPT:])
     return True
 

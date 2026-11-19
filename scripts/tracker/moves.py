@@ -298,7 +298,7 @@ class LinkedPr:
 def linked_prs(t: Record) -> list[LinkedPr]:
     """The PRs a ticket's `PR:` links point at."""
     pages = ((PR_PAGE.search(x.text), x.text) for x in t.links if x.label == "PR")
-    return [LinkedPr(m[0], m[1], m[2], text) for m, text in pages if m]
+    return [LinkedPr(m[0], m[1], str(int(m[2])), text) for m, text in pages if m]  # `/pull/012` is PR 12
 
 
 def is_pr_link(link: Link) -> bool:

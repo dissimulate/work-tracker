@@ -22,7 +22,7 @@ BRANCH_PRS_MAX = 10  # the newest PRs sync asks for per branch, forks' too: a br
 GH_TIMEOUT_S = 8  # one call
 _deadline: float | None = None  # no gh call runs past this (time.monotonic()); None: no limit
 # A `gh` command that changes a PR: the hooks sync after it (hooks.PR_TRIGGER).
-PR_COMMAND = re.compile(r"\bgh\s+pr\s+(create|merge|ready|close|reopen|edit)\b")
+PR_COMMAND = re.compile(r"\bgh\s+pr\s+(create|new|merge|ready|close|reopen|edit)\b")
 
 
 def budget(seconds: float | None) -> None:

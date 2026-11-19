@@ -2302,6 +2302,10 @@ class PrsOpened(unittest.TestCase):
         self.assertIsNone(self.bash(self.CREATE, self.CREATED, agent_id="a1"))
         self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
 
+    def test_gh_pr_new_opens_one_too(self):
+        self.bash({"command": "gh pr new --fill"}, self.CREATED)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
     def test_another_gh_pr_command_logs_no_opening(self):
         for command in ("gh pr merge 12 --squash", "gh pr edit 12 --title x", "git push -u origin f1",
                         "gh pr view 12"):
@@ -2332,7 +2336,7 @@ class PrsOpened(unittest.TestCase):
         self.assertIn(warning, run(*self.t, "check").splitlines())
         self.assertEqual(tree(store.HOME / self.s), before)  # `check` writes nothing
         run(*self.t, "new", "S-2", "--title", "Two")
-        run(*self.t, "add", "S-2", "link", "PR: [Parser](https://github.com/A/X/pull/12)")
+        run(*self.t, "add", "S-2", "link", "PR: [Parser](https://github.com/A/X/pull/012)")
         before = tree(store.HOME / self.s)
         self.assertNotIn("a/x#12", run(*self.t, "check"))
         self.assertEqual(tree(store.HOME / self.s), before)
@@ -5263,6 +5267,13 @@ class CitedWord(unittest.TestCase):
             with self.subTest(name=name, response=response):  # another shape, another host's tool: nothing to keep
                 tool(name, self.sid, self.work, tool_input=self.STORE, **response)
                 self.assertEqual(len(self.words()), 2)
+
+    def test_a_message_with_a_broken_character_is_kept_and_the_hook_goes_on(self):
+        self.prompt("Use Postgres \ud83d for the store")  # half an emoji, as JSON can carry it
+        self.assertEqual(self.words()[-1]["excerpt"], "Use Postgres ? for the store")  # the log can hold it
+        self.assertEqual(session.load_session(self.sid)["prompts"], 1)  # the rest of the hook ran
+        self.decide("--by", "Ryan", "--cite", "use postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Use Postgres ? for the store")
 
     def test_a_slash_command_is_no_word(self):
         for text in ("/work-tracker:tracker index", "$work-tracker:tracker index", "  /compact", ""):

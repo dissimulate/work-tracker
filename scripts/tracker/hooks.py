@@ -233,7 +233,7 @@ def hook_post_bash(data: dict) -> None:
         emit_context("PostToolUse", "\n".join(out))
 
 
-PR_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
+PR_CREATE = re.compile(r"\bgh\s+pr\s+(create|new)\b")  # `new` is gh's own alias of `create`
 
 
 def log_opened(tr: Tracker, response) -> None:
