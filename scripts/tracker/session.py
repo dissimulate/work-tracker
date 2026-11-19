@@ -146,7 +146,8 @@ def unlink_session(sid: str) -> None:
         write_json(path, {k: v for k, v in kept.items() if v is not None})
 
 
-COMMAND_CALL = re.compile(r"[/$][A-Za-z][\w.:-]*(\s|$)")  # `/compact`, `/work-tracker:tracker index`, `$skill`
+# `/compact`, `/work-tracker:tracker index`, a skill `$work-tracker:watch` (a skill's name is lower case: not `$HOME`)
+COMMAND_CALL = re.compile(r"(/[A-Za-z]|\$[a-z])[\w.:-]*(\s|$)")
 
 
 def keep_word(sid: str, text: str) -> bool:

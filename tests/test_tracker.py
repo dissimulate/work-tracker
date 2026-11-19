@@ -5258,9 +5258,9 @@ class CitedWord(unittest.TestCase):
         for text in ("/work-tracker:tracker index", "$work-tracker:tracker index", "  /compact", ""):
             self.prompt(text)
         self.assertEqual(self.words(), [])
-        for text in ("$5 a month is fine, go with the paid tier", "/tmp/data is where it goes"):
+        for text in ("$5 a month is fine, go with the paid tier", "/tmp/data is where it goes", "$HOME is wrong"):
             self.prompt(text)
-        self.assertEqual([w["excerpt"][:6] for w in self.words()], ["$5 a m", "/tmp/d"])
+        self.assertEqual([w["excerpt"][:6] for w in self.words()], ["$5 a m", "/tmp/d", "$HOME "])
 
     def test_an_approval_or_a_subagent_keeps_no_word(self):
         go = {"questions": [{"question": "Push?", "options": [{"label": "Yes, push"}, {"label": "Not now"}]}]}
