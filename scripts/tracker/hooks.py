@@ -208,9 +208,9 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
         adopt_branch(m, cwd)
         record_commits(m, cwd)
     here = cwd_field(cwd)
-    if ask and here and here["cwd"] != load_session(sid).get("cwd"):
+    if ask and m.tickets and here and here["cwd"] != load_session(sid).get("cwd"):
         # The session's own watch matches its tickets in this folder: a turn a watch line started brings no message,
-        # whose hook would save it.
+        # whose hook would save it. A folder with no ticket of the session (a scratch folder) moves nothing.
         save_session(sid, **here)
     text = watch_ask(data, m, sid) if ask else ""
     if text:

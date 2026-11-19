@@ -4847,6 +4847,15 @@ class MineWatch(TwoSessions):
         self.as_b(*self.t, "review", "T-3", "--what", "plan", "--verdict", "changes", "--finding", "Rename it")
         self.assertIn("T-3 plan review: changes, 1 finding: 1. Rename it", self.texts(self.look(w)))
 
+    def test_a_turn_that_ends_outside_any_ticket_leaves_the_watch_on(self):
+        w = self.mine()
+        w.claim(self.clock)
+        plain = Path(tempfile.mkdtemp(dir=BASE))  # a folder with no git and no ticket, where the turn ended
+        hook("stop", self.a, plain, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"}, stop_hook_active=False)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertEqual(self.texts(self.look(w)), ["T-1: base branch moved"])
+        self.assertFalse(w.ended)
+
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
         watcher.Watcher(model.tracker_at(other), self.a).claim(time.time())  # its full watch of another tracker runs
