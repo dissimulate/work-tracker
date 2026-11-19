@@ -2434,6 +2434,41 @@ class Ui(unittest.TestCase):
         session.save_session(f"other{time.monotonic_ns()}", tracker=self.tracker(), cwd=folder, activity=activity)
         self.assertIsNone(attached(none, folder))
 
+    @unittest.skipIf(system.WINDOWS, "no ps")
+    def test_attached_finds_the_agent_started_from_a_shell(self):
+        # A tab opened as a shell, with `claude` run in it: the host names the shell, which has no process file.
+        s = self.tracker()
+        shell = subprocess.Popen(["sh", "-c", "sleep 60 & echo $!; sleep 60 & echo $!; wait"], stdout=subprocess.PIPE,
+                                 text=True)
+        under = [int(shell.stdout.readline()), int(shell.stdout.readline())]
+        self.addCleanup(shell.stdout.close)
+        self.addCleanup(shell.wait)
+        for pid in (*under, shell.pid):
+            self.addCleanup(os.kill, pid, 9)
+        session.CLAUDE_SESSIONS.mkdir(parents=True, exist_ok=True)
+
+        def process(pid, sid):
+            path = session.CLAUDE_SESSIONS / f"{pid}.json"
+            path.write_text(json.dumps({"pid": pid, "sessionId": sid, "cwd": "/", "status": "idle"}))
+            self.addCleanup(path.unlink, missing_ok=True)
+            return path
+
+        def attached(pid):
+            return json.loads(run("attached", "--pid", str(pid)))["slug"]
+
+        sid = f"linked{time.monotonic_ns()}"
+        session.save_session(sid, tracker=s, cwd=BASE)
+        process(under[0], sid)
+        self.assertEqual(attached(shell.pid), s)
+        self.assertEqual(attached(under[0]), s)
+        # A process with its own file is that session, linked or not
+        own = process(shell.pid, f"unlinked{time.monotonic_ns()}")
+        self.assertIsNone(attached(shell.pid))
+        own.unlink()
+        # Two agents under the shell: no telling which one is in front
+        process(under[1], f"unlinked{time.monotonic_ns()}")
+        self.assertIsNone(attached(shell.pid))
+
     def test_install_window_unpacks_the_pinned_archive_once(self):
         tar = io.BytesIO()
         with tarfile.open(fileobj=tar, mode="w:gz") as files:

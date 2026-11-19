@@ -9,6 +9,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - A session that still runs an older plugin version no longer writes its own format into a tracker that a newer version migrated: its commands refuse and say to reload the plugin or restart the session, and its hooks write nothing, say so once per context (again after compaction), and offer no link to such a tracker. Only this version and later refuse: 0.32.0 and earlier still write.
 - A write to a tracker whose folder is a link now ends with what it unblocked and whether `check` found new problems, as in any other tracker.
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
+- In a Herdr layout, the view follows an agent you started from a shell (a tab opened as a shell, then `claude` or `claude --resume` run in it) to its tracker, instead of saying that the focused agent has none. With two or more agents under that shell it still says none. Not on Windows.
 
 ## 0.32.0 - 2026-11-17
 
