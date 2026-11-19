@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .system import env_int, spawn, warn
 from .store import locked, record_cli, OtherFormat
-from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
+from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import append_event, pr_key, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
@@ -388,10 +388,13 @@ def hook_answered(data: dict) -> None:
     words can be cited (`keep_word`). A yes or no to go ahead settles none."""
     if approval_only(data.get("tool_input") or {}) or data.get("agent_id"):
         return
-    keep_word(where(data)[1], answer_text(data.get("tool_response")))
-    if match_cwd(*where(data)):
-        emit_context("PostToolUse", f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, "
-                     f"or {DECIDED} for one made on the spot.")
+    cwd, sid = where(data)
+    kept = keep_word(sid, answer_text(data.get("tool_response")))
+    if match_cwd(cwd, sid):
+        ask = (f"[work-tracker] If the answer settles a direction decision, record it: {RESOLVE}, or {DECIDED} for "
+               "one made on the spot.")
+        # An answer not kept (another host's question tool) cannot be cited: `--cite` would be refused.
+        emit_context("PostToolUse", ask if kept else ask.replace(f" {CITE}", ""))
 
 
 def answer_text(response) -> str:

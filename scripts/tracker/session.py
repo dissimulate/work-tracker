@@ -146,20 +146,20 @@ def unlink_session(sid: str) -> None:
         write_json(path, {k: v for k, v in kept.items() if v is not None})
 
 
-def keep_word(sid: str, text: str) -> None:
-    """Keep a message or answer the human sent a session on a tracker, as its `words` (WORDS_KEPT of them, the newest
-    last): a fingerprint of the whole text, when it was kept and its start (WORD_EXCERPT_MAX characters, on one line).
-    The text itself is kept nowhere: only `decide --cite` copies one of them into the log. A slash command or a skill
-    call is no ruling, and keeps nothing."""
-    excerpt = " ".join(str(text or "").split())[:WORD_EXCERPT_MAX]
+def keep_word(sid: str, text: str) -> bool:
+    """Keep a message or answer the human sent a session on a tracker (`context_tracker`), as its `words`
+    (WORDS_KEPT of them, the newest last): a fingerprint of the whole text, when it was kept and its start
+    (WORD_EXCERPT_MAX characters, on one line). None of it reaches the log unless `decide --cite` copies it there. A
+    slash command or a skill call is no ruling, and keeps nothing. Whether it kept the text."""
+    excerpt = " ".join(text.split())[:WORD_EXCERPT_MAX]
     if not excerpt or excerpt[0] in "/$" or not session_path(sid):
-        return
+        return False
     with locked():
-        entry = load_session(sid)
-        if not entry.get("tracker"):
-            return
-        word = {"fingerprint": hashlib.sha256(str(text).encode()).hexdigest()[:12], "at": utc_now(), "excerpt": excerpt}
-        save_session(sid, words=[*kept_words(entry), word][-WORDS_KEPT:])
+        if not context_tracker(sid):
+            return False
+        word = {"fingerprint": hashlib.sha256(text.encode()).hexdigest()[:12], "at": utc_now(), "excerpt": excerpt}
+        save_session(sid, words=[*kept_words(load_session(sid)), word][-WORDS_KEPT:])
+    return True
 
 
 def cited_word(sid: str, quote: str) -> dict | None:

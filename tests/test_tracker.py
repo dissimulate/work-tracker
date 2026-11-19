@@ -5230,6 +5230,25 @@ class CitedWord(unittest.TestCase):
         self.assertIn("sub", session.load_session(self.sid)["waits"])  # the subagent still asks: the file stays
         self.assertEqual(self.words(), [])
 
+    def test_a_session_on_the_tracker_that_TRACKER_names_keeps_words_too(self):
+        sid = f"cwt{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, sid)
+        env = {"TRACKER": self.s}
+        hook("session-start", sid, self.work, env=env, source="startup")
+        hook("prompt", sid, self.work, env=env, prompt="Use Postgres for the store")
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            run(*self.t, "decide", "D-1", "--resolve", "Postgres", "--by", "Ryan", "--cite", "postgres")
+        self.assertEqual(self.settled()[1]["word"]["excerpt"], "Use Postgres for the store")
+
+    def test_the_answer_hook_asks_for_cite_only_when_it_kept_the_answer(self):
+        answer = {**self.STORE, "answers": {"Which store for the app?": "Postgres"}}
+        kept = tool("AskUserQuestion", self.sid, self.work, tool_input=self.STORE, tool_response=answer)
+        self.assertIn(schema.CITE, kept["hookSpecificOutput"]["additionalContext"])
+        other = tool("request_user_input", self.sid, self.work, tool_input=self.STORE, tool_response="SQS")
+        other = other["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("direction decision", other)
+        self.assertNotIn("--cite", other)  # nothing kept: a citation of it would be refused
+
     def test_a_refused_tracker_is_left_as_it_is(self):
         for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
             with self.subTest(refuse.__name__):
