@@ -18,6 +18,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker check` warns of a PR that a session on the tracker opened with `gh pr create` and that no ticket claims, and says how to claim it with a `PR:` link. Each PR a session opens that way is logged.
 - `tracker check` warns of each open ticket with no `Issue:` link, once any ticket of the tracker has one. `tracker set tracker issues=required` makes it an error for every open ticket.
 - `tracker data` lists each PR the tickets name, once, with its title, state, move, tickets and history, for a view to show. The view does not draw it yet.
+- At your next message, a session is also told what other sessions, a terminal or GitHub wrote on its tickets since it last looked: a note, a step, a review or submission, a PR's new state or review. At most the newest 5, with a count of the rest and the command that shows them.
 - A resolution entered on your word can cite your message: the session keeps the start of the last 5 things you said in it (messages and, in Claude Code, answers to its questions), and `tracker decide D-<n> --resolve "..." --by <name> --cite "<a few words you said>"` copies the one that holds those words into the log. Only a cited message reaches the log. A quote that no kept message holds is refused.
 
 ### Changed

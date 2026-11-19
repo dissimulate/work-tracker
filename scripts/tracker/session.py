@@ -15,9 +15,9 @@ from pathlib import Path
 
 from .system import alive, descendants, die, session_id
 from .store import HOME, locked, read_json, write_json, OtherFormat
-from .schema import COORDINATOR, STAGES, WORD_EXCERPT_MAX, WORDS_KEPT, stage_of, utc_now
-from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
-    put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
+from .schema import COORDINATOR, QUIET_KINDS, STAGES, WORD_EXCERPT_MAX, WORDS_KEPT, stage_of, utc_now
+from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, last_seq,
+    load_record, put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
 from .moves import open_items, whose_move, Item, Move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
@@ -74,7 +74,8 @@ class Match:
 # at its start a link it is sure of (`hooks.sure_link`, `take_over`).
 # On Claude Code, scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a
 # command prefix (`hooks.command_context`), else `session_id` reads the host's variable. Hooks get it in their input.
-# Per session, `focus` keeps the tickets `tracker start --on` chose, and `seen` what the brief showed (`watch`).
+# Per session, `focus` keeps the tickets `tracker start --on` chose, `seen` what the brief showed (`watch`) and
+# `seen_seq` the last event it was told of (`news`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
 SESSIONS_MAX = 200
@@ -743,12 +744,50 @@ def lag(m: Match, cwd: str | Path) -> Lag:
     return Lag(commits, changed_files(cwd, mark.get("at") or 0), mark.get("at") or 0, behind(m, mark))
 
 
+# Event kinds a session's news leaves out: `changes_since` already says a decision that opens or settles, a new wait
+# and a ticket's end, so their events would say them twice; the hooks' commits and a wait on a human ask nothing of
+# the session; a legacy event is the log from before the event file.
+NEWS_LEFT_OUT = ("legacy", "commits", "decision.opened", "decision.decided", "wait.added", "status", *QUIET_KINDS)
+NEWS_MAX = 5  # events a session's news names; the older ones as a count
+GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, whichever session's sync read it
+
+
+def news(sid: str, m: Match) -> list[str]:
+    """What the session has not been told yet about its tickets (`m.focus`), one line each, and now counts as told:
+    what `changes_since` finds since the baseline (`seen`), then each event on those tickets since `seen_seq` that
+    another session, a terminal or GitHub wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX. A session whose focus
+    changed since its baseline, or that has no `seen_seq` yet, gets none: its baseline starts from now. The prompt
+    hook calls it at each message, and saves the baseline with it, so each thing is told once."""
+    ids = [t.id for t in m.focus]
+    with locked():  # read and save as one step, so that `count_own` cannot overwrite it
+        entry = load_session(sid)
+        now, last = watch(m.tracker, m.focus), last_seq(m.tracker)
+        same = bool(ids) and entry.get("seen_for") == ids
+        lines = changes_since(m.tracker, entry["seen"], now) if same else []
+        base = entry.get("seen_seq")
+        if same and type(base) is int:
+            # An event file shorter than the baseline (restored from a backup) numbers its new events again: what it
+            # holds now counts as told, as the watch does.
+            told = [(next(i for i in e["refs"] if i in ids), e) for e in read_events(m.tracker, min(base, last))
+                    if e["kind"] not in NEWS_LEFT_OUT and any(i in ids for i in e["refs"])
+                    and (e["kind"] in GITHUB_KINDS or e.get("session") != sid)]
+            cut = told[:-NEWS_MAX]
+            if cut:
+                first = next(i for i in ids if any(i == key for key, _ in cut))
+                lines.append(f"(+{len(cut)} earlier: `tracker history --ref {first}`)")
+            for key, e in told[-NEWS_MAX:]:
+                text = short(e["text"], 120)
+                lines.append(text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}")
+        save_session(sid, seen=now, seen_for=ids, seen_seq=last)
+    return lines
+
+
 def remember(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed about its tickets (the commits past `next` too, so the hooks do not ask
-    again), and the directory it works in (`work_dir`)."""
+    again), and the directory it works in (`work_dir`): the baseline of its `news`."""
     fields = cwd_field(cwd)
     if m.focus:
-        fields.update(seen=watch(m.tracker, m.focus), seen_for=[t.id for t in m.focus])
+        fields.update(seen=watch(m.tracker, m.focus), seen_for=[t.id for t in m.focus], seen_seq=last_seq(m.tracker))
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch and m.active else None
     if behind(m, mark):
         fields["told_next"] = mark["next"]
@@ -770,14 +809,15 @@ def own_edit(sid: str, m: Match, ident: str) -> None:
 def count_own(sid: str, m: Match, picked) -> None:
     """Count the session's own change as seen, so the prompt hook reports only other sessions' and GitHub's: the
     entries of `watch` now that `picked(key, value, seen)` names."""
-    entry = load_session(sid)
-    if entry.get("seen_for") != [t.id for t in m.focus]:
-        return
-    tr = Tracker(m.tracker.root)
-    now = watch(tr, [t for t in map(tr.lookup, entry["seen_for"]) if t])
-    seen = entry.get("seen", {})
-    seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
-    save_session(sid, seen=seen)
+    with locked():  # read and save as one step, so as not to overwrite what `news` saved
+        entry = load_session(sid)
+        if entry.get("seen_for") != [t.id for t in m.focus]:
+            return
+        tr = Tracker(m.tracker.root)
+        now = watch(tr, [t for t in map(tr.lookup, entry["seen_for"]) if t])
+        seen = entry.get("seen", {})
+        seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
+        save_session(sid, seen=seen)
 
 
 # ---------------------------------------------------------------- live sessions

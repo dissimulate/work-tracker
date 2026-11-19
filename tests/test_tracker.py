@@ -2800,6 +2800,123 @@ class Hooks(unittest.TestCase):
         self.assertEqual(len(reads), 2)  # the cache follows the file
 
 
+class SessionNews(unittest.TestCase):
+    """What a session is told at its next message about its tickets: what other sessions, a terminal or GitHub wrote
+    on them since it last looked, once, and never its own writes (R5). Two sessions, A on T-1 and B, through the real
+    commands and hooks."""
+
+    def setUp(self, repos: str = ""):
+        self.s, self.t = new_tracker("News", repos)
+        run(*self.t, "new", "T-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "new", "T-2", "--title", "Two")
+        run(*self.t, "set", "T-1", "status=in-progress")
+        self.work = repo("f1")
+        n = time.monotonic_ns()
+        self.a, self.b = f"na{n}", f"nb{n}"
+        for sid in (self.a, self.b):
+            self.addCleanup(session.drop_session, sid)
+        self.as_a("start", self.s)
+
+    def as_a(self, *args: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            return run(*args, cwd=self.work, code=code)
+
+    def as_b(self, *args: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):
+            return run(*args, cwd=self.work, code=code)
+
+    def told(self) -> str:
+        """A's next message: what the prompt hook tells it of changes."""
+        return said(hook("prompt", self.a, self.work, env=no_gh(), prompt="go on"))
+
+    def test_a_note_another_session_writes_on_my_ticket_is_in_my_next_message(self):
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertIn("T-1: base branch moved", self.told())
+        self.assertNotIn("base branch moved", self.told())
+
+    def test_a_review_of_my_submission_is_in_my_next_message(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.told()
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split the parser")
+        told = self.told()
+        self.assertIn("T-1 plan review: changes, 1 finding: 1. Split the parser", told)
+        self.assertIn("T-1 move now: ", told)
+
+    def test_my_own_writes_are_no_news(self):
+        self.told()
+        self.as_a(*self.t, "log", "--ref", "T-1", "my own note")
+        self.as_a(*self.t, "step", "T-1", "Built the parser", "--next", "Test it")
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertNotIn("Changed on", self.told())
+
+    def test_a_pr_review_is_news_whoever_synced(self):
+        self.setUp("a/x")
+        self.told()
+        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")]
+        with mock.patch.object(github, "gh", answers([pull(11, branch="f1", decision="CHANGES_REQUESTED",
+                                                           rounds=rounds)])):
+            self.as_a(*self.t, "sync")  # A's own sync, as its hooks' background sync runs it
+        told = self.told()
+        self.assertIn("PR #11 review by rev: changes requested", told)
+        self.assertIn("T-1 move now: you", told)  # the review made it A's
+
+    def test_a_settled_decision_is_said_once(self):
+        self.as_b(*self.t, "decide", "Pick a store", "--blocks", "T-1")
+        self.assertIn("D-01 open now touches this work", self.told())
+        self.as_b(*self.t, "decide", "D-01", "--resolve", "Postgres", "--source", "the spec")
+        told = self.told()
+        self.assertIn("D-01 settled: ", told)
+        self.assertEqual(told.count("Postgres"), 1, told)  # not its event's line too
+
+    def test_an_event_on_another_ticket_is_no_news(self):
+        self.told()
+        self.as_b(*self.t, "log", "--ref", "T-2", "only about two")
+        self.as_b(*self.t, "log", "about nothing")
+        self.assertNotIn("Changed on", self.told())
+
+    def test_a_wait_on_a_human_and_commits_are_no_news(self):
+        self.as_b("start", self.s)  # B on T-1 too: its waits and commits name T-1
+        self.told()
+        hook("waiting", self.b, self.work, env=no_gh(), tool_name="Bash")
+        commit(self.work, "B's work")
+        tool("Bash", self.b, self.work, env=no_gh(), tool_input={"command": "git commit -m x"})
+        kinds = {e["kind"] for e in model.read_events(model.tracker_at(self.s)) if e.get("session") == self.b}
+        self.assertTrue({"human.wait", "commits"} <= kinds, kinds)
+        self.assertNotIn("Changed on", self.told())
+
+    def test_more_than_five_events_are_cut_to_the_newest_five_and_a_count(self):
+        self.told()
+        for i in range(1, 8):
+            self.as_b(*self.t, "log", "--ref", "T-1", f"note {i}")
+        told = self.told()
+        self.assertIn("(+2 earlier: `tracker history --ref T-1`); T-1: note 3; T-1: note 4; T-1: note 5; "
+                      "T-1: note 6; T-1: note 7.", told)
+        self.assertNotIn("note 2", told)
+
+    def test_events_from_before_the_brief_are_no_news(self):
+        self.as_b(*self.t, "log", "--ref", "T-1", "written before the brief")
+        self.as_a("start", self.s)
+        self.assertNotIn("written before the brief", self.told())
+
+    def test_a_terminals_note_is_news(self):
+        self.told()
+        run(*self.t, "log", "--ref", "T-1", "from a terminal")
+        self.assertIn("T-1: from a terminal", self.told())
+
+    def test_news_on_a_restored_shorter_log_does_not_raise(self):
+        self.told()
+        file = store.HOME / self.s / schema.EVENTS_FILE
+        backup = file.read_bytes()
+        for text in ("one", "two"):
+            self.as_b(*self.t, "log", "--ref", "T-1", text)
+        self.assertIn("T-1: two", self.told())
+        file.write_bytes(backup)  # restored: A has seen past its end
+        self.as_b(*self.t, "log", "--ref", "T-1", "after the restore")  # numbered as one A has seen
+        self.assertNotIn("Changed on", self.told())
+        self.as_b(*self.t, "log", "--ref", "T-1", "later")
+        self.assertIn("T-1: later", self.told())
+
+
 class BriefSize(unittest.TestCase):
     """The brief goes into every session and comes back after each compaction: it says what this work needs, once and
     short, and points to the command that has the rest."""

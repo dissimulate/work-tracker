@@ -17,9 +17,9 @@ from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE
 from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
-    get_mark, hand_over, in_repos, keep_word, lag, load_session, match_cwd, own_edit, record_commits, remember,
-    save_session, session_activity, take_over, watch, work_dir, Lag, Match)
+from .session import (behind, branch_matches, context_tracker, cwd_field, declined, unlink_session, get_mark,
+    hand_over, in_repos, keep_word, lag, load_session, match_cwd, news, own_edit, record_commits, remember,
+    save_session, session_activity, take_over, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -289,7 +289,7 @@ def state_line(m: Match, work: Lag) -> str:
 
 def sync_later(tr: Tracker, entry: dict, fields: dict) -> None:
     """Pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at most that often per
-    session, by `fields`' sync_asked): a later message reports what it changed (`changes_since`), such as a review
+    session, by `fields`' sync_asked): a later message reports what it changed (`news`), such as a review
     that makes a move yours. The hook does not wait for it."""
     now = time.time()
     last = max(tr.state().get("last_sync", 0), entry.get("sync_asked", 0))
@@ -333,14 +333,12 @@ def hook_prompt(data: dict) -> None:
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in m.focus]
-    now = watch(m.tracker, m.focus)
-    # A brief on other tickets (the branch changed) is no baseline: start again from now.
-    news = changes_since(m.tracker, entry["seen"], now) if entry.get("seen_for") == ids and ids else []
-    fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | cwd_field(cwd)
+    told = news(sid, m)
+    fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []
-    if news and not granted(sid):  # a watching session has them from its watch
+    if told and not granted(sid):  # a watching session has them from its watch
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
-                     "another session or a PR sync): " + "; ".join(news) + ".")
+                     "another session or a PR sync): " + "; ".join(told) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say
