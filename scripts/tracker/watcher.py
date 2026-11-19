@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-from .system import alive, die, env_int
+from .system import alive, die, entered_via, env_int
 from .store import HOME, files_hash, locked, read_json, write_json
 from .git import forget
 from .schema import LIVE_SYNC_S, STATE_KEEP_DAYS
@@ -48,9 +48,8 @@ REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run th
 
 
 def agent_session() -> tuple[bool, str]:
-    """Whether this command runs in an agent session, and its id."""
-    sid = session_id()
-    return bool(sid) or os.environ.get("CLAUDECODE") == "1", sid
+    """Whether this command runs in an agent session (`entered_via`), and its id."""
+    return entered_via() == "agent", session_id()
 
 
 def grant_path(sid: str) -> Path | None:

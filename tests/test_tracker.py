@@ -31,7 +31,7 @@ os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude session
 os.environ["HERDR_APP_HOME"] = f"{BASE}/herdr"  # `open` and the hooks update an installed mod: not the user's
 # An agent session running the tests must not leak in: its tracker, its id, or that it is one.
 for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
-            "CODEX_THREAD_ID", "PLUGIN_ROOT"):
+            "CODEX_THREAD_ID", "PLUGIN_ROOT", "TRACKER_VIA"):
     os.environ.pop(var, None)
 sys.path.insert(0, str(ROOT / "scripts"))
 from tracker import (cli, commands, contract, git, github, hooks, lifecycle, markdown, model, moves,  # noqa: E402
@@ -1178,7 +1178,9 @@ class Upgrade(unittest.TestCase):
                           ("2026-01-04", ["D-1"], "D-1"), ("2026-01-05", ["A-01"], None),
                           ("2026-01-06", ["T-1"], None), ("", [], None)])
         self.assertEqual(legacy[-1]["text"], "- no date here")  # kept whole
-        self.assertEqual({(e["session"], e["version"], e["repo"], "at" in e) for e in legacy}, {("", "", "", False)})
+        self.assertEqual({(e["session"], e["via"], e["version"], e["repo"], "at" in e) for e in legacy},
+                         {("", "", "", "", False)})
+        self.assertEqual([*legacy[0]][:6], ["seq", "kind", "session", "via", "version", "repo"])
         migrated = events[-1]
         self.assertEqual((migrated["kind"], migrated["schema"]), ("migrated", schema.SCHEMA))
         self.assertRegex(migrated["at"], r"Z$")
@@ -1574,7 +1576,7 @@ class Events(unittest.TestCase):
 
     def test_an_event_has_the_fields_of_R12(self):
         e = self.append("note", "a  b\nc", ["T-1"])
-        self.assertEqual([*e][:8], ["seq", "at", "kind", "session", "version", "repo", "refs", "text"])
+        self.assertEqual([*e][:9], ["seq", "at", "kind", "session", "via", "version", "repo", "refs", "text"])
         self.assertEqual((e["seq"], e["kind"], e["refs"], e["text"]), (1, "note", ["T-1"], "a b c"))
         self.assertRegex(e["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(e["version"], json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"])
@@ -1594,6 +1596,39 @@ class Events(unittest.TestCase):
                 os.environ.pop(var, None)
             self.assertEqual(self.append()["session"], "")  # a human at a terminal: empty, never missing
 
+    def test_an_event_says_how_it_was_entered(self):
+        with mock.patch.dict(os.environ):
+            for var in ("TRACKER_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CLAUDECODE", "TRACKER_VIA"):
+                os.environ.pop(var, None)
+            self.assertEqual(self.append()["via"], "terminal")
+            with mock.patch.dict(os.environ, {"TRACKER_SESSION": "s1"}):
+                self.assertEqual(self.append()["via"], "agent")
+            with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+                self.assertEqual(self.append()["via"], "agent")  # a Claude session whose hooks gave no id
+            with mock.patch.dict(os.environ, {"TRACKER_VIA": "view", "TRACKER_SESSION": "s1"}):
+                e = self.append()  # a view opened from an agent's shell has that session's environment
+                self.assertEqual((e["via"], e["session"]), ("view", "s1"))
+
+    def test_a_recorded_command_line_gains_the_mark(self):
+        file = Path(BASE) / f"cli{time.monotonic_ns()}.json"
+        with mock.patch.object(store, "CLI_FILE", file):
+            store.record_cli()
+            saved = json.loads(file.read_text())
+            self.assertIn("TRACKER_VIA", saved["argv"][-2])
+            # As the previous code wrote it: the same package, Python and mod, a start string with no mark
+            older = {k: saved[k] for k in ("package", "python", "mod")}
+            store.write_json(file, {**older, "argv": [*saved["argv"][:-2], "import os; old start", saved["argv"][-1]]})
+            self.assertTrue(store.record_cli())
+            self.assertEqual(json.loads(file.read_text())["argv"], saved["argv"])
+
+    def test_the_view_marks_its_commands(self):
+        for env in ({}, {"TRACKER_VIA": "terminal"}):  # forced, not only a default
+            with self.subTest(env=env):
+                subprocess.run([*system.cli_for_ui(), "--tracker", self.s, "log", "x"], env=env, check=True,
+                               capture_output=True)
+                e = model.read_events(model.tracker_at(self.s))[-1]
+                self.assertEqual((e["text"], e["via"], e["session"]), ("x", "view", ""))
+
     def test_the_repo_is_the_tickets(self):
         s, t = new_tracker("Two repos", "a/x,b/y")
         run(*t, "new", "T-1", "--title", "One", "--repo", "b/y")
@@ -1611,8 +1646,9 @@ class Events(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), before)
 
     def test_data_cannot_shadow_a_fixed_field(self):
-        with self.assertRaises(ValueError):
-            self.append(seq=9)
+        for field in ("seq", "via"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.append(**{field: "x"})
         self.assertEqual(model.read_events(self.tr), [])
 
     def test_a_half_written_line_is_skipped(self):

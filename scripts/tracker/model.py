@@ -12,7 +12,7 @@ from functools import cached_property
 from pathlib import Path
 
 from . import store
-from .system import die, plugin_version, session_id
+from .system import die, entered_via, plugin_version, session_id
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, append, atomic_write, read_json, write_json
@@ -814,7 +814,7 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
         raise ValueError(f"no event kind {kind!r} (EVENTS)")
     ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
     repo = tr.repo_of(ticket) if ticket else tr.repos[0] if len(tr.repos) == 1 else ""
-    e = {"seq": last_seq(tr) + 1, "at": utc_now(), "kind": kind, "session": session_id(),
+    e = {"seq": last_seq(tr) + 1, "at": utc_now(), "kind": kind, "session": session_id(), "via": entered_via(),
          "version": plugin_version(), "repo": repo, "refs": list(refs), "text": " ".join(text.split())}
     if clash := sorted(e.keys() & data.keys()):
         raise ValueError(f"an event's own fields cannot be data: {', '.join(clash)}")

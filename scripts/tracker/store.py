@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .system import PACKAGE, PYTHON, WINDOWS, cli_for_ui, die, mod_files
+from .system import PACKAGE, PYTHON, UI_START, WINDOWS, cli_for_ui, die, mod_files
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
@@ -163,10 +163,11 @@ def files_hash(files: list[Path]) -> str:
 
 def record_cli() -> bool:
     """Say how to start this CLI, for a UI outside any session, where PATH holds no plugin: the plugin's path changes
-    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, or the
-    Herdr mod's files do (an edit in a checkout, whose path stays), as a UI watches this folder. Returns whether it
-    wrote, so that what a new version needs (`hooks.record_version`) can follow this."""
-    start = {"package": str(PACKAGE), "python": PYTHON, "mod": files_hash(mod_files())}
+    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, the way a
+    UI starts it does (UI_START), or the Herdr mod's files do (an edit in a checkout, whose path stays), as a UI
+    watches this folder; not when only the environment it carries does. Returns whether it wrote, so that what a new
+    version needs (`hooks.record_version`) can follow this."""
+    start = {"package": str(PACKAGE), "python": PYTHON, "start": UI_START, "mod": files_hash(mod_files())}
     if {k: v for k, v in read_json(CLI_FILE).items() if k in start} == start:
         return False
     write_json(CLI_FILE, {**start, "argv": cli_for_ui()})

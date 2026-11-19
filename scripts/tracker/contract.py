@@ -235,8 +235,9 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"long. Under ~{README_TOKEN_BUDGET} tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
-        f"  {EVENTS_FILE}: the log, one event per line in JSON with its time, kind, session and plugin version. Only "
-        "the tool writes it: each write logs what the history needs; `tracker log` adds a note no other write holds. "
+        f"  {EVENTS_FILE}: the log, one event per line in JSON with its time, kind, session, how it was entered "
+        "(`via`: view, agent or terminal) and plugin version. Only the tool writes it: each write logs what the "
+        "history needs; `tracker log` adds a note no other write holds. "
         "The hooks add the branch's new commits (`" + LOG["commits"].format(branch="<branch>", commits="...")
         + "`), `step --pause` the handoff's first words.",
         "  log.md: the log for people, one dated line per event, written with it. Editing it changes nothing the views "
@@ -343,7 +344,7 @@ def legacy_events(tr: Tracker) -> None:
     lines = [ln for ln in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []) if ln.startswith("- ")]
     events = []
     for seq, line in enumerate(lines, 1):
-        e = {"seq": seq, "kind": "legacy", "session": "", "version": "", "repo": ""}
+        e = {"seq": seq, "kind": "legacy", "session": "", "via": "", "version": "", "repo": ""}
         if m := LOG_LINE.match(line):
             text = line[m.end():]
             e.update(refs=(m[2] or "").split(), text=text, day=m[1])

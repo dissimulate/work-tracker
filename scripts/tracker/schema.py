@@ -200,7 +200,7 @@ EVENTS = {
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
     "migrated": "the tracker brought to a newer format (`schema`)",
-    "legacy": "a log.md line from before the event file: no time, session or version (`day`; `decision` when it "
+    "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",
 }
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
