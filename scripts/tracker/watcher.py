@@ -17,7 +17,7 @@ from .system import alive, die, env_int
 from .store import HOME, files_hash, locked, read_json, write_json
 from .git import forget
 from .schema import LIVE_SYNC_S, STATE_KEEP_DAYS
-from .model import LOG, LOG_LINE, SAFE_NAME, commits_logged, short, Tracker
+from .model import SAFE_NAME, last_seq, read_events, short, Tracker
 from .session import SESSIONS_DIR, claude_sessions, live_sessions, match_cwd, session_id, ticket_facts, Live
 from .contract import check
 from .views import start_text
@@ -141,37 +141,20 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
     return out
 
 
-def log_events(lines: list[str]) -> list[Event]:
-    """One event per new log line, keyed by the first id it names (a new action for the user needs them); the commits
-    the hooks logged, as a count."""
+def log_events(events: list[dict]) -> list[Event]:
+    """One per new event of the log (`model.read_events`), keyed by the first record it names (a new action for the
+    user needs them); the commits the hooks logged, as a count. A legacy event is the log from before the event
+    file, which a migration writes all at once: none is new."""
     out, commits = [], {}
-    for line in lines:
-        m = LOG_LINE.match(line)
-        if not m:
+    for e in events:
+        if e["kind"] == "legacy":
             continue
-        refs = (m[2] or "").split()
-        key, msg = (refs[0] if refs else "log"), line[m.end():].strip()
-        if n := commits_logged(msg):
-            commits[key] = commits.get(key, 0) + n
+        key = e["refs"][0] if e["refs"] else "log"
+        if e["kind"] == "commits":
+            commits[key] = commits.get(key, 0) + e["count"]
         else:
-            out.append(Event("log", key, bool(LOG["action"].read(msg)), short(msg, 120)))
+            out.append(Event("log", key, e["kind"] == "action.added", short(e["text"], 120)))
     return out + [Event("log", key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
-
-
-def read_log(tr: Tracker, offset: int) -> tuple[list[str], int]:
-    """The whole lines added to log.md since `offset` (bytes), and the new offset. A log shorter than the offset was
-    rewritten (`migrate`, a hand edit): nothing counts as new, and the offset starts again at its end."""
-    try:
-        with open(tr.root / "log.md", "rb") as f:
-            size = f.seek(0, 2)
-            if size < offset:
-                return [], size
-            f.seek(offset)
-            data = f.read()
-    except OSError:
-        return [], 0
-    done = data.rfind(b"\n") + 1  # a line still being written waits for the next look
-    return data[:done].decode(errors="replace").splitlines(), offset + done
 
 
 def agent_tickets(tr: Tracker, x: Live) -> list[str]:
@@ -343,12 +326,15 @@ class Watcher:
             write_json(state_path(self.slug, self.sid), {**st, "pid": os.getpid()})
         again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
         if again:
+            if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
+                st["seq"] = last_seq(self.tracker())
+            st.pop("offset", None)
             self.st = st
             lines = self.report(self.batch(now, force=True), now, flush=True)
         else:
             tr = self.tracker()
             self.sig = files_hash(tr.data_files())
-            self.st = {"snapshot": snapshot(tr), "offset": read_log(tr, 0)[1]}
+            self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
             lines = summary(tr, self.others(), now)
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who,
@@ -395,7 +381,13 @@ class Watcher:
         if force or self.changed and now - self.changed >= SETTLE_S:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
-            logged, self.st["offset"] = read_log(tr, self.st.get("offset", 0))
+            # An event file shorter than the watch has seen (restored from a backup) numbers its new events again.
+            # ponytail: what it holds at this look counts as seen, one written since the restore too; keep a hash of
+            # the last event seen to tell a restore apart if that is ever missed.
+            self.st["seq"] = min(self.st["seq"], last_seq(tr))
+            logged = read_events(tr, self.st["seq"])
+            if logged:
+                self.st["seq"] = logged[-1]["seq"]
             events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged)
             self.st["snapshot"] = new
         events += self.agents(tr, now)

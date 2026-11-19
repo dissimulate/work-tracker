@@ -15,7 +15,7 @@ from .store import first_writes, locked, Busy
 from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
-from .contract import upgrade_trackers, NewerFormat
+from .contract import upgrade_trackers, OtherFormat
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
 from .watcher import EVENT_KINDS, REFUSED, URGENT
@@ -90,7 +90,7 @@ def build_parser():
     sp.add_argument("id", nargs="?", help="ticket or decision id, or `tracker` for the work itself; left out: this "
                                           "session's one ticket")
     sp.add_argument("pairs", nargs="+", metavar="key=value")
-    sp = add("log", cmd_log, "append a dated line to log.md: log \"<what changed and why>\" --ref T-8 D-2")
+    sp = add("log", cmd_log, "add a dated note to the log: log \"<what changed and why>\" --ref T-8 D-2")
     sp.add_argument("message", nargs="?")
     sp.add_argument("--ref", **IDS, help="ids it concerns")
     sp = add("add", cmd_add, "add a line to a section of a ticket, decision or the README (`tracker`): "
@@ -434,5 +434,5 @@ def main(argv=None):
             args.fn(args)
     except Busy as exc:
         die(str(exc))
-    except NewerFormat as exc:
+    except OtherFormat as exc:
         die(str(exc), REFUSED)

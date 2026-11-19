@@ -176,7 +176,33 @@ KEYS = {
         "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
-SCHEMA = 5  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 6  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+# The kinds of event (`model.append_event`), each with what it means and its own fields. The list is versioned by
+# SCHEMA: a new kind is a format change, as an older version would not know it.
+EVENTS_FILE = "events.jsonl"
+EVENTS = {
+    "note": "a note `tracker log` adds",
+    "step": "a step's message (`tracker step`)",
+    "status": "a ticket's or the work's new status (`status`)",
+    "ticket.added": "a ticket added",
+    "wait.added": "a ticket now waits on records (`on`, their ids); several tickets on one: `refs` names them",
+    "wait.removed": "a ticket no longer waits on records (`on`)",
+    "body.changed": "a record's section changed, with why (`heading`)",
+    "evidence.attached": "a file kept in evidence/ or added to (`file`)",
+    "decision.opened": "a decision opened (`decision`, its id)",
+    "decision.updated": "a decision's notes, choices or recommendation changed (`decision`)",
+    "decision.decided": "a decision settled (`decision`)",
+    "action.added": "an action for the user added (`action`, its id)",
+    "action.updated": "an action renamed, its due day or its notes changed (`action`)",
+    "action.closed": "an action done or dropped (`action`, `status`)",
+    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`)",
+    "branch.set": "the branch a ticket is built on (`branch`)",
+    "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
+    "paused": "a handoff left on a branch (`branch`)",
+    "migrated": "the tracker brought to a newer format (`schema`)",
+    "legacy": "a log.md line from before the event file: no time, session or version (`day`; `decision` when it "
+              "opened or settled one)",
+}
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},

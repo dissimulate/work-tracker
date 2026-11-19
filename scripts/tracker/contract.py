@@ -1,5 +1,5 @@
 """The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it, and
-`refuse_newer` keeps this code from writing a newer one."""
+`refuse_other_format` keeps this code from writing any other."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, guard_writes, locked, read_json
-from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
-    OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
-    RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
-    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
-    valid_value, value_form)
-from .model import (LOG, all_trackers, append_log, append_to_section, archived_trackers, blocker_link, level, names,
-    norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
+from .store import HOME, atomic_write, guard_writes, locked, read_json, unguarded
+from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE_DIR,
+    FORMS, ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR,
+    OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS,
+    README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES,
+    STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since,
+    kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
+from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, event_lines,
+    level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
 from .moves import MOVE_RULE
 
 # ---------------------------------------------------------------- check
@@ -46,13 +46,10 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         warnings.append("README.md: issue_updates is on, but .state.json has no record of what its issues show, so "
                         "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
                         "so far count as written, and each linked ticket out of todo is due once for its status")
-    if tr.schema < SCHEMA:
-        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate — the "
-                        f"next command tries again, and says why on stderr")
-    elif tr.schema > SCHEMA:
-        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
-                      f"plugin")
+    if why := other_format(tr.root):  # as a refused write says it; an older format may migrate at the next command
+        (errors if tr.schema > SCHEMA else warnings).append(f"README.md: {why}")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
+    errors += event_problems(tr)
     aliases: dict[str, str] = {}
     for t in tr.tickets:
         check_deps(tr, t, errors, warnings)
@@ -94,6 +91,20 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     if tokens > README_TOKEN_BUDGET:
         warnings.append(f"README.md ~{tokens} tokens > {README_TOKEN_BUDGET} limit — move detail to tickets or log")
     return errors, warnings
+
+
+def event_problems(tr: Tracker) -> list[str]:
+    """The event file's lines that are no event (`model.event_of`; a half-written line too), and each number that does
+    not follow the event before it."""
+    out, last = [], 0
+    for n, e in enumerate(event_lines(tr), 1):
+        if not e:
+            out.append(f"{EVENTS_FILE}:{n}: not an event")
+            continue
+        if e["seq"] != last + 1:
+            out.append(f"{EVENTS_FILE}:{n}: sequence breaks at {e['seq']}")
+        last = e["seq"]
+    return out
 
 
 def check_refs(tr: Tracker, r: Record, errors: list[str], warnings: list[str]) -> None:
@@ -218,9 +229,12 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"long. Under ~{README_TOKEN_BUDGET} tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
-        "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
-        "a note no other write holds. The hooks add the branch's new commits (`"
-        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `step --pause` the handoff's first words.",
+        f"  {EVENTS_FILE}: the log, one event per line in JSON with its time, kind, session and plugin version. Only "
+        "the tool writes it: each write logs what the history needs; `tracker log` adds a note no other write holds. "
+        "The hooks add the branch's new commits (`" + LOG["commits"].format(branch="<branch>", commits="...")
+        + "`), `step --pause` the handoff's first words.",
+        "  log.md: the log for people, one dated line per event, written with it. Editing it changes nothing the views "
+        "show.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
@@ -305,6 +319,36 @@ def move_notes(d: Record) -> None:
             append_to_section(d, "Notes", "\n".join(b))
 
 
+# Format 5's log.md lines, read only to carry them over as legacy events (`legacy_events`)
+LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
+DECISION_ID = rf"{KINDS['decision'].prefix}-\d+"
+OPENED, DECIDED = (re.compile(rf"{verb} ({DECISION_ID})\b") for verb in ("Opened", "Decided"))
+
+
+def legacy_events(tr: Tracker) -> None:
+    """Format 6 keeps the log as events: each `- ` line of log.md becomes a legacy event, oldest first, with its day
+    and ids, and the decision it opened or settled. A line of no known form is kept whole, with no day. All in one
+    write, so a run that stops leaves no event file or the whole of it; an event file with events stays as it is.
+    log.md stays too: it reads the same."""
+    path = tr.root / EVENTS_FILE
+    if path.exists() and path.stat().st_size:
+        return
+    log = tr.root / "log.md"
+    lines = [ln for ln in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []) if ln.startswith("- ")]
+    events = []
+    for seq, line in enumerate(lines, 1):
+        e = {"seq": seq, "kind": "legacy", "session": "", "version": "", "repo": ""}
+        if m := LOG_LINE.match(line):
+            text = line[m.end():]
+            e.update(refs=(m[2] or "").split(), text=text, day=m[1])
+            if d := OPENED.match(text) or DECIDED.match(text):
+                e["decision"] = d[1]
+        else:
+            e.update(refs=[], text=line, day="")
+        events.append(json.dumps(e, ensure_ascii=False) + "\n")
+    atomic_write(path, "".join(events))
+
+
 def migrate(tr: Tracker) -> None:
     """Bring a tracker written for an older version to the current rules. Each step looks for what it changes, so a run
     that stopped part way can run again; the schema goes last. Only here does code read an older format."""
@@ -381,6 +425,8 @@ def migrate(tr: Tracker) -> None:
     extra = sorted(used - set(tr.labels) - {ISSUE, BLOCKER})
     if extra:
         tr.readme.save({"labels": [x for x in tr.labels if x not in DEFAULT_LABELS] + extra})
+    if tr.schema < 6:
+        legacy_events(tr)
     tr.readme.save({"schema": SCHEMA})
 
 
@@ -392,7 +438,7 @@ OLD_BACKUP = re.compile(r".+-\d{8}-\d{6}")
 def upgrade(tr: Tracker) -> None:
     """Back a tracker up, once per format it leaves, and migrate it. A README that cannot be read is left to `check`."""
     import shutil  # only here: a hook loads this module, and rarely gets this far
-    with locked():
+    with locked(), unguarded():  # the one writer of an older format (`other_format`)
         tr = Tracker(tr.root)  # another process may have done it while this one waited
         if tr.schema >= SCHEMA or tr.readme_problems:
             return
@@ -403,7 +449,7 @@ def upgrade(tr: Tracker) -> None:
             shutil.copytree(tr.root, backup, ignore=lambda folder, names: {
                 x for x in names if x == ".DS_Store" or x.endswith(".tmp") or folder == top and x == EVIDENCE_DIR})
         migrate(tr)
-        append_log(tr, f"Migrated to tracker format {SCHEMA} (backup {backup})", [])
+        append_event(tr, "migrated", f"Migrated to tracker format {SCHEMA} (backup {backup})", [], schema=SCHEMA)
 
 
 def prune_backups() -> None:
@@ -435,31 +481,47 @@ def stop_old_viewer() -> None:
     OLD_VIEWER.unlink(missing_ok=True)
 
 
-class NewerFormat(Exception):
-    """`refuse_newer` refused a write."""
+class OtherFormat(Exception):
+    """`refuse_other_format` refused a write into the tracker at `root`; the message is `other_format`'s sentence."""
+
+    def __init__(self, why: str, root: Path):
+        super().__init__(why)
+        self.root = root
 
 
-def newer_format(root: Path) -> str:
-    """Why this code writes nothing to the tracker at `root`, in one sentence: its format is newer than SCHEMA. A
-    session runs the plugin version it loaded until it reloads, and the newer version that migrated the tracker never
-    migrates it again: what this one wrote there would stay in the older format. Empty when this code may write it."""
-    newer = Tracker(root).schema
-    return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {newer}; this one "
-            f"writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the session"
-            if newer > SCHEMA else "")
+def other_format(root: Path) -> str:
+    """Why this code writes nothing to the tracker at `root`, and what to do, in one sentence that holds for every
+    reader: a refused command in a session or a terminal, the hooks' user notice, a UI, the watch, `check`. Empty when
+    it may. It writes only its own format, SCHEMA. A newer one: a session runs the plugin version it loaded until it
+    reloads, and the newer version that migrated the tracker never migrates it again, so what this one wrote there
+    would stay in the older format. An older one could not migrate (`upgrade_trackers`), and its next migration would
+    read what this one wrote as the older format: events written meanwhile would keep its old log from becoming events
+    (`legacy_events`). Only `upgrade` writes an older one. A folder with no README yet is a tracker being made."""
+    tr = Tracker(root)
+    if tr.schema > SCHEMA:
+        return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {tr.schema}; "
+                f"this one writes {SCHEMA}), so this one writes nothing to it: use the newer version (update the "
+                "plugin, then reload it or restart each session that still runs this one)")
+    if tr.schema < SCHEMA and tr.readme.path.exists():
+        fix = (f"`tracker check --tracker {root.name}` says what is wrong in its README.md, which the user, not an "
+               "agent, fixes by hand" if tr.readme_problems else
+               "fix the error each `tracker` command prints when it tries to migrate it (the next command tries again)")
+        return (f"{root.name} could not be brought to this version's tracker format (it is in format {tr.schema}; "
+                f"this one writes {SCHEMA}), so this one writes nothing to it: {fix}")
+    return ""
 
 
-def refuse_newer(root: Path) -> None:
-    """Refuse a write into a tracker in a newer format (`newer_format`): raise NewerFormat."""
-    if why := newer_format(root):
-        raise NewerFormat(why)
+def refuse_other_format(root: Path) -> None:
+    """Refuse a write into a tracker in another format (`other_format`): raise OtherFormat."""
+    if why := other_format(root):
+        raise OtherFormat(why, root)
 
 
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
     tracker that fails stays as it is, says why, and tries again next time. From here on, refuse each write into a
-    tracker in a newer format (`refuse_newer`). Also stops the old viewer (`stop_old_viewer`)."""
-    guard_writes(refuse_newer)
+    tracker in another format (`refuse_other_format`). Also stops the old viewer (`stop_old_viewer`)."""
+    guard_writes(refuse_other_format)
     if OLD_VIEWER.exists():
         stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):
