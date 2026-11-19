@@ -237,14 +237,16 @@ PR_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
 
 
 def log_opened(tr: Tracker, response) -> None:
-    """Log the PR a `gh pr create` opened (`pr.opened`): the last PR address in its output, where gh prints it, once
-    per PR. Claude Code gives a Bash command's output as `stdout`. A command that failed reaches no `post-bash` hook,
-    and one whose output holds no address logs nothing. A tracker the format guard refuses gets no event."""
+    """Log the PR a `gh pr create` opened (`pr.opened`), once per PR: gh prints its address as the output's last
+    line. Claude Code gives a Bash command's output as `stdout`. A command that failed reaches no `post-bash` hook,
+    and one whose output ends in anything else (`--dry-run` prints the body last) logs nothing. A tracker the format
+    guard refuses gets no event."""
     out = response.get("stdout") if isinstance(response, dict) else None
-    found = PR_PAGE.findall(out) if isinstance(out, str) else []
+    last = (out.strip().splitlines() or [""])[-1].strip() if isinstance(out, str) else ""
+    found = PR_PAGE.fullmatch(last)
     if not found:
         return
-    repo, number = found[-1]
+    repo, number = found.groups()
     key = pr_key(repo, number)
     try:
         with locked():

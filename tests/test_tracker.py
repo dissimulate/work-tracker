@@ -2287,7 +2287,8 @@ class PrsOpened(unittest.TestCase):
 
     def test_a_silent_pr_create_logs_nothing(self):
         before = tree(store.HOME / self.s)
-        for response in ({"stdout": "", "stderr": "aborted"}, None, {"stdout": "see github.com/a/x"}):
+        dry = {"stdout": "Would have created a Pull Request with:\nBody: closes https://github.com/a/x/pull/5\n"}
+        for response in ({"stdout": "", "stderr": "aborted"}, None, {"stdout": "see github.com/a/x"}, dry):
             with self.subTest(response=response):
                 self.bash(self.CREATE, response)  # `hook` checks that it exits 0
         failed = hook("resumed", self.sid, self.work, env=no_gh(), hook_event_name="PostToolUseFailure",
