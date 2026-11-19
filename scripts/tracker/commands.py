@@ -26,7 +26,7 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
-    in_repos, items_of, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
+    in_repos, items_of, kept_words, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
     record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
     work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
@@ -365,6 +365,9 @@ def who_settled(by: str | None, source: str | None, cite: str | None = None) -> 
             die("--cite quotes the human who decided: it goes with --by <name>"
                 + (", in place of --source" if source else ""))
         word = cited_word(session_id(), cite)
+        if not kept_words(load_session(session_id())):
+            die("--cite: this session kept no message of the human's; leave --cite out to enter the resolution "
+                "uncited")
         if not word:
             die(f'--cite "{short(cite, 40)}": no message of the human\'s that this session kept (its last '
                 f"{WORDS_KEPT}) holds it. Quote a few words from the start of what they said, or leave --cite out to "

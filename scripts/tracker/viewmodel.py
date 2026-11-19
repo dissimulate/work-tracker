@@ -11,7 +11,7 @@ from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, 
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
     log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import HANDOFF_KINDS, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
+from .moves import HANDOFF_KINDS, PR_NUMBER, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
 from .session import ago, around, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
@@ -134,7 +134,7 @@ def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
 
     for t in tr.tickets:
         for n, state in t.prs.items():
-            if not n.isascii() or not n.isdigit():  # a hand edit gone wrong, which `sync` follows no more than this
+            if not PR_NUMBER.fullmatch(n):  # a hand edit gone wrong, which `sync` follows no more than this
                 continue
             x = row(tr.repo_of(t), str(int(n)), t)
             x["state"] = x["state"] or state

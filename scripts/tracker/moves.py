@@ -284,7 +284,8 @@ def whose_move(tr: Tracker, t: Record, coordinated: bool = False, items: list[It
     return replace(named(move), stuck_from=move.stuck_from and named(move.stuck_from))
 
 
-PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
+PR_NUMBER = re.compile(r"[0-9]{1,9}")  # a PR's number: ASCII digits, as many as one can have
+PR_PAGE = re.compile(rf"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/({PR_NUMBER.pattern})(?![0-9])")  # owner/name, n
 
 
 @dataclass

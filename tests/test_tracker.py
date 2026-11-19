@@ -3310,9 +3310,16 @@ class Ui(unittest.TestCase):
         s, t = self.pr_tracker()
         self.synced(t, [pull(11, branch="f1")])
         path = store.HOME / s / "tickets" / "S-1.md"
-        damaged = "x12:open, ²:open, 011:open, 11:open"  # hand edits gone wrong
+        damaged = f"x12:open, ²:open, {'9' * 5000}:open, 011:open, 11:open"  # hand edits gone wrong
         path.write_text(path.read_text().replace("11:open", damaged))
         self.assertEqual([x["key"] for x in data(s)["prs"]], ["a/x#11"])
+
+    def test_a_link_to_no_pr_number_is_no_pr(self):
+        s, t = self.pr_tracker()
+        for url in (f"https://github.com/a/x/pull/{'9' * 5000}", "https://github.com/a/x/pull/\u0663"):
+            self.assertIn("`check`:", run(*t, "add", "S-1", "link", f"PR: {url}"))
+        self.assertEqual(data(s)["prs"], [])
+        run(*t, "check")
 
     def test_a_tracker_with_no_pr_lists_none(self):
         self.assertEqual(data(self.tracker())["prs"], [])
@@ -5191,6 +5198,11 @@ class CitedWord(unittest.TestCase):
         self.prompt("Unrelated")
         self.decide("--by", "Ryan", "--cite", "postgres")
         self.assertEqual(self.settled()[1]["word"]["excerpt"], "Go with postgres")
+
+    def test_a_session_that_kept_no_word_says_to_leave_cite_out(self):
+        out = self.decide("--by", "Ryan", "--cite", "postgres", code=2)
+        self.assertIn("leave --cite out", out)
+        self.assertNotIn("Quote a few words", out)  # no quote can match
 
     def test_a_quote_no_kept_message_holds_refuses_and_changes_nothing(self):
         self.prompt("Use Postgres for the store")
