@@ -16,11 +16,11 @@ from typing import NamedTuple
 from .system import alive, die, entered_via, env_int
 from .store import files_hash, locked, read_json, write_json
 from .git import forget
-from .schema import COORDINATOR, LIVE_SYNC_S, STATE_KEEP_DAYS
+from .schema import COORDINATOR, LIVE_SYNC_S, QUIET_KINDS, STATE_KEEP_DAYS
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
-from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, claude_sessions, coordinated, grant_path, granted,
-    live_sessions, match_cwd, session_id, ticket_facts, watch_running, Live)
+from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
+    granted, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -136,11 +136,11 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
     open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's that
     another session wrote (`sid`: the watch's own), so a worker's question reaches it at once (`asks`). With no `tr`,
     no decision is looked up. A legacy event is the log from before the event file, which a migration writes all at
-    once: none is new."""
+    once: none is new. A QUIET_KINDS one is left out."""
     out, commits = [], {}
     live = coordinated(tr) if tr else False
     for e in events:
-        if e["kind"] == "legacy":
+        if e["kind"] == "legacy" or e["kind"] in QUIET_KINDS:  # an agent's wait shows as the agent's line
             continue
         key = e["refs"][0] if e["refs"] else "log"
         if e["kind"] == "commits":
@@ -163,12 +163,6 @@ def asks(tr: Tracker | None, e: dict, live: bool, role: str, sid: str = "") -> b
     return move.human or (role == COORDINATOR and move.who == COORDINATOR and not own)
 
 
-def agent_tickets(tr: Tracker, x: Live) -> list[str]:
-    """The tickets a session has under way, as a UI shows them."""
-    m = match_cwd(x.cwd, x.sid, tr)
-    return [t.id for t in m.active] if m else []
-
-
 def agent_state(x: Live, now: float) -> str:
     """`<name> <status> <n> min`: the name is the one the host lists the session by."""
     return f"{x.name} {x.status if x.status in ('busy', 'waiting') else 'idle'}" + \
@@ -180,7 +174,7 @@ def agents_lines(tr: Tracker, now: float) -> list[str]:
     program that reaches an agent knows it by (Claude Code's session name, Herdr's terminal); its transcript."""
     out = []
     for x in live_sessions(tr.slug):
-        on = agent_tickets(tr, x)
+        on = agent_tickets(tr, x.cwd, x.sid)
         facts = [f"on {', '.join(on)}" if on else "", f"branch {x.branch}" if x.branch else "", x.cwd,
                  f"claude {x.claude}" if x.claude else "", f"herdr {x.terminal}" if x.terminal else "",
                  f"transcript {x.transcript}" if x.transcript else ""]
@@ -205,7 +199,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.in_flight]
-    on = {x.sid: agent_tickets(tr, x) for x in live}
+    on = {x.sid: agent_tickets(tr, x.cwd, x.sid) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]
 
@@ -449,7 +443,7 @@ class Watcher:
             self.st.setdefault("activity", {})
         agents, out = {}, []
         for x in self.others():
-            on = agent_tickets(tr, x)
+            on = agent_tickets(tr, x.cwd, x.sid)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
             was = old.get(x.sid)

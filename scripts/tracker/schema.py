@@ -205,10 +205,17 @@ EVENTS = {
     "review": "a review of a ticket's plan or built code (`what`; `verdict`: one of VERDICTS; `findings`: the changes "
               "it asks for, each `{n, text}` numbered from 1; `of`: the seq of the submission it answers, 0 for none)",
     "finding.fixed": "findings of a review marked fixed (`what`; `of`: the review's seq; `findings`: their numbers)",
+    "human.wait": "an agent of a session began to wait on a human for a permission or an answer (`asker`: \"\" for the "
+                  "session itself, else its subagent's id; `why`: the tool it asked about, else \"\")",
+    "human.wait.end": "that wait ended (`asker`; `of`: the wait's seq; `seconds`: how long it lasted; `refused`: the "
+                      "error, when the human refused the permission)",
     "migrated": "the tracker brought to a newer format (`schema`)",
     "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
               "opened or settled one)",
 }
+# Kinds that a log shown to a person or an agent leaves out unless asked for by kind: a wait on a human starts and ends
+# at every permission prompt. No log.md line either.
+QUIET_KINDS = ("human.wait", "human.wait.end")
 SUBMIT_WHAT = ("plan", "code")  # what `tracker submit` hands to a reviewer: a ticket's plan, or its built code
 VERDICTS = ("pass", "changes")  # a review's verdict: `changes` lists the changes it asks for as findings
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .system import alive, descendants, die, session_id
-from .store import HOME, locked, read_json, write_json
+from .store import HOME, locked, read_json, write_json, OtherFormat
 from .schema import COORDINATOR, STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
     put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
@@ -709,31 +709,74 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
     return slugs.pop() if len(slugs) == 1 else ""
 
 
-def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None) -> None:
+def agent_tickets(tr: Tracker, cwd: str, sid: str) -> list[str]:
+    """The tickets a session in `cwd` has under way, as a UI shows them."""
+    m = match_cwd(cwd, sid, tr)
+    return [t.id for t in m.active] if m else []
+
+
+def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None, tool: str = "",
+                     failed: str = "") -> None:
     """Keep a tracked session's status from its hooks, and when the status last changed; whether Claude Code keeps a
     process file for it (`native`), until it is seen to; and `where` it runs, for `tracker agents`: `transcript`, its
     transcript's file (an empty one keeps the last), and `terminal`, its Herdr terminal (none: it left Herdr).
-    `asker`: for a wait that starts or ends, the agent it concerns ("" for the session's own). The session stays
-    `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait."""
-    entry = load_session(sid)
-    if not entry.get("tracker"):
-        return
-    asking = set(entry.get("asking", [])) if asker is not None else set()
-    if asker is not None:
-        (asking.add if status == "waiting" else asking.discard)(asker)
-        status = "waiting" if asking else status
-    now = time.time()
-    old = entry.get("activity", {})
-    since = old.get("since", now) if old.get("status") == status else now
-    native = entry.get("native") or None
-    if not native and status != "ended":
-        native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
-    where = where or {}
-    places = {"transcript": where["transcript"]} if where.get("transcript") else {}
-    if "terminal" in where:
-        places["terminal"] = where["terminal"] or None
-    save_session(sid, activity={"status": status, "since": since, "at": now}, native=native,
-                 asking=sorted(asking) or None, **places)
+    `asker`: for a wait on a human that starts or ends, the agent it concerns ("" for the session's own). The session
+    stays `waiting` until each agent that asked goes on; any other event ends the turn, and with it every wait. Each
+    wait is logged at its start and its end (`log_waits`; `tool`, what it asks about; `failed`, the error of a tool
+    the human refused). One lock around the whole: two hooks of one session do not interleave."""
+    with locked():
+        entry = load_session(sid)
+        if not entry.get("tracker"):
+            return
+        waits = dict(entry.get("waits") or {})  # asker: [the seq of its human.wait (0: none written), its epoch]
+        if asker is None:
+            starting, ending = [], list(waits)
+        elif status == "waiting":
+            starting, ending = [asker] if asker not in waits else [], []
+        else:
+            starting, ending = [], [asker] if asker in waits else []
+        if starting or ending:
+            log_waits(sid, entry, waits, starting, ending, tool, failed)
+        status = "waiting" if waits else status
+        now = time.time()
+        old = entry.get("activity", {})
+        since = old.get("since", now) if old.get("status") == status else now
+        native = entry.get("native") or None
+        if not native and status != "ended":
+            native = any(str(c.get("sessionId")) == sid for c in claude_sessions()) or None
+        where = where or {}
+        places = {"transcript": where["transcript"]} if where.get("transcript") else {}
+        if "terminal" in where:
+            places["terminal"] = where["terminal"] or None
+        save_session(sid, activity={"status": status, "since": since, "at": now}, native=native, waits=waits or None,
+                     **places)
+
+
+def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: list[str], tool: str,
+              failed: str) -> None:
+    """Log the waits on a human that end and start, on the session's tickets, and keep `waits` to match: a wait
+    whose start was written ends with `of` its seq. A tracker the format guard refuses gets no event, and a wait
+    started there keeps seq 0, so no end is written for it. It runs at every permission, so it reads none of the
+    event file but its end (`model.last_seq` numbers the event)."""
+    tr, now = tracker_at(entry["tracker"]), time.time()
+    refs = agent_tickets(tr, entry.get("cwd", ""), sid) if tr else []
+
+    def logged(kind: str, text: str, **data) -> int:
+        try:
+            return append_event(tr, kind, text, refs, **data)["seq"] if tr else 0
+        except OtherFormat:
+            return 0
+
+    for who in ending:
+        seq, at = waits.pop(who)
+        seconds = max(0, int(now - at))
+        refused = {"refused": short(failed)} if failed else {}
+        if seq:
+            logged("human.wait.end", f"Waited {seconds} s on a human" + (": refused" if failed else ""), asker=who,
+                   of=seq, seconds=seconds, **refused)
+    for who in starting:
+        waits[who] = [logged("human.wait", "Waiting on a human" + (f": {tool}" if tool else ""), asker=who, why=tool),
+                      now]
 
 
 @dataclass

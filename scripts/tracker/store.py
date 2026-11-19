@@ -33,6 +33,15 @@ def first_writes(callback):
         _first_writes = ()
 
 
+class OtherFormat(Exception):
+    """A write into the tracker at `root` refused, as it is in another format (`contract.refuse_other_format`, which
+    guard_writes runs); the message is `contract.other_format`'s sentence."""
+
+    def __init__(self, why: str, root: Path):
+        super().__init__(why)
+        self.root = root
+
+
 def guard_writes(check) -> None:
     """From now on, run `check` with a tracker's folder before each write in it, a new folder or an appended line too:
     it raises to refuse that write."""

@@ -7,7 +7,7 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import (FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+from .schema import (FACTS, LIVE_SYNC_S, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
     read_events, sequence, sort_key, span, Dep, Record, Tracker)
@@ -266,14 +266,14 @@ def issue_state(tr: Tracker) -> str:
 
 
 def reference_view(tr: Tracker) -> dict:
-    """What is settled or past: closed decisions and actions, the rest of the README, the log."""
+    """What is settled or past: closed decisions and actions, the rest of the README, the log (no QUIET_KINDS)."""
     closed = sorted((a for a in tr.actions if a.closed),
                     key=lambda a: (str(a.get("closed_at")), sort_key(a.id)), reverse=True)
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
     extra = strip_comments(extra).strip()
-    log = [log_line(e)[2:] for e in read_events(tr)]
+    log = [log_line(e)[2:] for e in read_events(tr) if e["kind"] not in QUIET_KINDS]
     return {"decisions": [decision_view(tr, d) for d in tr.decisions if d.closed],
             "actions": [action_view(tr, a) for a in closed],
             "more": {"body": extra} if headings(extra) else None,

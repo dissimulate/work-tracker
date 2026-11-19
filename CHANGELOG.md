@@ -10,6 +10,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker check` warns about an open decision a human must answer that has fewer than two options or none recommended, with the command that adds what is missing.
 - `tracker watch --as coordinator`: a session takes the coordinator role for a tracker. An open decision with no owner is then the coordinator's move, and a human's again when no coordinator is watching.
 - `tracker submit` hands a ticket's plan or built code to its reviewer, and `tracker review` records the verdict and its numbered findings, each as an event on the ticket.
+- Each time a session waits on you for a permission or an answer, the tracker records when the wait started and how long it lasted. These are kept out of `tracker history` and `log.md` unless you ask for them with `--kind`.
 
 ### Changed
 

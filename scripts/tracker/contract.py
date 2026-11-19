@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, atomic_write, guard_writes, locked, read_json, unguarded
+from .store import HOME, atomic_write, guard_writes, locked, read_json, unguarded, OtherFormat
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE_DIR,
     FORMS, ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR,
     OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS,
@@ -503,14 +503,6 @@ def stop_old_viewer() -> None:
     except (OSError, ValueError, KeyError, TypeError):
         pass  # nothing answers as the viewer, or it has gone
     OLD_VIEWER.unlink(missing_ok=True)
-
-
-class OtherFormat(Exception):
-    """`refuse_other_format` refused a write into the tracker at `root`; the message is `other_format`'s sentence."""
-
-    def __init__(self, why: str, root: Path):
-        super().__init__(why)
-        self.root = root
 
 
 def other_format(root: Path) -> str:

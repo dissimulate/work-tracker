@@ -2047,11 +2047,11 @@ class Hooks(unittest.TestCase):
         self.assertEqual(status(), "waiting")  # the session's own wait holds
         hook("resumed", sid, work, tool_name="Bash")  # PostToolUseFailure and SubagentStop
         self.assertEqual(status(), "busy")
-        self.assertNotIn("asking", session.load_session(sid))
+        self.assertNotIn("waits", session.load_session(sid))
         hook("waiting", sid, work, tool_name="Bash", agent_id="sub")
         hook("stop", sid, work)
         self.assertEqual(status(), "idle")  # the turn ended, and with it every wait
-        self.assertNotIn("asking", session.load_session(sid))
+        self.assertNotIn("waits", session.load_session(sid))
         hook("prompt", sid, work, prompt="go")
         hook("stop-failure", sid, work)
         self.assertEqual(status(), "idle")
@@ -4559,6 +4559,126 @@ class Handoffs(unittest.TestCase):
         self.assertEqual([x.split(" ", 2)[2] for x in lines],
                          ["T-1 plan ready for review", "T-1 plan review: changes, 1 finding: 1. a",
                           "T-1 fixed findings 1 of the plan review"])
+
+
+class HumanWaits(unittest.TestCase):
+    """Each wait of a session on a human (a permission, an answer) is logged as a start and an end, by the hooks that
+    keep the session's `waiting` status."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Waits")
+        self.root = store.HOME / self.s
+        self.work = repo("feat/T-1")
+        run(*self.t, "new", "T-1", "--title", "One", "--branch", "feat/T-1")
+        run(*self.t, "set", "T-1", "status=in-progress", cwd=self.work)
+        self.sid = f"w{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, self.sid)
+        session.save_session(self.sid, tracker=self.s, cwd=str(self.work))
+
+    def waits(self) -> list[dict]:
+        return [e for e in model.read_events(model.Tracker(self.root)) if e["kind"] in schema.QUIET_KINDS]
+
+    def test_a_wait_is_a_start_and_an_end(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("resumed", self.sid, self.work, tool_name="Bash")
+        start, end = self.waits()
+        self.assertEqual((start["kind"], start["session"], start["refs"], start["asker"], start["why"]),
+                         ("human.wait", self.sid, ["T-1"], "", "Bash"))
+        self.assertEqual(start["text"], "Waiting on a human: Bash")
+        self.assertEqual((end["kind"], end["session"], end["refs"], end["asker"], end["of"]),
+                         ("human.wait.end", self.sid, ["T-1"], "", start["seq"]))
+        self.assertGreaterEqual(end["seconds"], 0)
+        self.assertNotIn("refused", end)
+        self.assertEqual(end["text"], f"Waited {end['seconds']} s on a human")
+        self.assertNotIn("waits", session.load_session(self.sid))
+
+    def test_a_prompt_ends_an_open_wait(self):
+        hook("waiting", self.sid, self.work, tool_name="AskUserQuestion")
+        hook("prompt", self.sid, self.work, prompt="go")
+        start, end = self.waits()
+        self.assertEqual(end["of"], start["seq"])
+        self.assertEqual(session.load_session(self.sid)["activity"]["status"], "busy")
+
+    def test_a_session_end_ends_an_open_wait(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("session-end", self.sid, self.work, reason="other")
+        start, end = self.waits()
+        self.assertEqual(end["of"], start["seq"])
+
+    def test_each_asker_has_its_own_wait(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("waiting", self.sid, self.work, tool_name="Bash", agent_id="a1")
+        hook("resumed", self.sid, self.work, tool_name="Bash", agent_id="a1")
+        mine, theirs, end = self.waits()
+        self.assertEqual((mine["asker"], theirs["asker"]), ("", "a1"))
+        self.assertEqual((end["kind"], end["asker"], end["of"]), ("human.wait.end", "a1", theirs["seq"]))
+        self.assertEqual(session.load_session(self.sid)["activity"]["status"], "waiting")  # the session's own holds
+        hook("resumed", self.sid, self.work, tool_name="Bash", agent_id="a2")  # an agent that did not ask
+        self.assertEqual(len(self.waits()), 3)
+
+    def test_asking_twice_is_one_wait(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        self.assertEqual([e["kind"] for e in self.waits()], ["human.wait"])
+
+    def test_a_refused_permission_is_recorded(self):
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("resumed", self.sid, self.work, tool_name="Bash", hook_event_name="PostToolUseFailure", error="denied")
+        end = self.waits()[-1]
+        self.assertEqual((end["refused"], end["text"]), ("denied", f"Waited {end['seconds']} s on a human: refused"))
+
+    def test_a_session_on_no_tracker_writes_nothing(self):
+        session.save_session(self.sid, tracker=None)
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("resumed", self.sid, self.work, tool_name="Bash")
+        self.assertEqual(self.waits(), [])
+        self.assertNotIn("waits", session.load_session(self.sid))
+
+    def test_a_refused_tracker_gets_no_wait_event(self):
+        for refuse in (NewerFormat.newer, NewerFormat.unmigrated):
+            with self.subTest(refuse.__name__):
+                self.setUp()
+                refuse(self, self.s)
+                before = tree(self.root)
+                hook("waiting", self.sid, self.work, tool_name="Bash")  # each exits 0: `hook` checks
+                self.assertEqual(session.load_session(self.sid)["activity"]["status"], "waiting")
+                hook("resumed", self.sid, self.work, tool_name="Bash")
+                self.assertEqual(session.load_session(self.sid)["activity"]["status"], "busy")
+                hook("waiting", self.sid, self.work, tool_name="Bash")
+                hook("session-end", self.sid, self.work, reason="clear")
+                self.assertEqual(session.load_session(self.sid)["activity"]["status"], "ended")
+                self.assertEqual(tree(self.root), before)
+                after = f"{self.sid}b"
+                self.addCleanup(session.drop_session, after)
+                hook("session-start", after, self.work, source="clear")
+                self.assertEqual(session.load_session(after)["tracker"], self.s)  # the /clear take-over found it
+
+    def test_waits_are_quiet(self):
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            run("step", "T-1", "First step", cwd=self.work)
+            run("step", "T-1", "Second step", cwd=self.work)
+        log = (self.root / "log.md").read_text()
+        hook("waiting", self.sid, self.work, tool_name="Bash")
+        hook("resumed", self.sid, self.work, tool_name="Bash")
+        self.assertEqual(len(self.waits()), 2)
+        self.assertEqual((self.root / "log.md").read_text(), log)
+        self.assertNotIn("human", run(*self.t, "history", "--last", "0"))
+        tr = model.Tracker(self.root)
+        self.assertEqual(watcher.log_events(self.waits(), tr), [])
+        recent = views.recent_log(tr, tr.lookup("T-1"), views.BRIEF_LOG)
+        self.assertEqual([x.split("] ", 1)[1] for x in recent[2:]], ["First step", "Second step"])
+        self.assertNotIn("human", json.dumps(data(self.s)["reference"]["log"]))
+
+    def test_a_wait_does_not_read_the_event_file(self):
+        def unread(tr):
+            raise AssertionError("the event file was read")
+
+        for event in ("waiting", "resumed"):
+            data_ = {"session_id": self.sid, "cwd": str(self.work), "tool_name": "Bash"}
+            with mock.patch.object(model, "event_lines", unread), mock.patch.dict(os.environ), \
+                    mock.patch.object(hooks, "hook_input", return_value=data_):
+                hooks.run_hook(event)  # a failure would exit
+        self.assertEqual([e["kind"] for e in self.waits()], ["human.wait", "human.wait.end"])
 
 
 if __name__ == "__main__":
