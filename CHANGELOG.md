@@ -19,6 +19,7 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 - `tracker check` warns of each open ticket with no `Issue:` link, once any ticket of the tracker has one. `tracker set tracker issues=required` makes it an error for every open ticket.
 - `tracker data` lists each PR the tickets name, once, with its title, state, move, tickets and history, for a view to show. The view does not draw it yet.
 - At your next message, a session is also told what other sessions, a terminal or GitHub wrote on its tickets since it last looked: a note, a step, a review or submission, a PR's new state or review. At most the newest 5, with a count of the rest and the command that shows them.
+- `tracker watch --mine`: an agent session watches only its own tickets, and is woken when another session, a terminal or GitHub changes them: a move that became its own, a review, a note, a PR's state. What the watch printed is not repeated at your next message, and the other way round. It follows the session to other tickets, and ends by itself when none is under way.
 - A resolution entered on your word can cite your message: the session keeps the start of the last 5 things you said in it (messages and, in Claude Code, answers to its questions), and `tracker decide D-<n> --resolve "..." --by <name> --cite "<a few words you said>"` copies the one that holds those words into the log. Only a cited message reaches the log. A quote that no kept message holds is refused.
 
 ### Changed

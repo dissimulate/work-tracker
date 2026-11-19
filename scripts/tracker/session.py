@@ -147,6 +147,21 @@ def unlink_session(sid: str) -> None:
         write_json(path, {k: v for k, v in kept.items() if v is not None})
 
 
+# What a session keeps when it moves to another tracker or tickets (`relink_session`): the human's words it kept
+# (`keep_word`), the user's stop of its watch (`no_watch`) and the waits the turn-end hook asked it to watch for
+# (`told_watch`).
+CARRIED = ("words", "no_watch", "told_watch")
+
+
+def relink_session(sid: str, **fields) -> None:
+    """Put the session on a tracker afresh, as `unlink_session` leaves it (nothing seen yet), with `fields` and what it
+    carries (CARRIED)."""
+    with locked():
+        entry = load_session(sid)
+        unlink_session(sid)
+        save_session(sid, **{k: entry.get(k) for k in CARRIED}, **fields)
+
+
 # `/compact`, `/work-tracker:tracker index`, a skill `$work-tracker:watch` (a skill's name is lower case: not `$HOME`)
 COMMAND_CALL = re.compile(r"(/[A-Za-z]|\$[a-z])[\w.:-]*(\s|$)")
 
@@ -752,16 +767,18 @@ NEWS_MAX = 5  # events a session's news names; the older ones as a count
 GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, whichever session's sync read it
 
 
-def news(sid: str, m: Match) -> list[str]:
-    """What the session has not been told yet about its tickets (`m.focus`), one line each, and now counts as told:
-    what `changes_since` finds since the baseline (`seen`), then each event on those tickets since `seen_seq` that
-    another session, a terminal or GitHub wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX. A session whose focus
-    changed since its baseline, or that has no `seen_seq` yet, gets none: its baseline starts from now. The prompt
-    hook calls it at each message, and saves the baseline with it, so each thing is told once."""
-    ids = [t.id for t in m.focus]
-    with locked():  # read and save as one step, so that `count_own` cannot overwrite it
+def news(sid: str, m: Match, tickets: list[Record] | None = None) -> list[str]:
+    """What the session has not been told yet about its tickets (`tickets`, default `m.focus`), one line each, and now
+    counts as told: what `changes_since` finds since the baseline (`seen`), then each event on those tickets since
+    `seen_seq` that another session, a terminal or GitHub wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX. A session
+    whose tickets changed since its baseline, or that has no `seen_seq` yet, gets none: its baseline starts from now.
+    The prompt hook and the session's own watch (`tracker watch --mine`) both call it, against the one baseline it
+    saves, so each thing is told once, by whichever comes first."""
+    tickets = m.focus if tickets is None else tickets
+    ids = [t.id for t in tickets]
+    with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
         entry = load_session(sid)
-        now, last = watch(m.tracker, m.focus), last_seq(m.tracker)
+        now, last = watch(m.tracker, tickets), last_seq(m.tracker)
         same = bool(ids) and entry.get("seen_for") == ids
         lines = changes_since(m.tracker, entry["seen"], now) if same else []
         base = entry.get("seen_seq")

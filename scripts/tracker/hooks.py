@@ -17,13 +17,13 @@ from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE
 from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, context_tracker, cwd_field, declined, unlink_session, get_mark,
-    hand_over, in_repos, keep_word, lag, load_session, match_cwd, news, own_edit, record_commits, remember,
+from .session import (behind, branch_matches, context_tracker, cwd_field, declined, get_mark, hand_over, in_repos,
+    keep_word, lag, load_session, match_cwd, news, own_edit, record_commits, relink_session, remember,
     save_session, session_activity, take_over, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
-from .watcher import granted, set_grant
+from .watcher import granted, load_state, set_grant, stop_watch
 
 PR_TRIGGER = re.compile(rf"{PR_COMMAND.pattern}|\bgit\s+push\b")  # the forge's PR commands, or a push
 
@@ -128,8 +128,7 @@ def hook_session_start(data: dict) -> None:
             elif command_context():
                 emit_context("SessionStart", "")
             return
-        unlink_session(sid)  # a wait it left open ends at its next event
-        save_session(sid, tracker=sure.tracker.slug)
+        relink_session(sid, tracker=sure.tracker.slug)  # a wait it left open ends at its next event
         m = match_cwd(cwd, sid)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
@@ -312,7 +311,10 @@ def watch_request(data: dict) -> bool:
     sid = where(data)[1]
     if not m or not sid:
         return False
-    set_grant(sid, m[1].split() != ["stop"])
+    if m[1].split() == ["stop"]:
+        stop_watch(sid)
+    else:
+        set_grant(sid, True)
     return True
 
 
@@ -336,7 +338,8 @@ def hook_prompt(data: dict) -> None:
     told = news(sid, m)
     fields = {"prompts": n + 1} | cwd_field(cwd)
     lines = []
-    if told and not granted(sid):  # a watching session has them from its watch
+    # A session whose full watch runs has them from that watch; a watch of its own tickets shares this baseline.
+    if told and not (granted(sid) and not load_state(m.tracker.slug, sid).get("mine")):
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
                      "another session or a PR sync): " + "; ".join(told) + ".")
     ask = next_request(m, cwd, sid)

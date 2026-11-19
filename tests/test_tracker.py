@@ -937,6 +937,22 @@ class FileSafety(unittest.TestCase):
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"symlinks unavailable: {exc}")
 
+    def test_the_lock_keeps_out_another_thread_of_the_process(self):
+        """A watch's sync runs in a thread while its look (`session.news`) holds the lock: the two take turns."""
+        order = []
+
+        def sync_thread():
+            with store.locked():
+                order.append("sync")
+
+        with store.locked():
+            other = threading.Thread(target=sync_thread)
+            other.start()
+            other.join(0.3)
+            order.append("look")
+        other.join()
+        self.assertEqual(order, ["look", "sync"])
+
     def test_atomic_write_ignores_the_old_temporary_name(self):
         outside, path = self.root / "outside", self.root / "record.md"
         outside.write_text("keep me")
@@ -4537,6 +4553,265 @@ class Watch(unittest.TestCase):
             run(*self.t, "log", "it writes")
             hook("prompt", sid, cwd, prompt="$work-tracker:watch stop")
             self.assertFalse(watcher.granted(sid))
+
+
+class MineWatch(unittest.TestCase):
+    """`tracker watch --mine`: a session's watch of its own tickets wakes it with what others wrote on them, shares
+    the prompt hook's baseline (`session.news`), follows the session and ends by itself. Session A is on T-1; B is
+    another session. With the watch's real settle time; MineWatchAtOnce runs each again with none."""
+
+    SETTLE: float | None = None  # None: watcher.SETTLE_S as it is
+
+    def setUp(self, repos: str = ""):
+        if self.SETTLE is not None:
+            at_once = mock.patch.object(watcher, "SETTLE_S", self.SETTLE)
+            at_once.start()
+            self.addCleanup(at_once.stop)
+        self.s, self.t = new_tracker("Mine", repos)
+        run(*self.t, "new", "T-1", "--title", "One", "--branch", "f1")
+        run(*self.t, "new", "T-2", "--title", "Two")
+        run(*self.t, "set", "T-1", "status=in-progress")
+        self.work = repo("f1")
+        n = time.monotonic_ns()
+        self.a, self.b = f"ma{n}", f"mb{n}"
+        for sid in (self.a, self.b):
+            self.addCleanup(session.drop_session, sid)
+            self.addCleanup(watcher.set_grant, sid, False)
+        self.as_a("start", self.s)
+        self.clock = time.time()
+
+    def as_a(self, *args: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            return run(*args, cwd=self.work, code=code)
+
+    def as_b(self, *args: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.b}):
+            return run(*args, cwd=self.work, code=code)
+
+    def mine(self) -> watcher.Watcher:
+        return watcher.Watcher(model.tracker_at(self.s), self.a, "session ma", mine=True)
+
+    def look(self, w: watcher.Watcher) -> list[str]:
+        """What one change prints: a look now, and one once the change has settled."""
+        self.clock += 1
+        lines = w.poll(self.clock)
+        self.clock += watcher.SETTLE_S
+        return lines + w.poll(self.clock)
+
+    def texts(self, lines: list[str]) -> list[str]:
+        return [x.split(" ", 1)[1] for x in lines]
+
+    def message(self) -> str:
+        """A's next message: what the prompt hook tells it."""
+        return said(hook("prompt", self.a, self.work, env=no_gh(), prompt="go on"))
+
+    def run_watch(self, w: watcher.Watcher, once: bool = False, during=None) -> tuple[str, int]:
+        """`Watcher.run` in this process: its output, and how many looks it slept before; `during` runs at the first
+        sleep. Each sleep is short, so a change still takes SETTLE_S to settle."""
+        sleeps, real = [], time.sleep
+
+        def sleep(_):
+            if not sleeps and during:
+                during()
+            sleeps.append(1)
+            if len(sleeps) > 300:
+                raise KeyboardInterrupt  # it never returned: the assertions below say so
+            real(0.05)
+
+        out = io.StringIO()
+        with mock.patch.object(watcher.time, "sleep", sleep), contextlib.redirect_stdout(out):
+            w.run(once)
+        return out.getvalue(), len(sleeps)
+
+    def test_a_note_on_my_ticket_wakes_me(self):
+        w = self.mine()
+        first = w.claim(self.clock)
+        self.assertEqual(self.texts(first), [f"watching your tickets on {self.s}: T-1 in-progress · move: you — no "
+                                             "PR yet"])
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertEqual(self.texts(self.look(w)), ["T-1: base branch moved"])
+        self.assertEqual(watcher.load_state(self.s, self.a).get("mine"), True)
+        self.assertNotIn("snapshot", watcher.load_state(self.s, self.a))
+
+    def test_a_news_line_is_printed_as_time_and_text(self):
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        lines = self.look(w)
+        self.assertEqual(lines, [f"{time.strftime('%H:%M', time.localtime(self.clock))} T-1: base branch moved"])
+
+    def test_a_review_wakes_me_with_my_move(self):
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertEqual(self.look(w), [])  # its own: the move goes to a reviewer
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        told = self.texts(self.look(w))
+        self.assertIn("T-1 plan review: changes, 1 finding: 1. Split it", told)
+        self.assertTrue(any(x.startswith("T-1 move now: you") for x in told), told)
+
+    def test_a_pr_review_the_watchs_own_sync_reads_wakes_me_with_my_move(self):
+        self.setUp("a/x")
+        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")]
+        fake = answers([pull(11, branch="f1", decision="CHANGES_REQUESTED", rounds=rounds)])
+        with mock.patch.object(github, "gh", fake), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            w = self.mine()
+            first = w.claim(self.clock)  # its first look starts the sync, under this session's id: in a thread, which
+            w.job.join()  # may write before that look reads the tracker
+            told = self.texts(first[1:] + self.look(w))
+        mine = [e for e in model.read_events(model.tracker_at(self.s)) if e["kind"] == "pr.review"]
+        self.assertEqual([e["session"] for e in mine], [self.a])  # the watch's own sync read it
+        self.assertIn("T-1: PR #11 review by rev: changes requested", told)
+        self.assertTrue(any(x.startswith("T-1 move now: you") for x in told), told)
+
+    def test_my_own_step_prints_nothing(self):
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_a(*self.t, "step", "T-1", "Built the parser", "--next", "Test it")
+        self.as_a(*self.t, "log", "--ref", "T-1", "my own note")
+        self.assertEqual(self.look(w), [])
+
+    def test_another_tickets_events_agents_and_stuck_items_print_nothing(self):
+        w, full = self.mine(), watcher.Watcher(model.tracker_at(self.s))
+        w.claim(self.clock)
+        full.claim(self.clock)
+        self.as_b("start", self.s)  # B on T-1 too: an agent the full watch reports
+        hook("prompt", self.b, self.work, env=no_gh(), prompt="go")
+        hook("stop", self.b, self.work, env=no_gh())
+        self.as_b(*self.t, "log", "--ref", "T-2", "only about two")
+        run(*self.t, "decide", "Pick a store", "--refs", "T-2")  # a question for a human: `!` on the full watch
+        Watch.coordinator(self, "qb")  # a coordinator watches, and T-2's plan waits on it with no session on T-2
+        self.addCleanup(watcher.set_grant, "qb", False)
+        run(*self.t, "set", "T-2", "status=in-progress")
+        run(*self.t, "submit", "T-2", "--what", "plan")
+        self.assertEqual(self.look(w), [])
+        shown = "\n".join(full.poll(self.clock) + full.poll(self.clock + watcher.SETTLE_S))
+        for line in (f"agent {self.b[:8]}: started", "only about two", "D-01: Opened D-01", "! stuck T-2"):
+            self.assertIn(line, shown)  # the same changes, which a full watch says
+
+    def test_what_the_watch_printed_is_not_in_the_next_message(self):
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertEqual(self.texts(self.look(w)), ["T-1: base branch moved"])
+        self.assertNotIn("base branch moved", self.message())
+
+    def test_what_a_message_told_is_not_printed(self):
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertIn("T-1: base branch moved", self.message())  # a session watching its own tickets is told too
+        self.assertEqual(self.look(w), [])
+
+    def test_a_full_watch_still_keeps_news_out_of_the_message(self):
+        watcher.Watcher(model.tracker_at(self.s), self.a).claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertNotIn("Changed on", self.message())
+
+    def test_the_watch_follows_the_session_to_other_tickets(self):
+        w = self.mine()
+        w.claim(self.clock)
+        run(*self.t, "set", "T-2", "status=in-progress")
+        self.as_a("start", self.s, "--on", "T-2")
+        self.assertEqual(self.look(w), [])  # the change of tickets is no news
+        self.as_b(*self.t, "log", "--ref", "T-2", "about two")
+        self.assertEqual(self.texts(self.look(w)), ["T-2: about two"])
+        self.as_b(*self.t, "log", "--ref", "T-1", "about one")
+        self.assertEqual(self.look(w), [])
+
+    def ended(self, out: str) -> list[str]:
+        return [x for x in out.splitlines()
+                if x.endswith("no ticket of this session is under way: the watch has ended")]
+
+    def test_the_watch_ends_when_no_ticket_is_under_way(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")  # on A's branch too, not started
+        out, _ = self.run_watch(self.mine(), during=lambda: self.as_b(*self.t, "set", "T-1", "status=done",
+                                                                       "summary=Shipped"))
+        lines = out.splitlines()
+        self.assertIn("watching your tickets on", lines[0])
+        self.assertEqual(self.texts(lines[1:]), ["T-1 is now done", "no ticket of this session is under way: the "
+                                                 "watch has ended"])
+        self.assertFalse(watcher.granted(self.a))
+        st = watcher.load_state(self.s, self.a)
+        self.assertTrue(st.get("ended"))
+        self.assertFalse(session.watch_running(st))
+        self.assertNotIn("Next:", out)
+
+    def test_the_watch_ends_when_the_session_moves_to_another_tracker(self):
+        other, _ = new_tracker("Elsewhere")
+        out, _ = self.run_watch(self.mine(), during=lambda: self.as_a("start", other))
+        self.assertEqual(len(self.ended(out)), 1, out)
+        self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
+        self.assertFalse(watcher.granted(self.a))
+        self.assertTrue(watcher.load_state(self.s, self.a).get("ended"))
+        self.assertNotIn("seen_seq", session.load_session(self.a))  # the new tracker's baseline: not this watch's
+
+    def test_a_restarted_mine_watch_repeats_no_first_line(self):
+        w = self.mine()
+        self.assertTrue(w.claim(self.clock))
+        w.release(self.clock)
+        again = self.mine()
+        self.assertEqual(again.claim(self.clock + 1), [])  # nothing new: no line wakes the session
+        again.release(self.clock + 1)
+        out, sleeps = self.run_watch(self.mine(), once=True,
+                                     during=lambda: self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved"))
+        self.assertGreater(sleeps, 0)  # it waited for news
+        self.assertNotIn("watching your tickets", out)
+        self.assertIn(" T-1: base branch moved\n", out)
+        later = self.mine()
+        self.assertIn("watching your tickets", later.claim(time.time() + watcher.CATCH_UP_S + 1)[0])
+        later.release(time.time())
+        watcher.Watcher(model.tracker_at(self.s), self.a).claim(time.time())  # a full watch of the session
+        self.assertNotIn("mine", watcher.load_state(self.s, self.a))
+
+    def test_the_command_prints_the_first_line_and_exits_once(self):
+        out = self.as_a("watch", "--mine", "--once")
+        self.assertIn(f"watching your tickets on {self.s}: T-1 in-progress", out)
+        self.assertTrue(watcher.granted(self.a))
+
+    def test_the_users_stop_survives_tracker_start(self):
+        self.as_a("watch", "--stop")
+        self.assertTrue(session.load_session(self.a).get("no_watch"))
+        self.as_a("start", self.s, "--on", "T-2")
+        self.assertTrue(session.load_session(self.a).get("no_watch"))
+        hook("prompt", self.a, self.work, env=no_gh(), prompt="/work-tracker:watch")  # a start clears it
+        self.assertNotIn("no_watch", session.load_session(self.a))
+        hook("prompt", self.a, self.work, env=no_gh(), prompt="/work-tracker:watch stop")
+        self.as_a("start", self.s)
+        self.assertTrue(session.load_session(self.a).get("no_watch"))
+
+    def test_mine_refuses_at_a_terminal_with_a_role_with_only_and_on_another_tracker(self):
+        other, _ = new_tracker("Elsewhere")
+        c = f"mc{time.monotonic_ns()}"  # a session on no tracker
+        self.addCleanup(watcher.set_grant, c, False)
+
+        def kept() -> tuple:
+            return (session.load_session(self.a), session.load_session(c), watcher.granted(self.a),
+                    watcher.granted(c), watcher.state_path(self.s, self.a).exists(),
+                    watcher.state_path(other, self.a).exists())
+
+        before = kept()
+        for case in ((None, self.s), (self.a, self.s, "--as", "coordinator"), (self.a, self.s, "--only", "ticket"),
+                     (self.a, self.s, "--hold", "60"), (self.a, other), (c, self.s)):
+            with self.subTest(case=case), mock.patch.dict(os.environ, {"TRACKER_SESSION": case[0]} if case[0] else {}):
+                self.assertIn("--mine", run("watch", *case[1:], "--mine", "--once", cwd=self.work, code=2))
+                self.assertEqual(kept(), before)
+
+    def test_stop_marks_the_session_and_a_new_watch_clears_it(self):
+        self.as_a("watch", "--stop")
+        self.assertTrue(session.load_session(self.a).get("no_watch"))
+        self.mine().claim(self.clock)
+        self.assertNotIn("no_watch", session.load_session(self.a))
+        c = f"mc{time.monotonic_ns()}"
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+            run("watch", "--stop")
+        self.assertFalse(session.session_path(c).exists())  # a session with no file gets none
+
+
+class MineWatchAtOnce(MineWatch):
+    """MineWatch with no settle time: a change is printed at the first look."""
+
+    SETTLE = 0
 
 
 class Delete(unittest.TestCase):

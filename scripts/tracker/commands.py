@@ -26,15 +26,15 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
-    in_repos, items_of, kept_words, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
-    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
-    work_dir)
+    context_tracker, in_repos, items_of, kept_words, load_session, locate, mark_up_to_date, match_cwd, matched,
+    no_tracker, on_branch, record_commits, relink_session, remember, resolve, save_session, session_id, session_tracker,
+    trackers_for_repo, unlink_session, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
 from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, grant_path,
-                      session_name, set_grant, Watcher)
+                      session_name, stop_watch, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
@@ -1201,9 +1201,7 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    words = load_session(sid).get("words")  # the words a session kept go with it to the tracker it moves to
-    unlink_session(sid)  # a new start: nothing seen yet
-    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None, words=words)
+    relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)  # a new start: nothing seen yet
     m, found = match_pr(match_cwd(cwd, sid), cwd)
     record_commits(m, cwd)
     remember(sid, m, cwd)
@@ -1213,17 +1211,19 @@ def cmd_start(args):
 
 def cmd_watch(args):
     """A watch, in a terminal or in an agent session, which it gives the grant (the hooks and the UIs know a watching
-    session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
-    skill say so."""
+    session by it); `--stop` ends the session's watches. The model runs it only when told to, or, for its own tickets
+    (`--mine`), when the turn-end hook asks: its help and the watch skill say so."""
     inside, sid = agent_session()
     if args.role and not inside:
         die(f"--as {args.role}: a session takes the role, not a terminal")
+    if args.mine and not inside:
+        die("--mine watches an agent session's own tickets: a terminal has none")
     if inside and not grant_path(sid):
         die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
     if args.stop:
         if not inside:
             die("a terminal's watch ends with Ctrl-C")
-        set_grant(sid, False)
+        stop_watch(sid)
         print("The watch has ended: a `tracker watch` of this session still running stops within seconds.")
         return
     only = frozenset(k.strip() for k in (args.only or "").split(",") if k.strip())
@@ -1231,9 +1231,15 @@ def cmd_watch(args):
         die(f"--only takes {', '.join([*EVENT_KINDS, URGENT])}")
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
+    if args.mine and (args.role or only or args.hold):
+        die("--mine takes no --as, --only or --hold: it prints each change to this session's tickets at once")
     tr = named_tracker(args, "watch")
+    own = context_tracker(sid) if args.mine else None
+    if args.mine and (not own or own.slug != tr.slug):
+        die(f"--mine watches this session's tickets on its own tracker, and it is on {own.slug if own else 'none'}: "
+            "`tracker start <name>` puts it on one")
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
-            args.hold, args.role or "").run(args.once)
+            args.hold, args.role or "", args.mine).run(args.once)
 
 
 def cmd_agents(args):

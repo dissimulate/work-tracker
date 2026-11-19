@@ -275,7 +275,7 @@ def build_parser():
                                  "a human), until stopped: a move, a step, a decision, a PR event, an agent that ends "
                                  "its turn or waits on the user, a `check` error, a stuck item. One watch per session "
                                  "and tracker. In an agent session, run it only when the user, or a skill or "
-                                 "instruction from them, tells you to watch: never on your own")
+                                 "instruction from them, tells you to watch, or when the turn-end hook asks")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
@@ -290,6 +290,9 @@ def build_parser():
     sp.add_argument("--as", dest="role", choices=[COORDINATOR], help="in an agent session: take the tracker's "
                     "coordinator role while this watch runs; an open decision with no owner is then yours to triage "
                     "before a human's")
+    sp.add_argument("--mine", action="store_true", help="in an agent session: only what others changed on this "
+                    "session's own tickets (a move that becomes yours, a review, a note, a PR's state); ends by itself "
+                    "when none is under way")
     sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
                                    "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
                                    "transcript file")

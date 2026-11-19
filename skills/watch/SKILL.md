@@ -1,7 +1,7 @@
 ---
 name: watch
-description: Watch a tracker - get each change to its tickets, agents and PRs as it happens, and act on it as told. Only when the user, or a skill or instruction from them, tells you to watch a tracker; never on your own. Give a tracker name and the task, or stop.
-argument-hint: "<tracker name> [what to do] | stop"
+description: Watch a tracker - get each change to its tickets, agents and PRs as it happens, and act on it as told. Only when the user, or a skill or instruction from them, tells you to watch a tracker, or when the turn-end hook asks. Give a tracker name and the task, mine, or stop.
+argument-hint: "<tracker name> [what to do] | mine | stop"
 ---
 
 # Watch a tracker
@@ -11,6 +11,15 @@ This session watches a tracker: it gets each change to the tracker's tickets, ag
 Use the command prefix from the session's `[work-tracker]` hook when supplied. If `tracker` is absent from PATH, use the absolute path to `bin/tracker` at this plugin's root (two directories above this file).
 
 **`stop`**: when the arguments are `stop`, or the user or the task says to stop, run `tracker watch --stop` (a running `tracker watch` of this session stops by itself), say so in one line, and end the turn.
+
+## Watch your own tickets
+
+When the arguments are `mine`, or the turn-end hook asked: run exactly `tracker watch --mine`. It prints only what others change on this session's own tickets (a move that becomes yours, a review, a note, a PR's state), and takes no `--hold`, `--only` or `--as`.
+
+- When the host has a tool that turns each line a background command prints into an event (in Claude Code: Monitor), run it with that tool at its longest timeout, and start it again when the timeout stops it.
+- Else run `tracker watch --mine --once` with the host's background command tool, and start it again after each batch.
+- Then end the turn. On each line, read `tracker context <id> --brief` and act as the tracker skill says.
+- When it prints that the watch has ended, do not start it again.
 
 ## Run the watch
 
