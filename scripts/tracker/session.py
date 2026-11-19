@@ -833,7 +833,8 @@ def news_ids(entry: dict, m: Match) -> list[str]:
 
 def remember(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed about its tickets (the commits past `next` too, so the hooks do not ask
-    again), and the directory it works in (`work_dir`): the baseline of its `news`."""
+    again), and the folder it works in (`cwd`, as the caller chose it: `work_dir`, `work_match`): the baseline of its
+    `news`."""
     fields = cwd_field(cwd)
     if m.focus:
         fields.update(seen=watch(m.tracker, m.focus), seen_for=[t.id for t in m.focus], seen_seq=last_seq(m.tracker))

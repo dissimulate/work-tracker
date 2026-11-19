@@ -114,7 +114,7 @@ def hook_session_start(data: dict) -> None:
     cwd, sid = where(data)
     source = data.get("source")
     kept = take_over(sid, cwd) if source == "clear" and sid else ""  # /clear keeps the session's tracker
-    m, cwd = work_match(cwd, sid)  # a compaction after a `cd` away from its work: the folder the session works in
+    m, cwd = work_match(cwd, sid)  # the folder the session works in, which a `cd` away from it does not change
     note, notice = "", f"[work-tracker] This session stays on {kept} after /clear." if kept else ""
     if not m:
         # CLAUDE_CODE_SESSION_ATTENDED: 1 when a person uses the session, 0 when no one can answer (`claude -p`).
@@ -206,9 +206,9 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
         adopt_branch(m, cwd)
         record_commits(m, cwd)
     here = cwd_field(cwd)
-    if ask and m.tickets and here and here["cwd"] != load_session(sid).get("cwd"):
+    if ask and here and here["cwd"] != load_session(sid).get("cwd"):
         # The session's own watch matches its tickets in this folder: a turn a watch line started brings no message,
-        # whose hook would save it. A folder with no ticket of the session (a scratch folder) moves nothing.
+        # whose hook would save it.
         save_session(sid, **here)
     text = watch_ask(data, m, sid) if ask else ""
     if text:

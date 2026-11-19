@@ -3042,6 +3042,13 @@ class SessionNews(TwoSessions):
         self.assertEqual(logged[0][0], ["T-2"])
         self.assertIn("Commits on explore: ", logged[0][1])
 
+    def test_a_turn_that_ends_in_a_new_checkout_keeps_it_as_the_sessions_folder(self):
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        self.message()
+        b = repo("explore")  # a turn its watch started: no message there
+        hook("stop", self.a, b, env=no_gh(), stop_hook_active=False)
+        self.assertEqual(session.load_session(self.a)["cwd"], str(b))
+
     def test_a_turn_that_ends_in_another_repo_leaves_the_sessions_folder(self):
         self.setUp("a/x")
         other = repo("main")  # a repo the tracker does not name, on a branch: not its work
