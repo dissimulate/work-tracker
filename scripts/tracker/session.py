@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -540,8 +541,13 @@ def coordinator_since(tr: Tracker) -> float:
     # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
     starts = [st.get("started") for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
               if st.get("role") == COORDINATOR and watch_running(st)]
-    # A start that is no number (a damaged state) counts as long ago: no view stops for it (`watch_running`)
-    return min((x if isinstance(x, (int, float)) and x > 0 else 1.0 for x in starts), default=0.0)
+    # A start that is no time (a damaged state) counts as long ago: no view stops for it (`watch_running`)
+    return min((x if is_time(x) else 1.0 for x in starts), default=0.0)
+
+
+def is_time(x) -> bool:
+    """A watch state's time is an epoch time: a damaged state can hold any JSON, infinity too."""
+    return isinstance(x, (int, float)) and math.isfinite(x) and x > 0
 
 
 # Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
@@ -581,7 +587,7 @@ def ticket_facts(tr: Tracker, t: Record) -> dict:
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
             **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human,
-                "stuck": move.stuck} if move else {})}
+                "stuck_from": move.stuck_from.text(" — ") if move.stuck_from else ""} if move else {})}
 
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, dict]:

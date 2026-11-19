@@ -49,7 +49,7 @@ class Move:
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
     quiet: bool = False  # your own work going on as planned, where nothing has stopped to wait for you
     human: bool = False  # the move is a human's to make: an open action, or a decision a human must answer
-    stuck: bool = False  # it is a human's as its open item is stuck (`open_items`), which a watch says on its own line
+    stuck_from: Move | None = None  # the move it had until its open item turned stuck (`open_items`); None: not stuck
 
     @property
     def mine(self) -> bool:
@@ -200,7 +200,8 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
             what = f"{item.what}, and no session is on {', '.join(alone)}"
         else:
             return item
-        move = Move("human", f"{item.move.what}, stuck with {item.move.who}", item.move.rank, human=True, stuck=True)
+        move = Move("human", f"{item.move.what}, stuck with {item.move.who}", item.move.rank, human=True,
+                    stuck_from=item.move)
         return replace(item, stuck=True, what=what, move=move)
 
     def minutes(at: float) -> str:

@@ -3594,16 +3594,45 @@ class Watch(unittest.TestCase):
         self.assertFalse([x for x in lines if " ! " in x or "stuck W-" in x], lines)
         self.assertFalse(any(i.stuck for i in session.items_of(model.Tracker(self.root))))
 
+    def test_a_watch_that_takes_the_role_counts_from_then(self):
+        now = time.time()
+        prior = {"started": now - 3 * 3600, "ended": now - 60, "at": now - 60,  # a plain watch, re-run a minute ago
+                 "snapshot": {"tickets": {}, "errors": []}, "seq": 0}
+        lines, _ = self.coordinator_claims(prior)
+        self.assertFalse([x for x in lines if " ! " in x or "stuck W-" in x], lines)
+        self.assertFalse(any(i.stuck for i in session.items_of(model.Tracker(self.root))))
+
     def test_a_stuck_move_is_said_by_its_stuck_line_alone(self):
         tr = model.Tracker(self.root)
         self.coordinator()
         run(*self.t, "set", "W-1", "status=in-progress")
         run(*self.t, "submit", "W-1", "--what", "plan")  # no session on W-1: stuck at once
         facts = session.ticket_facts(model.Tracker(self.root), tr.lookup("W-1"))
-        self.assertEqual((facts["move"], facts["stuck"]), ("human — plan review, stuck with coordinator", True))
-        before = {**facts, "move": "coordinator — plan review", "stuck": False, "human": False}
+        self.assertEqual((facts["move"], facts["stuck_from"]),
+                         ("human — plan review, stuck with coordinator", "coordinator — plan review"))
+        before = {**facts, "move": "coordinator — plan review", "stuck_from": "", "human": False}
         new = {"tickets": {"W-1": {**facts, "start": ""}}, "errors": []}
         self.assertEqual(watcher.ticket_events({"tickets": {"W-1": {**before, "start": ""}}}, new), [])
+
+    def test_a_ticket_whose_move_becomes_a_stuck_item_is_said(self):
+        self.coordinator()
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        run(*self.t, "set", "W-1", "status=in-progress")
+        run(*self.t, "decide", "Pick a store", "--blocks", "W-1", "W-2")  # no session on W-1: stuck at once
+        self.assertIn("! stuck D-01: ", "".join(w.poll(now)))
+        run(*self.t, "set", "W-2", "status=in-progress")  # W-2 now waits on that stuck question too: news for W-2
+        w2 = next(x for x in w.poll(now) if " W-2: " in x)
+        self.assertRegex(w2, r"^\d\d:\d\d ! W-2: .*move: human — D-01 open, stuck with coordinator")
+
+    def test_a_watchs_first_lines_say_a_stuck_item_once(self):
+        self.coordinator()
+        run(*self.t, "set", "W-1", "status=in-progress")
+        run(*self.t, "submit", "W-1", "--what", "plan")  # no session on W-1: stuck at once
+        w, now = self.watcher(), time.time()
+        first = w.claim(now)
+        self.assertEqual(len(self.stuck_lines(first)), 1)
+        self.assertEqual(self.stuck_lines(w.poll(now)), [])
 
     def test_an_item_stuck_again_is_said_again(self):
         item = moves.Item("question", "question:D-01", ["W-1"], 0, "coordinator has not answered D-01 for 31 min",
@@ -5072,10 +5101,13 @@ class OpenItems(unittest.TestCase):
     def test_a_damaged_coordinator_state_breaks_no_view(self):
         self.coordinator()
         path = watcher.state_path(self.s, "qb")
-        store.write_json(path, {**json.loads(path.read_text()), "started": "yesterday"})
-        self.assertTrue(session.coordinated(model.tracker_at(self.s)))
-        run(*self.t, "check")
-        data(self.s)
+        for bad in ('"yesterday"', "1e400"):  # no number, and one JSON reads as infinity
+            with self.subTest(bad=bad):
+                state = json.loads(path.read_text())
+                path.write_text(json.dumps({**state, "started": 0}).replace('"started": 0', f'"started": {bad}'))
+                self.assertTrue(session.coordinated(model.tracker_at(self.s)))
+                run(*self.t, "check")
+                data(self.s)
 
     def test_a_humans_own_question_is_never_stuck(self):
         run(*self.t, "decide", "Which store", "--refs", "T-1", "--owner", "Sam")

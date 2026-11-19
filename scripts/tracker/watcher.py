@@ -20,7 +20,7 @@ from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEE
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
-    granted, items_of, live_sessions, session_id, ticket_facts, watch_running, Live)
+    granted, is_time, items_of, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -119,7 +119,8 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
             continue
         if was["stage"] != now["stage"]:
             out.append(Event("ticket", ident, False, f"{was['stage']} → {now['stage']}"))
-        if now.get("move") and now["move"] != was.get("move") and not now.get("stuck"):  # its stuck line says it
+        # A move that only turned stuck is said by its item's own stuck line (`Watcher.stuck`)
+        if now.get("move") and now["move"] != was.get("move") and now.get("stuck_from") != was.get("move"):
             # A move that comes back from someone else (a reviewer, CI, a decision's owner) needs the user too.
             back = bool(was.get("move")) and not was.get("mine")
             out.append(Event("ticket", ident, needs_you(now) or now["mine"] and back, f"move: {now['move']}"))
@@ -270,7 +271,7 @@ def watches_of(tr: Tracker) -> list[dict]:
         if running or time.time() - ended <= 86400:
             started = st.get("started")
             out.append({"who": st["who"], "role": str(st.get("role") or ""), "running": running,
-                        "since": started if isinstance(started, (int, float)) else 0, "ended": 0 if running else ended})
+                        "since": started if is_time(started) else 0, "ended": 0 if running else ended})
     return sorted(out, key=lambda w: w["since"])
 
 
@@ -333,9 +334,10 @@ class Watcher:
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
             again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
-            # Since when this watch has watched: a session's that ran on until now keeps its start. Saved before the
-            # first lines, whose moves read it for a coordinator (`session.coordinator_since`).
-            started = st.get("started", now) if again and self.sid and watch_running(st) else now
+            # Since when this watch has watched: a session's that ran on until now, in the same role, keeps its start.
+            # Saved before the first lines, whose moves read it for a coordinator (`session.coordinator_since`).
+            kept = again and self.sid and watch_running(st) and str(st.get("role") or "") == self.role
+            started = st["started"] if kept and is_time(st.get("started")) else now
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
             set_grant(self.sid, True)  # a session's watch holds it; a watch refused above gives none
             write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid(), "started": started}))
@@ -350,7 +352,7 @@ class Watcher:
             self.sig = files_hash(tr.data_files())
             self.st = {"snapshot": snapshot(tr), "seq": last_seq(tr)}
             self.agents(tr, now)  # known from now on: the summary says what each one does
-            lines = summary(tr, self.others(), now)
+            lines = summary(tr, self.others(), now) + lines_of(self.stuck(tr, now), now)  # each stuck item, once
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
@@ -491,7 +493,8 @@ class Watcher:
 
     def stuck(self, tr: Tracker, now: float) -> list[Event]:
         """Each open item that is stuck (`items_of`, with the clock at each look and the log read only when it
-        changed), said once: its key stays in the state while the item is open, so one that comes back is said again.
+        changed), said once each time it turns stuck: its key stays in the state while it is stuck, so one that comes
+        back, or turns stuck anew, is said again.
         Nothing is written to the tracker. A wait whose session the agent line already shows waiting is that line's
         to say, and the watch's own session's waits are not news to it."""
         items = [i for i in items_of(tr, now) if not (i.kind == "wait" and i.session == self.sid)]
