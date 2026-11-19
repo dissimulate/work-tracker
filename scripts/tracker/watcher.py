@@ -483,15 +483,18 @@ class Watcher:
     def mine_batch(self, tr: Tracker, sig: str, now: float, settled: bool) -> list[Event]:
         """A `mine` look: the session's news (`session.news`) once the files settle. A sync that fails is not said:
         a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is on another tracker
-        or none, or has no ticket under way: then at once, with what the session was last told of, so that the line
-        of a ticket that ended comes before the end."""
+        or none, or has no ticket under way, with the news of a ticket that ended before the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
             self.ended = True
             return []  # its baseline is another tracker's now: it is not this watch's to move
         entry = load_session(self.sid)
         m = match_cwd(entry.get("cwd") or work_dir(), self.sid, tr)
+        # The end waits for a change of the files to settle like any other: a hand edit is written before its hook
+        # counts it as the session's own (`own_edit`). With no change pending (a branch switch), it ends at once.
+        if not settled and self.changed:
+            return []
         if not m.active:
-            self.ended = True  # at once, with the news of the ticket that ended: `news` tells it before the end
+            self.ended = True  # with the news of the ticket that ended: `news` tells it before the end
             return [Event("log", "", False, x) for x in news(self.sid, m)]
         if not settled:
             return []

@@ -4801,6 +4801,27 @@ class MineWatch(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
         self.assertEqual(self.texts(self.look(w)), ["T-3: the API changed under you"])
 
+    def test_a_watch_of_a_session_with_nothing_open_says_so_and_ends(self):
+        run(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        out, _ = self.run_watch(self.mine())
+        self.assertEqual(self.texts(out.splitlines()), [f"watching your tickets on {self.s}: none open",
+                                                        "T-1 is now done",  # a terminal closed it: news to A
+                                                        "no ticket of this session is under way: the watch has ended"])
+
+    def test_my_own_hand_edited_close_is_not_printed_before_its_hook_counts_it(self):
+        if not watcher.SETTLE_S:
+            self.skipTest("with no settle time, a look can fall between the edit and its hook")
+        w = self.mine()
+        w.claim(self.clock)
+        path = store.HOME / self.s / "tickets/T-1.md"
+        path.write_text(re.sub(r"^status: .*", "status: done", path.read_text(), flags=re.M))
+        self.clock += 1
+        self.assertEqual(w.poll(self.clock), [])  # the edit is written; its hook has not run yet
+        self.assertFalse(w.ended)
+        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+        self.assertEqual(w.poll(self.clock + watcher.SETTLE_S), [])
+        self.assertTrue(w.ended)
+
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
         watcher.Watcher(model.tracker_at(other), self.a).claim(time.time())  # its full watch of another tracker runs
@@ -4993,6 +5014,12 @@ class WatchAsk(TwoSessions):
         self.assertEqual(session.load_session(self.a)["activity"]["status"], "busy")  # its turn goes on
         self.assertIsNone(self.stop())
         self.assertEqual(session.load_session(self.a)["activity"]["status"], "idle")
+
+    def test_the_watch_it_asks_for_looks_where_the_session_works_now(self):
+        other = repo("f1")  # another checkout of the branch, which the session moved to in this turn
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(cwd=other), "T-1")
+        self.assertEqual(session.load_session(self.a)["cwd"], str(other))
 
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")

@@ -206,6 +206,7 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
         record_commits(m, cwd)
     text = watch_ask(data, m, sid) if ask else ""
     if text:
+        save_session(sid, **cwd_field(cwd))  # the watch it asks for matches the session's tickets where it works now
         print(json.dumps({"decision": "block", "reason": text}))
     return bool(text)
 
