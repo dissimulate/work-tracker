@@ -3003,6 +3003,14 @@ class SessionNews(TwoSessions):
         self.assertIn("T-1 in-progress", brief)
         self.assertNotIn("on no ticket", brief)
 
+    def test_a_session_on_no_ticket_keeps_the_folder_it_is_in(self):
+        c, first, then = f"sc{time.monotonic_ns()}", Path(tempfile.mkdtemp(dir=BASE)), Path(tempfile.mkdtemp(dir=BASE))
+        self.addCleanup(session.drop_session, c)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+            run("start", self.s, cwd=first)  # no git, no ticket: `tracker agents` shows where it is
+        hook("prompt", c, then, env=no_gh(), prompt="go on")
+        self.assertEqual(session.load_session(c)["cwd"], str(then))
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE
@@ -4856,6 +4864,19 @@ class MineWatch(TwoSessions):
         self.assertEqual(self.texts(self.look(w)), ["T-1: base branch moved"])
         self.assertFalse(w.ended)
 
+    def test_a_message_or_compaction_outside_any_ticket_leaves_the_watch_on(self):
+        for event, extra in (("prompt", {"prompt": "go on"}), ("session-start", {"source": "compact"})):
+            with self.subTest(event):
+                self.setUp()
+                w = self.mine()
+                w.claim(self.clock)
+                plain = Path(tempfile.mkdtemp(dir=BASE))  # a folder with no git and no ticket, where it now is
+                hook(event, self.a, plain, env=no_gh(), **extra)
+                self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+                self.look(w)
+                self.assertFalse(w.ended)
+                self.assertEqual(session.load_session(self.a)["cwd"], str(self.work))
+
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
         watcher.Watcher(model.tracker_at(other), self.a).claim(time.time())  # its full watch of another tracker runs
@@ -5060,6 +5081,12 @@ class WatchAsk(TwoSessions):
         self.asked(self.stop(), "T-1")
         self.assertIsNone(self.stop(cwd=store.HOME / self.s))  # a `cd` there: the same session, on the same wait
         self.assertIsNone(self.stop())
+
+    def test_a_turn_that_ends_outside_any_ticket_uses_up_no_ask(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        self.assertIsNone(self.stop(cwd=Path(tempfile.mkdtemp(dir=BASE))))  # a scratch folder: its waits are unknown
+        self.assertIsNone(self.stop())  # the same wait: asked once
 
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")

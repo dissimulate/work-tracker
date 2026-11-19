@@ -19,7 +19,7 @@ from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, cwd_field, declined, get_mark, hand_over, in_repos,
     keep_word, lag, load_session, match_cwd, move_of, news, news_ids, own_edit, record_commits, relink_session,
-    remember, save_session, session_activity, take_over, watch_running, work_dir, Lag, Match)
+    remember, save_session, session_activity, take_over, watch_running, work_dir, work_match, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -114,8 +114,7 @@ def hook_session_start(data: dict) -> None:
     cwd, sid = where(data)
     source = data.get("source")
     kept = take_over(sid, cwd) if source == "clear" and sid else ""  # /clear keeps the session's tracker
-    cwd = work_dir(cwd)  # a compaction after a `cd` to the tracker: the folder the session works in
-    m = match_cwd(cwd, sid)
+    m, cwd = work_match(cwd, sid)  # a compaction after a `cd` away from its work: the folder the session works in
     note, notice = "", f"[work-tracker] This session stays on {kept} after /clear." if kept else ""
     if not m:
         # CLAUDE_CODE_SESSION_ATTENDED: 1 when a person uses the session, 0 when no one can answer (`claude -p`).
@@ -197,11 +196,10 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
     the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
     asks. Then, at a turn's end (`ask`), the reminder to watch (`watch_ask`): the one time a hook holds a session
     back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`.
-    Whether it held the turn, which then goes on. A cwd inside $TRACKER_HOME (a `cd` to the tracker) stands for the
-    folder the session works in (`work_dir`)."""
+    Whether it held the turn, which then goes on. A cwd inside $TRACKER_HOME, or one with none of the session's
+    tickets, stands for the folder the session works in (`work_match`)."""
     cwd, sid = where(data)
-    cwd = work_dir(cwd)
-    m = match_cwd(cwd, sid)
+    m, cwd = work_match(cwd, sid)
     if not m:
         return False
     if m.branch:
@@ -371,11 +369,10 @@ def hook_prompt(data: dict) -> None:
     way, the first message and every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With
     none, only work since the branch's mark brings it: at once, once per mark, then on those messages while the work
     stays. With a ticket under way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a
-    watch request first. A cwd inside $TRACKER_HOME (a `cd` to the tracker) stands for the folder the session works in
-    (`work_dir`), as for a command."""
+    watch request first. A cwd inside $TRACKER_HOME, or one with none of the session's tickets, stands for the folder
+    the session works in (`work_match`)."""
     cwd, sid = where(data)
-    cwd = work_dir(cwd)
-    m = match_cwd(cwd, sid)
+    m, cwd = work_match(cwd, sid)
     if not m:
         return
     keep_word(sid, str(data.get("prompt") or ""))
