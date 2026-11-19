@@ -11,13 +11,14 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Changed
 
 - A tracker's log is now kept as typed events in `events.jsonl`, each with a time, the session and the plugin version that wrote it. `log.md` reads the same as before and is written from the events; editing it by hand no longer changes what `tracker history` shows.
-- A tracker that cannot be brought to the current format (a README with a key twice, say) now takes no write until it can: its commands refuse before they change anything and say to run `tracker check`, which names what to fix (a README is yours to fix by hand), and its hooks write nothing, say so once per context (again after compaction), and offer no link to it. Commands that only read still run, and say so where they print the brief.
+- A tracker that cannot be brought to the current format (a README with a key twice, say) now takes no write until it can: its commands refuse before they change anything and say to run `tracker check`, which names what to fix (a README is yours to fix by hand), and its hooks write nothing, say so once (again after compaction or /clear) and neither offer nor make a new link to it. Commands that only read still run, and `tracker here` and a bare `tracker start` say so after the brief.
 
 ### Fixed
 
-- A session that still runs an older plugin version no longer writes its own format into a tracker that a newer version migrated: its commands refuse and say to reload the plugin or restart the session, and its hooks write nothing, say so once per context (again after compaction), and offer no link to such a tracker. Only this version and later refuse: 0.32.0 and earlier still write.
+- A session that still runs an older plugin version no longer writes its format into a tracker that a newer version migrated. Its commands refuse and say to use the newer version: update the plugin, then reload it or restart the session. Its hooks write nothing, say so once (again after compaction or /clear) and neither offer nor make a new link to such a tracker. 0.32.0 and earlier do not refuse: restart sessions that run them.
 - A write to a tracker whose folder is a link now ends with what it unblocked and whether `check` found new problems, as in any other tracker.
 - The view's tracker menu says "No trackers yet" when there are none, and "Reading trackers…" while it loads, instead of opening as an empty strip.
+- In a Herdr layout, the view follows an agent you started from a shell (a tab opened as a shell, then `claude` or `claude --resume` run in it) to its tracker, instead of saying that the focused agent has none. With two or more agents under that shell it still says none. Not on Windows.
 
 ## 0.32.0 - 2026-11-17
 

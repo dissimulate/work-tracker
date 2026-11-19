@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .system import alive, die, session_id
+from .system import alive, descendants, die, session_id
 from .store import HOME, locked, read_json, write_json
 from .schema import STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
@@ -89,6 +89,12 @@ def work_dir(cwd: str | Path | None = None) -> Path:
     cwd = Path(cwd) if cwd else Path.cwd()
     seen = load_session(session_id()).get("cwd", "") if inside_home(cwd) else ""
     return Path(seen) if seen and Path(seen).is_dir() else cwd
+
+
+def cwd_field(cwd: str | Path) -> dict:
+    """The session's `cwd`, the folder `work_dir` and `tracker agents` show, as a session file field: none for a cwd
+    inside HOME, which is no project."""
+    return {} if inside_home(cwd) else {"cwd": str(cwd)}
 
 
 def session_path(sid: str) -> Path | None:
@@ -172,7 +178,8 @@ def hand_over(sid: str, cwd: str | Path) -> None:
 
 
 def take_over(sid: str, cwd: str | Path) -> str:
-    """A session that `/clear` started: link the tracker the cleared session in this directory was on. Its slug, or
+    """A session that `/clear` started: link the tracker the cleared session in this directory was on, and keep its
+    folder (`cwd_field`), also when the tracker then refuses the brief (`contract.refuse_other_format`). Its slug, or
     "" when none waits."""
     with locked():
         entries = cleared_entries(time.time())
@@ -180,7 +187,7 @@ def take_over(sid: str, cwd: str | Path) -> str:
         save_cleared(entries)
     if not got or not tracker_at(got.get("tracker", "")):
         return ""
-    save_session(sid, tracker=got["tracker"], focus=got.get("focus"))
+    save_session(sid, tracker=got["tracker"], focus=got.get("focus"), **cwd_field(cwd))
     return got["tracker"]
 
 
@@ -590,7 +597,7 @@ def lag(m: Match, cwd: str | Path) -> Lag:
 def remember(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed about its tickets (the commits past `next` too, so the hooks do not ask
     again), and the directory it works in (`work_dir`)."""
-    fields = {} if inside_home(cwd) else {"cwd": str(cwd)}
+    fields = cwd_field(cwd)
     if m.focus:
         fields.update(seen=watch(m.tracker, m.focus), seen_for=[t.id for t in m.focus])
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch and m.active else None
@@ -649,9 +656,14 @@ def claude_sessions() -> list[dict]:
 
 def attached_tracker(pid: int, cwd: str = "") -> str:
     """The slug of the tracker linked to the agent in a process, "" with none. Claude Code's process file names its
-    session. Another host has no such file: the live sessions its hooks report in that folder, when they agree on one
-    tracker."""
+    session. A process with no file, such as the shell a terminal ran `claude` in, stands for the one Claude Code
+    process under it, if there is exactly one. Another host has no such file: the live sessions its hooks report in
+    that folder, when they agree on one tracker."""
     sid = read_json(CLAUDE_SESSIONS / f"{pid}.json").get("sessionId")
+    if not sid:
+        under = [CLAUDE_SESSIONS / f"{p}.json" for p in descendants(pid)]
+        under = [f for f in under if f.exists()]
+        sid = read_json(under[0]).get("sessionId") if len(under) == 1 else None
     if sid:
         tr = session_tracker(str(sid))
         return tr.slug if tr else ""

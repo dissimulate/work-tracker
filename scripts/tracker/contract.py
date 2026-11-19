@@ -46,14 +46,8 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         warnings.append("README.md: issue_updates is on, but .state.json has no record of what its issues show, so "
                         "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
                         "so far count as written, and each linked ticket out of todo is due once for its status")
-    if tr.schema < SCHEMA:  # a README with problems stops `upgrade` before it can raise
-        why = ("its README errors say why" if tr.readme_problems else
-               "the next command tries again, and says why on stderr")
-        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate, so "
-                        f"nothing writes to it — {why}")
-    elif tr.schema > SCHEMA:
-        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
-                      f"plugin")
+    if why := other_format(tr.root):  # as a refused write says it; an older format may migrate at the next command
+        (errors if tr.schema > SCHEMA else warnings).append(f"README.md: {why}")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
     errors += event_problems(tr)
     aliases: dict[str, str] = {}
@@ -488,21 +482,26 @@ def stop_old_viewer() -> None:
 
 
 class OtherFormat(Exception):
-    """`refuse_other_format` refused a write."""
+    """`refuse_other_format` refused a write into the tracker at `root`; the message is `other_format`'s sentence."""
+
+    def __init__(self, why: str, root: Path):
+        super().__init__(why)
+        self.root = root
 
 
 def other_format(root: Path) -> str:
-    """Why this code writes nothing to the tracker at `root`, in one sentence; empty when it may. It writes only its
-    own format, SCHEMA. A newer one: a session runs the plugin version it loaded until it reloads, and the newer
-    version that migrated the tracker never migrates it again, so what this one wrote there would stay in the older
-    format. An older one could not migrate (`upgrade_trackers`), and its next migration would read what this one wrote
-    as the older format: events written meanwhile would keep its old log from becoming events (`legacy_events`). Only
-    `upgrade` writes an older one. A folder with no README yet is a tracker being made."""
+    """Why this code writes nothing to the tracker at `root`, and what to do, in one sentence that holds for every
+    reader: a refused command in a session or a terminal, the hooks' user notice, a UI, the watch, `check`. Empty when
+    it may. It writes only its own format, SCHEMA. A newer one: a session runs the plugin version it loaded until it
+    reloads, and the newer version that migrated the tracker never migrates it again, so what this one wrote there
+    would stay in the older format. An older one could not migrate (`upgrade_trackers`), and its next migration would
+    read what this one wrote as the older format: events written meanwhile would keep its old log from becoming events
+    (`legacy_events`). Only `upgrade` writes an older one. A folder with no README yet is a tracker being made."""
     tr = Tracker(root)
     if tr.schema > SCHEMA:
         return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {tr.schema}; "
-                f"this one writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the "
-                "session")
+                f"this one writes {SCHEMA}), so this one writes nothing to it: use the newer version (update the "
+                "plugin, then reload it or restart each session that still runs this one)")
     if tr.schema < SCHEMA and tr.readme.path.exists():
         fix = (f"`tracker check --tracker {root.name}` says what is wrong in its README.md, which the user, not an "
                "agent, fixes by hand" if tr.readme_problems else
@@ -512,10 +511,24 @@ def other_format(root: Path) -> str:
     return ""
 
 
+# What the model does after `other_format`'s sentence until the user acts (`refusal_request`): for a newer format the
+# user reloads; for an older one that could not migrate, no reload helps, and the user fixes what `check` reports. A
+# reload or a fix may start no new session, so no SessionStart brings the brief: `tracker start` prints it.
+RELOAD_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
+                  "plugin or restart the session, then run `tracker start`, which prints the brief.")
+REPAIR_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to fix what "
+                  "`tracker check` reports, then run `tracker start`, which prints the brief.")
+
+
+def refusal_request(root: Path) -> str:
+    """The model's request for the tracker at `root`, which `other_format` refuses."""
+    return RELOAD_REQUEST if Tracker(root).schema > SCHEMA else REPAIR_REQUEST
+
+
 def refuse_other_format(root: Path) -> None:
     """Refuse a write into a tracker in another format (`other_format`): raise OtherFormat."""
     if why := other_format(root):
-        raise OtherFormat(why)
+        raise OtherFormat(why, root)
 
 
 def upgrade_trackers() -> None:

@@ -998,10 +998,10 @@ def one_tracker(hits: list[Tracker], sure: bool, head: str, cmd: str) -> Tracker
 def cmd_start(args):
     """Tie a tracker to this agent session: its commands and hooks then use it; `--on` puts the session on some of
     its tickets alone. With no name: the tracker that holds the `--on` tickets, else the tracker with an open ticket
-    on this branch; in a session that has a tracker, its brief, and whether this code writes nothing there
-    (`other_format`). Never changes git; writes the tracker only to record a branch that its PR ties to one ticket,
-    and to log the branch's new commits, as the hooks do. A tracker in another format refuses (`refuse_other_format`)
-    before the session moves."""
+    on this branch; in a session that has a tracker, its brief, then the `other_format` sentence when this code may
+    not write it. Never changes git; writes the tracker only to record a branch that its PR ties to one ticket, and to
+    log the branch's new commits, as the hooks do. Refuses a tracker in another format (`refuse_other_format`) before
+    the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
         drop_session(sid)
@@ -1020,7 +1020,7 @@ def cmd_start(args):
     if not args.name and not focus and session_tracker(sid):
         m = match_cwd(cwd, sid)
         print(brief(m, cwd, with_protocol=False))
-        if why := other_format(m.tracker.root):  # the brief asks for writes, which it refuses
+        if why := other_format(m.tracker.root):  # the brief asks for writes that refuse_other_format refuses
             print(f"{why}.")
         tell_updates(m.tracker)
         return
