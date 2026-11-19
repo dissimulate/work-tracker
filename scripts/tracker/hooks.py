@@ -224,14 +224,14 @@ def watch_ask(data: dict, m: Match, sid: str) -> str:
             return ""
         waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in m.active
                  if (move := move_of(m.tracker, t)) and not move.mine}
-        new = set(waits) - set(entry.get("told_watch") or [])
+        told, keys = entry.get("told_watch") or [], sorted(waits)
         # Saved whether asked or not: a wait that ends and comes back is new again, and one that began while a watch
         # ran is not asked for once that watch stops.
-        if sorted(waits) != (entry.get("told_watch") or []):
-            save_session(sid, told_watch=sorted(waits) or None)
-    if not new or watch_running(load_state(m.tracker.slug, sid)):
+        if keys != told:
+            save_session(sid, told_watch=keys or None)
+    if not set(keys) - set(told) or watch_running(load_state(m.tracker.slug, sid)):
         return ""
-    return WATCH_ASK.format(waits="; ".join(waits[k] for k in sorted(waits)))
+    return WATCH_ASK.format(waits="; ".join(waits[k] for k in keys))
 
 
 COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")

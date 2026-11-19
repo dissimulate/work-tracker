@@ -121,11 +121,13 @@ def needs_you(fact: dict) -> bool:
     return bool(fact.get("human")) or bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
 
 
-def waits(x: Live, now: float, watching: bool = False) -> bool:
-    """An agent that waits on the user: it has asked for a while, or been idle for long and is not `watching`."""
+def waits(x: Live, now: float, watched: set[str] = frozenset()) -> bool:
+    """An agent that waits on the user: it has asked for a while, or been idle for long and is not of `watched`."""
     if x.status == "busy" or not x.since:
         return False
-    return now - x.since >= ASKING_S if x.status == "waiting" else not watching and now - x.since >= IDLE_S
+    if x.status == "waiting":
+        return now - x.since >= ASKING_S
+    return x.sid not in watched and now - x.since >= IDLE_S
 
 
 def watching(slug: str, live: list[Live]) -> set[str]:
@@ -258,9 +260,9 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     for t in flight:
         agents = [x for x in live if t.id in on[x.sid]]
         move = [f"move: {facts[t.id]['move']}"] if facts[t.id].get("move") else []
-        out.append(line(needs_you(facts[t.id]) or any(waits(x, now, x.sid in watched) for x in agents),
+        out.append(line(needs_you(facts[t.id]) or any(waits(x, now, watched) for x in agents),
                         " · ".join([f"{t.id} {t.stage}", *move, *map(agent, agents)])))
-    out += [line(waits(x, now, x.sid in watched), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
+    out += [line(waits(x, now, watched), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
     ready = [t.id for t, _ in tr.startable()]
     return out + ([line(False, f"can start: {', '.join(ready)}")] if ready else [])
 
@@ -344,7 +346,7 @@ class Watcher:
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.mine = mine
-        self.ended = False  # a `mine` look found no ticket of the session under way: `run` ends the watch
+        self.ended = False  # a `mine` look found the session off this tracker, or with no ticket under way: it ends
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -387,7 +389,7 @@ class Watcher:
         if self.mine:
             # A restart (`--once`, the host tool's timeout) says only what is new: the same first line each time would
             # wake the session for nothing.
-            self.st, self.sig = {}, files_hash(self.tracker().data_files())
+            self.st = {}  # its first look (`force`) takes the files' signature
             lines = ([] if again else [self.first_line(now)]) + self.news_lines(self.batch(now, force=True), now)
         elif again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
@@ -417,7 +419,7 @@ class Watcher:
         tr = self.tracker()
         m = match_cwd(load_session(self.sid).get("cwd") or work_dir(), self.sid, tr)
         tickets = [f"{t.id} {t.stage}" + (f" · move: {move.text(' — ')}" if (move := move_of(tr, t)) else "")
-                   for t in (m.focus if m else [])]
+                   for t in m.focus]
         return short(f"{time.strftime('%H:%M', time.localtime(now))} watching your tickets on {self.slug}: "
                      + "; ".join(tickets), LINE_MAX)
 
@@ -550,7 +552,7 @@ class Watcher:
             quiet = now - max(x.since, activity.get(x.sid, 0))
             if told.get(spell) == x.since:
                 continue
-            if waits(x, now, x.sid in watched):
+            if waits(x, now, watched):
                 told[spell] = x.since
                 out.append(Event("agent", key, True, f"asks for a permission or an answer{where}"
                                  if x.status == "waiting" else f"idle {mins} min{where}: waits on you"))
