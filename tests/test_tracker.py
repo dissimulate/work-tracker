@@ -1206,6 +1206,61 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(after[:-1], before)
         self.assertTrue(after[-1].startswith(f"{schema.today()} Migrated to tracker format {schema.SCHEMA}"))
 
+    def unmigratable(self) -> tuple[str, tuple[str, str], Path, str]:
+        """A format 5 tracker with two log lines whose README cannot migrate (a key twice); its README as it was."""
+        s, t = self.old_tracker(schema=5)
+        root = store.HOME / s
+        (root / schema.EVENTS_FILE).unlink()
+        (root / "log.md").write_text("# Log\n\n- 2026-01-02 [T-1] First old line\n- 2026-01-03 Second old line\n")
+        readme = (root / "README.md").read_text()
+        (root / "README.md").write_text(readme.replace("\nschema: 5\n", "\nschema: 5\nowner: you\n"))
+        return s, t, root, readme
+
+    def test_a_tracker_that_cannot_migrate_takes_no_write_and_keeps_its_log(self):
+        s, t, root, readme = self.unmigratable()
+        before = tree(root)
+        said = run(*t, "log", "A note", code=watcher.REFUSED)
+        self.assertRegex(said, rf"\Atracker: {s} {OLDER}[^\n]*`tracker check --tracker {s}`[^\n]*\n\Z")
+        self.assertEqual(tree(root), before)  # no event
+        self.assertIn("appears twice", run(*t, "check", code=1))  # what the refusal says to run reports it
+        (root / "README.md").write_text(readme)  # fixed
+        run(*t, "index")  # migrates
+        self.assertEqual(run(*t, "history", "--last", "0").splitlines()[:2],
+                         ["2026-01-02 [T-1] First old line", "2026-01-03 Second old line"])
+
+    def test_a_migration_that_raises_leaves_its_tracker_refused(self):
+        s, t = self.old_tracker(schema=5)
+        with mock.patch.object(contract, "migrate", mock.Mock(side_effect=OSError("disk full"))):
+            said = run(*t, "log", "A note", code=watcher.REFUSED)  # the same run: the guard is back on
+        self.assertIn(f"could not migrate {s}", said)
+        self.assertIn(OLDER, said)
+
+    def test_start_on_a_tracker_that_cannot_migrate_changes_nothing(self):
+        s, _, root, _ = self.unmigratable()
+        sid, work = f"old{time.monotonic_ns()}", repo("main")
+        before = tree(root)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": sid}):
+            self.assertIn(OLDER, run("start", s, cwd=work, code=watcher.REFUSED))
+        self.assertNotIn("tracker", session.load_session(sid))  # the session was not moved onto it
+        self.assertEqual(tree(root), before)
+
+    def test_a_hook_on_a_tracker_that_cannot_migrate_writes_nothing_and_tells_once(self):
+        s, _ = self.old_tracker(schema=schema.SCHEMA)
+        sid, work = f"old{time.monotonic_ns()}", repo("feat/U-1")
+        session.save_session(sid, tracker=s, cwd=str(work))
+        hook("session-start", sid, work, source="startup")  # the branch's mark
+        root = store.HOME / s
+        (root / "README.md").write_text((root / "README.md").read_text().replace(
+            f"\nschema: {schema.SCHEMA}\n", "\nschema: 5\nowner: you\n"))
+        before = tree(root)
+        commit(work, "on a tracker that cannot migrate")
+        told = tool("Bash", sid, work, tool_input={"command": "git commit -m x"})  # exits 0: `hook` checks
+        self.assertEqual(told["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+        self.assertIn(f"[work-tracker] {s} {OLDER}", told["hookSpecificOutput"]["additionalContext"])
+        self.assertIsNone(hook("prompt", sid, work, prompt="go"))  # once per session
+        self.assertIsNone(hook("stop", sid, work))
+        self.assertEqual(tree(root), before)
+
     def test_migrate_to_format_3_reads_open_issues_again(self):
         s, t = self.old_tracker(schema=schema.SCHEMA)
         for ident in ("T-1", "T-2"):
@@ -1224,6 +1279,7 @@ def tree(root: Path) -> dict[str, bytes | None]:
 
 NEWER = "was written by a newer version of the work-tracker plugin"
 RELOAD = "reload the plugin or restart the session"
+OLDER = "could not be brought to this version's tracker format"
 
 
 class NewerFormat(unittest.TestCase):
@@ -1409,9 +1465,9 @@ class NewerFormat(unittest.TestCase):
     def test_no_event_and_no_log_line(self):
         s, _ = self.tracker()
         self.newer(s)
-        store.guard_writes(contract.refuse_newer)  # as each command and hook does first
+        store.guard_writes(contract.refuse_other_format)  # as each command and hook does first
         before = tree(store.HOME / s)
-        with store.locked(), self.assertRaises(contract.NewerFormat):
+        with store.locked(), self.assertRaises(contract.OtherFormat):
             model.append_event(model.tracker_at(s), "note", "A note", [])
         self.assertEqual(tree(store.HOME / s), before)
 

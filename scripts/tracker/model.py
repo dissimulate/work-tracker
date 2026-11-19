@@ -824,8 +824,8 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
     path = tr.root / EVENTS_FILE
     # A writer killed part way leaves a last line with no newline: the new event starts a line of its own.
     append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
-    # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (no code reads it
-    # back); regenerate it from the events on each write if drift is ever seen.
+    # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (only `tracker
+    # find` reads it back); regenerate it from the events on each write if drift is ever seen.
     append(tr.root / "log.md", log_line(e) + "\n")
     return e
 

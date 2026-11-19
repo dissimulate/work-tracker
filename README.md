@@ -76,7 +76,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
 | `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it. Only the tool writes it |
-| `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show |
+| `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show, except what `tracker find` finds |
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
@@ -148,7 +148,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 ### Upgrading a tracker
 
-The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/`, all but its `evidence/` folder (no migration changes it), and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. A command or hook of an older version writes nothing to a tracker in a newer format: a command refuses before it changes anything and says to reload the plugin or restart the session, and the hooks of a session on it tell the session once and ask it for nothing else. Commands that only read still run. Versions up to 0.32.0 do not refuse, and write their own format: restart each session that runs one.
+The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/`, all but its `evidence/` folder (no migration changes it), and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. Until it migrates, nothing writes to it: a command refuses before it changes anything and says to run `tracker check`, whose errors name what to fix (a README with a key twice, say), and the hooks of a session on it tell the session once and ask it for nothing else. A command or hook of an older version writes nothing to a tracker in a newer format: a command refuses before it changes anything and says to reload the plugin or restart the session, and the hooks of a session on it tell the session once and ask it for nothing else. Commands that only read still run. Versions up to 0.32.0 do not refuse, and write their own format: restart each session that runs one.
 
 ### Settings
 
@@ -181,7 +181,7 @@ Environment variables. All are optional.
 6. `moves`: whose move a ticket under way waits on
 7. `git`
 8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
-9. `contract`: `check`, `rules`, `migrate`, and no write into a newer format
+9. `contract`: `check`, `rules`, `migrate`, and no write into another format
 10. `views`: text views and the brief
 11. `github`: the GitHub adapter: `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). Another forge is another adapter
 12. `watcher`: `tracker watch` and the watching sessions' grants; `tracker agents`; `tracker await-change`

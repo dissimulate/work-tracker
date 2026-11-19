@@ -19,7 +19,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, declined, drop_session, get_mark,
     hand_over, in_repos, inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
     session_activity, take_over, watch, work_dir, Lag, Match)
-from .contract import newer_format, prune_backups, refuse_newer, upgrade_trackers, NewerFormat
+from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers, OtherFormat
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -125,7 +125,7 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
-    refuse_newer(m.tracker.root)  # a tracker linked just now: its brief would ask for writes that are refused
+    refuse_other_format(m.tracker.root)  # a tracker linked just now: its brief would ask for writes that are refused
     record_version()
     m, found = match_pr(m, cwd)
     record_commits(m, cwd)  # made since the last session, as in the terminal
@@ -381,29 +381,29 @@ CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
                   "answered": "PostToolUse", "subagent-start": "SubagentStart"}
 
 
-def tell_newer(data: dict, event: str, why: str) -> None:
-    """The session's tracker takes no write from this code (`contract.newer_format` says `why`): tell the model and the
-    user, once per session, at the first handler that can tell the model. Not a subagent's: the session reloads, not
-    it."""
+def tell_refusal(data: dict, event: str, why: str) -> None:
+    """The session's tracker takes no write from this code (`contract.other_format` says `why`): tell the model and the
+    user, once per session, at the first handler that can tell the model. Not a subagent's: the session acts on it,
+    not the subagent."""
     sid = where(data)[1]
     text = f"[work-tracker] {why}."
-    if event not in CONTEXT_EVENTS or data.get("agent_id") or load_session(sid).get("told_newer") == text:
+    if event not in CONTEXT_EVENTS or data.get("agent_id") or load_session(sid).get("told_refusal") == text:
         warn(f"hook {event}: {why}")
         return
-    save_session(sid, told_newer=text)
+    save_session(sid, told_refusal=text)
     emit_context(CONTEXT_EVENTS[event], text, text)
 
 
-def newer_told(data: dict, event: str) -> bool:
-    """Whether the session's tracker is in a newer format, on an event that can tell the model: then `tell_newer`
+def refusal_told(data: dict, event: str) -> bool:
+    """Whether the session's tracker is in another format, on an event that can tell the model: then `tell_refusal`
     says so, and no handler runs, as each would ask the model for a write that is refused. A refusal in a handler that
     cannot tell the model (Stop) is told here, at the session's next such event."""
     if event not in CONTEXT_EVENTS or data.get("agent_id"):
         return False
     tr = context_tracker(where(data)[1])
-    why = newer_format(tr.root) if tr else ""
+    why = other_format(tr.root) if tr else ""
     if why:
-        tell_newer(data, event, why)
+        tell_refusal(data, event, why)
     return bool(why)
 
 
@@ -429,10 +429,10 @@ def run_hook(*events: str) -> None:
             if event == "session-end" and not data.get("agent_id"):
                 session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
             try:
-                if not newer_told(data, event):
+                if not refusal_told(data, event):
                     HOOKS[event](data)
-            except NewerFormat as exc:  # it wrote nothing to the tracker; the session's own files go on
-                tell_newer(data, event, str(exc))
+            except OtherFormat as exc:  # it wrote nothing to the tracker; the session's own files go on
+                tell_refusal(data, event, str(exc))
             # A subagent's turn is not the session's, but its wait on the user is.
             asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
             if status and event != "session-end" and (not data.get("agent_id") or asker is not None):

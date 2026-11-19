@@ -40,6 +40,17 @@ def guard_writes(check) -> None:
     _guard = check
 
 
+@contextmanager
+def unguarded():
+    """While this lasts, guard_writes' check sees no write."""
+    global _guard
+    check, _guard = _guard, None
+    try:
+        yield
+    finally:
+        _guard = check
+
+
 def tracker_root(path: Path) -> Path | None:
     """The folder of the tracker that holds `path`; None outside HOME and in HOME's own files and folders: sessions,
     watches, the archive. `path` counts as it is named, so a tracker's folder can be a link out of HOME; else as it

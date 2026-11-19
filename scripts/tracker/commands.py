@@ -27,7 +27,7 @@ from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
     in_repos, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits, remember, resolve,
     save_session, session_id, session_tracker, trackers_for_repo, work_dir)
-from .contract import check, refuse_newer, rules_lines
+from .contract import check, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
@@ -997,8 +997,8 @@ def cmd_start(args):
     """Tie a tracker to this agent session: its commands and hooks then use it; `--on` puts the session on some of
     its tickets alone. With no name: the tracker that holds the `--on` tickets, else the tracker with an open ticket
     on this branch; in a session that has a tracker, its brief. Never changes git; writes the tracker only to record a
-    branch that its PR ties to one ticket, and to log the branch's new commits, as the hooks do. A tracker in a newer
-    format refuses (`refuse_newer`) before the session moves."""
+    branch that its PR ties to one ticket, and to log the branch's new commits, as the hooks do. A tracker in another
+    format refuses (`refuse_other_format`) before the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
         drop_session(sid)
@@ -1037,7 +1037,7 @@ def cmd_start(args):
     if not sid:
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
-    refuse_newer(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
+    refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
     drop_session(sid)  # a new start: nothing seen yet
     save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
@@ -1129,7 +1129,7 @@ def cmd_use(args):
     if args.clear:
         chose = [(t, state) for t in all_trackers() if (state := t.state()).get("use", {}).pop(key, None) is not None]
         for t, _ in chose:  # a refusal changes nothing: each tracker is checked before any is written
-            refuse_newer(t.root)
+            refuse_other_format(t.root)
         for t, state in chose:
             t.save_state(state)
             print(f"{branch}: cleared the choice in {t.slug}")

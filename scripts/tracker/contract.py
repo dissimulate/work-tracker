@@ -1,5 +1,5 @@
 """The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it, and
-`refuse_newer` keeps this code from writing a newer one."""
+`refuse_other_format` keeps this code from writing any other."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, atomic_write, guard_writes, locked, read_json
+from .store import HOME, atomic_write, guard_writes, locked, read_json, unguarded
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR,
     FORMS, ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR,
     OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS,
@@ -47,8 +47,8 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
                         "no update is due — `tracker set tracker issue_updates=on` starts one: the decisions settled "
                         "so far count as written, and each linked ticket out of todo is due once for its status")
     if tr.schema < SCHEMA:
-        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate — the "
-                        f"next command tries again, and says why on stderr")
+        warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate, so "
+                        f"nothing writes to it — the next command tries again, and says why on stderr")
     elif tr.schema > SCHEMA:
         errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
                       f"plugin")
@@ -447,7 +447,7 @@ OLD_BACKUP = re.compile(r".+-\d{8}-\d{6}")
 def upgrade(tr: Tracker) -> None:
     """Back a tracker up, once per format it leaves, and migrate it. A README that cannot be read is left to `check`."""
     import shutil  # only here: a hook loads this module, and rarely gets this far
-    with locked():
+    with locked(), unguarded():  # the one writer of an older format (`other_format`)
         tr = Tracker(tr.root)  # another process may have done it while this one waited
         if tr.schema >= SCHEMA or tr.readme_problems:
             return
@@ -490,31 +490,40 @@ def stop_old_viewer() -> None:
     OLD_VIEWER.unlink(missing_ok=True)
 
 
-class NewerFormat(Exception):
-    """`refuse_newer` refused a write."""
+class OtherFormat(Exception):
+    """`refuse_other_format` refused a write."""
 
 
-def newer_format(root: Path) -> str:
-    """Why this code writes nothing to the tracker at `root`, in one sentence: its format is newer than SCHEMA. A
-    session runs the plugin version it loaded until it reloads, and the newer version that migrated the tracker never
-    migrates it again: what this one wrote there would stay in the older format. Empty when this code may write it."""
-    newer = Tracker(root).schema
-    return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {newer}; this one "
-            f"writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the session"
-            if newer > SCHEMA else "")
+def other_format(root: Path) -> str:
+    """Why this code writes nothing to the tracker at `root`, in one sentence; empty when it may. It writes only its
+    own format, SCHEMA. A newer one: a session runs the plugin version it loaded until it reloads, and the newer
+    version that migrated the tracker never migrates it again, so what this one wrote there would stay in the older
+    format. An older one could not migrate (`upgrade_trackers`), and its next migration would read what this one wrote
+    as the older format: events written meanwhile would keep its old log from becoming events (`legacy_events`). Only
+    `upgrade` writes an older one. A folder with no README yet is a tracker being made."""
+    tr = Tracker(root)
+    if tr.schema > SCHEMA:
+        return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {tr.schema}; "
+                f"this one writes {SCHEMA}), so this one writes nothing to it: reload the plugin or restart the "
+                "session")
+    if tr.schema < SCHEMA and tr.readme.path.exists():
+        return (f"{root.name} could not be brought to this version's tracker format (it is in format {tr.schema}; "
+                f"this one writes {SCHEMA}), so this one writes nothing to it: run `tracker check --tracker "
+                f"{root.name}` and fix what it reports")
+    return ""
 
 
-def refuse_newer(root: Path) -> None:
-    """Refuse a write into a tracker in a newer format (`newer_format`): raise NewerFormat."""
-    if why := newer_format(root):
-        raise NewerFormat(why)
+def refuse_other_format(root: Path) -> None:
+    """Refuse a write into a tracker in another format (`other_format`): raise OtherFormat."""
+    if why := other_format(root):
+        raise OtherFormat(why)
 
 
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
     tracker that fails stays as it is, says why, and tries again next time. From here on, refuse each write into a
-    tracker in a newer format (`refuse_newer`). Also stops the old viewer (`stop_old_viewer`)."""
-    guard_writes(refuse_newer)
+    tracker in another format (`refuse_other_format`). Also stops the old viewer (`stop_old_viewer`)."""
+    guard_writes(refuse_other_format)
     if OLD_VIEWER.exists():
         stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):

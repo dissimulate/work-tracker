@@ -15,7 +15,7 @@ from .store import first_writes, locked, Busy
 from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
 from .model import unblocked, Tracker
 from .session import match_cwd, own_change, session_id, watch, work_dir
-from .contract import upgrade_trackers, NewerFormat
+from .contract import upgrade_trackers, OtherFormat
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
 from .watcher import EVENT_KINDS, REFUSED, URGENT
@@ -434,5 +434,5 @@ def main(argv=None):
             args.fn(args)
     except Busy as exc:
         die(str(exc))
-    except NewerFormat as exc:
+    except OtherFormat as exc:
         die(str(exc), REFUSED)
