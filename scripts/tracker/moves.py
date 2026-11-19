@@ -4,9 +4,10 @@ the review facts `sync` reads and the ticket's blockers (MOVE_RULE); nothing wri
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .markdown import Link
+from .schema import COORDINATOR
 from .model import link_title, short, Record, Tracker
 
 # What a move reads of an open PR, in the tracker's own words: a forge's adapter (github.py) maps its own words onto
@@ -29,18 +30,20 @@ YOU = "you"
 MOVE_RULE = (
     "A ticket under way has a move: whose turn it waits on, computed, never written. In order: merge conflicts, "
     "failing checks or requested changes not re-requested are yours; a requested review is the reviewer's; an open "
-    "decision it waits on is its owner's, an open action yours; an external blocker is that blocker's; then "
-    "unresolved review threads, an approval (CI's while its checks run), a draft or a PR with no review requested are "
-    "yours. With several open PRs, the most urgent of their moves, yours first, naming that PR. `next` holds your own "
-    "next action: do not write a wait on a reviewer into it.")
+    "decision it waits on is its owner's: a human by name, the session on a ticket, or the coordinator, and a "
+    "human's when no owner is named and no coordinator is watching; an open action yours; an external blocker is "
+    "that blocker's; then unresolved review threads, an approval (CI's while its checks run), a draft or a PR with "
+    "no review requested are yours. With several open PRs, the most urgent of their moves, yours first, naming that "
+    "PR. `next` holds your own next action: do not write a wait on a reviewer into it.")
 
 
 @dataclass
 class Move:
-    who: str  # YOU (also for an open action), the reviewers, "CI", a decision's owner (else its id) or a blocker's id
+    who: str  # YOU (also for an open action), the reviewers, "CI", an open decision's (decision_move) or a blocker's id
     what: str = ""  # why it is their move, as a state: "review requested", "checks failing"
     rank: int = 0  # its rule's place in MOVE_RULE: the more urgent first
     quiet: bool = False  # your own work going on as planned, where nothing has stopped to wait for you
+    human: bool = False  # the move is a human's to make: an open action, or a decision a human must answer
 
     @property
     def mine(self) -> bool:
@@ -50,19 +53,40 @@ class Move:
         return self.who + (sep + self.what if self.what else "")
 
 
-def whose_move(tr: Tracker, t: Record) -> Move | None:
+def owner_kind(tr: Tracker, d: Record) -> str:
+    """Who a decision's owner names: "coordinator" (also for none), "ticket" (the session on a ticket under way) or
+    "human" (a person's name, or a ticket that is not under way, which no session works on)."""
+    owner = str(d.get("owner") or "").strip()
+    if not owner or owner.lower() == COORDINATOR:
+        return "coordinator"
+    rec = tr.lookup(owner)
+    return "ticket" if rec and rec.kind == "ticket" and rec.in_flight else "human"
+
+
+def decision_move(tr: Tracker, d: Record, coordinated: bool) -> Move:
+    """An open decision's move (MOVE_RULE): its owner's, the coordinator's while one watches the tracker
+    (`session.coordinated`), else a human's."""
+    kind, owner = owner_kind(tr, d), str(d.get("owner") or "").strip()
+    if kind == "ticket":
+        return Move(f"{tr.lookup(owner).id}'s session", f"{d.id} open", 5)
+    if kind == "coordinator" and coordinated:
+        return Move(COORDINATOR, f"{d.id} open", 5)
+    return Move(owner if kind == "human" else "human", f"{d.id} open", 5, human=True)
+
+
+def whose_move(tr: Tracker, t: Record, coordinated: bool = False) -> Move | None:
     """The move of a ticket under way (MOVE_RULE); None for any other ticket, and while `sync` has read the review facts
-    of none of its open PRs."""
+    of none of its open PRs. `coordinated`: a coordinator watches the tracker (`session.move_of` asks)."""
     if not t.in_flight:
         return None
     open_prs = tr.open_prs(t)
     if not open_prs:
-        return pr_move(tr, t, {})
-    moves = [(n, pr_move(tr, t, r)) for n, r in open_prs if r is not None]
+        return pr_move(tr, t, {}, coordinated)
+    moves = [(n, pr_move(tr, t, r, coordinated)) for n, r in open_prs if r is not None]
     if not moves:
         return None
     number, move = min(moves, key=lambda x: (not x[1].mine, x[1].rank))
-    return Move(move.who, f"#{number} {move.what}".strip(), move.rank, move.quiet) if len(open_prs) > 1 else move
+    return replace(move, what=f"#{number} {move.what}".strip()) if len(open_prs) > 1 else move
 
 
 PR_PAGE = re.compile(r"https?://[^\s)/]+/([^/\s)]+/[^/\s)]+)/pull/(\d+)")  # groups: owner/name, the number
@@ -97,7 +121,7 @@ def unread_link_move(tr: Tracker, t: Record) -> Move | None:
     return Move(YOU, "PR not synced" if here else f"PR in {unread[0].repo}", 10, quiet=True)
 
 
-def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
+def pr_move(tr: Tracker, t: Record, r: dict, coordinated: bool = False) -> Move:
     """A ticket's move as one open PR's facts make it; empty facts, for a ticket with no open PR."""
     is_open = bool(tr.open_prs(t))
     threads = r.get("threads", 0)
@@ -118,10 +142,9 @@ def pr_move(tr: Tracker, t: Record, r: dict) -> Move:
         return Move(", ".join(requested), "review requested", 4)
     for d in tr.blockers(t):
         if d.kind == "decision":
-            owner = str(d.rec.get("owner") or "")
-            return Move(owner or d.ident, f"{d.ident} open" if owner else "open decision", 5)
+            return decision_move(tr, d.rec, coordinated)
         if d.kind == "action":  # the user's to do: this side's
-            return Move(YOU, f"{d.ident} open", 5)
+            return Move(YOU, f"{d.ident} open", 5, human=True)
         if d.kind == "external":
             note = link_title(d.link).partition(" — ")[2] if d.link else ""
             return Move(d.ident, short(note, 60) if note else "", 6)

@@ -7,9 +7,11 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 ### Added
 
 - `tracker check` reports a damaged event file.
+- `tracker watch --as coordinator`: a session takes the coordinator role for a tracker. An open decision with no owner is then the coordinator's move, and a human's again when no coordinator is watching.
 
 ### Changed
 
+- A decision's move reads `human`, a person's name, `<ticket>'s session` or `coordinator`. `!` in the watch marks what needs a human, now also a question a human must answer, and a decision passed to a person (`--owner`) is logged.
 - A decision's resolution now says who decided and how it was entered: a human in the view, a human through an agent, an agent from a named source (`--source`), or unattributed from a terminal. An agent that resolves a decision must pass `--by` or `--source`.
 - A tracker's log is now kept as typed events in `events.jsonl`, each with a time, the session and the plugin version that wrote it, and how it was entered: in the view, by an agent, or at a terminal. `log.md` reads the same as before and is written from the events; editing it by hand no longer changes what `tracker history` shows.
 - A tracker that cannot be brought to the current format (a README with a key twice, say) now takes no write until it can: its commands refuse before they change anything and say to run `tracker check`, which names what to fix (a README is yours to fix by hand), and its hooks write nothing, say so once per context (again after compaction), and offer no link to it. Commands that only read still run, and say so where they print the brief.

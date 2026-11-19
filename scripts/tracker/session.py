@@ -14,10 +14,10 @@ from pathlib import Path
 
 from .system import alive, die, session_id
 from .store import HOME, locked, read_json, write_json
-from .schema import STAGES, stage_of
+from .schema import COORDINATOR, STAGES, stage_of
 from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, load_record,
     put_entry, resolution, short, state_key, tracker_at, Record, Tracker)
-from .moves import whose_move
+from .moves import whose_move, Move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
 
@@ -496,14 +496,51 @@ def on_branch(args) -> tuple[Match, Path]:
 
 # ---------------------------------------------------------------- watch
 
+WATCH_DIR = HOME / ".watch"  # <slug>/<session id or "terminal">.json: a watch and what it reported (watcher.py)
+GRANTS = WATCH_DIR / ".grants"  # <session id>: the sessions that watch; no slug starts with a dot
+REARM_S = 600  # a session's watch starts again and again (`--once`, a monitor's timeout): between runs it watches
+
+
+def grant_path(sid: str) -> Path | None:
+    return GRANTS / sid if sid and SAFE_NAME.fullmatch(sid) else None
+
+
+def granted(sid: str) -> bool:
+    path = grant_path(sid)
+    return bool(path and path.exists())
+
+
+def watch_running(st: dict) -> bool:
+    """A watch's saved state (WATCH_DIR) is of one that runs: its process does, or it is a session's that holds the
+    grant and ended within REARM_S, so it starts again. A state that is damaged runs none: no view stops for it."""
+    try:
+        return alive(int(st.get("pid") or 0)) or granted(str(st.get("sid") or "")) and \
+            time.time() - float(st.get("ended") or 0) < REARM_S
+    except (TypeError, ValueError):
+        return False
+
+
+def coordinated(tr: Tracker) -> bool:
+    """A session watches the tracker as its coordinator (`tracker watch --as coordinator`), now. Read from the watches'
+    state each time, never stored: a coordinator that stops hands its decisions back to a human by itself."""
+    # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
+    return any(st.get("role") == COORDINATOR and watch_running(st)
+               for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json")))
+
+
+def move_of(tr: Tracker, t: Record) -> Move | None:
+    """A ticket's move (`whose_move`), knowing whether a coordinator watches the tracker: what every view shows."""
+    return whose_move(tr, t, coordinated(tr))
+
+
 def ticket_facts(tr: Tracker, t: Record) -> dict:
     """What a change report compares of a ticket: its stage, `next`, Carry forward (a hash) and move (its text, its
-    rank in MOVE_RULE, and whether it is this side's). The prompt hook (`watch`) and `tracker watch` (`snapshot`)
-    both read it."""
-    move = whose_move(tr, t)
+    rank in MOVE_RULE, whether it is this side's and whether it is a human's). The prompt hook (`watch`) and `tracker
+    watch` (`snapshot`) both read it."""
+    move = move_of(tr, t)
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
-            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine} if move else {})}
+            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human} if move else {})}
 
 
 def watch(tr: Tracker, tickets: list[Record]) -> dict[str, dict]:

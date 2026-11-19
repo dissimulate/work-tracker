@@ -14,17 +14,17 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .system import alive, die, entered_via, env_int
-from .store import HOME, files_hash, locked, read_json, write_json
+from .store import files_hash, locked, read_json, write_json
 from .git import forget
-from .schema import LIVE_SYNC_S, STATE_KEEP_DAYS
-from .model import SAFE_NAME, last_seq, read_events, short, Tracker
-from .session import SESSIONS_DIR, claude_sessions, live_sessions, match_cwd, session_id, ticket_facts, Live
+from .schema import COORDINATOR, LIVE_SYNC_S, STATE_KEEP_DAYS
+from .model import last_seq, read_events, short, Tracker
+from .moves import decision_move
+from .session import (GRANTS, REARM_S, SESSIONS_DIR, WATCH_DIR, claude_sessions, coordinated, grant_path,  # noqa: F401
+    granted, live_sessions, match_cwd, session_id, ticket_facts, watch_running, Live)  # REARM_S: a name kept here
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
 
-WATCH_DIR = HOME / ".watch"  # <slug>/<session id or "terminal">.json: a watch and what it reported
-GRANTS = WATCH_DIR / ".grants"  # <session id>: the sessions that watch; no slug starts with a dot
 POLL_S = 2  # the tracker's files and the sessions: local and cheap
 SETTLE_S = 5  # after a change, wait this long for the rest of it (a step writes more than one file): one batch
 IDLE_S = env_int("TRACKER_WATCH_IDLE", 600)  # an agent idle this long waits on the user
@@ -33,10 +33,9 @@ BUSY_S = env_int("TRACKER_WATCH_BUSY", 2700)  # busy this long with nothing reco
 CHANGE_POLL_S = 1  # `await_change`: how often it looks at the files
 CHANGE_WAIT_S = 15  # when it ends with no change (ui/view.js AT_LEAST_MS): a UI that has gone leaves no process
 CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what changed while it was stopped
-REARM_S = 600  # a session's watch starts again and again (`--once`, a monitor's timeout): between runs it watches
-# A move of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested, an open
-# action, unresolved review threads, an approval); a draft, a PR with no review asked for, a closed PR or none yet is
-# the agent's to move on.
+# A move of yours of this rank or more urgent needs the user (MOVE_RULE: conflicts, failing checks, changes requested,
+# unresolved review threads, an approval); a draft, a PR with no review asked for, a closed PR or none yet is the
+# agent's to move on. A human's move (an open action, a decision a human must answer) always needs one (`needs_you`).
 MOVE_URGENT = 8
 LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
@@ -50,15 +49,6 @@ REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run th
 def agent_session() -> tuple[bool, str]:
     """Whether this command runs in an agent session (`entered_via`), and its id."""
     return entered_via() == "agent", session_id()
-
-
-def grant_path(sid: str) -> Path | None:
-    return GRANTS / sid if sid and SAFE_NAME.fullmatch(sid) else None
-
-
-def granted(sid: str) -> bool:
-    path = grant_path(sid)
-    return bool(path and path.exists())
 
 
 def set_grant(sid: str, on: bool) -> None:
@@ -89,7 +79,7 @@ def session_name(sid: str) -> str:
 class Event(NamedTuple):
     kind: str  # one of EVENT_KINDS: what `--only` picks
     key: str  # what the line is about: a ticket or record id, `agent <name>`, `check`, `github`
-    urgent: bool  # it needs the user: `!`
+    urgent: bool  # it needs a human: `!`
     text: str
 
 
@@ -98,7 +88,7 @@ EVENT_KINDS = {"ticket": "a ticket's stage, move or next, or that it can start",
                "agent": "an agent session that starts, ends its turn, waits on the user, seems stuck or ends",
                "github": "a sync that fails or works again",
                "check": "a new `check` error"}
-URGENT = "urgent"  # to `--only`: any event that needs the user, of any kind
+URGENT = "urgent"  # to `--only`: any event that needs a human, of any kind
 
 
 def snapshot(tr: Tracker) -> dict:
@@ -109,8 +99,8 @@ def snapshot(tr: Tracker) -> dict:
 
 
 def needs_you(fact: dict) -> bool:
-    """A ticket's move (as `snapshot` keeps it) is the user's to make."""
-    return bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
+    """A ticket's move (as `snapshot` keeps it) needs a human: it is a human's (`Move.human`), or yours and urgent."""
+    return bool(fact.get("human")) or bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
 
 
 def waits(x: Live, now: float) -> bool:
@@ -140,11 +130,14 @@ def ticket_events(old: dict, new: dict) -> list[Event]:
     return out
 
 
-def log_events(events: list[dict]) -> list[Event]:
-    """One per new event of the log (`model.read_events`), keyed by the first record it names (a new action for the
-    user needs them); the commits the hooks logged, as a count. A legacy event is the log from before the event
-    file, which a migration writes all at once: none is new."""
+def log_events(events: list[dict], tr: Tracker | None = None, role: str = "") -> list[Event]:
+    """One per new event of the log (`model.read_events`), keyed by the first record it names; the commits the hooks
+    logged, as a count. A new action for the user needs them, and so does a question opened or changed while still
+    open whose move is a human's; to the coordinator's watch (`role`), also one whose move is the coordinator's, so a
+    worker's question reaches it at once. With no `tr`, no decision is looked up. A legacy event is the log from
+    before the event file, which a migration writes all at once: none is new."""
     out, commits = [], {}
+    live = coordinated(tr) if tr else False
     for e in events:
         if e["kind"] == "legacy":
             continue
@@ -152,8 +145,18 @@ def log_events(events: list[dict]) -> list[Event]:
         if e["kind"] == "commits":
             commits[key] = commits.get(key, 0) + e["count"]
         else:
-            out.append(Event("log", key, e["kind"] == "action.added", short(e["text"], 120)))
+            out.append(Event("log", key, e["kind"] == "action.added" or asks(tr, e, live, role), short(e["text"], 120)))
     return out + [Event("log", key, False, f"+{n} commit{'s' * (n != 1)}") for key, n in commits.items()]
+
+
+def asks(tr: Tracker | None, e: dict, live: bool, role: str) -> bool:
+    """A question opened or changed (the event `e`) that is still open, and whose move (`decision_move`; `live`: a
+    coordinator watches) is a human's, or the coordinator's to the coordinator's own watch (`role`)."""
+    d = tr.lookup(str(e.get("decision") or "")) if tr and e["kind"] in ("decision.opened", "decision.updated") else None
+    if not d or d.kind != "decision" or d.closed:
+        return False
+    move = decision_move(tr, d, live)
+    return move.human or role == COORDINATOR and move.who == COORDINATOR
 
 
 def agent_tickets(tr: Tracker, x: Live) -> list[str]:
@@ -256,18 +259,18 @@ def await_change(tr: Tracker) -> None:
 
 
 def watches_of(tr: Tracker) -> list[dict]:
-    """Who watches the tracker, for a UI, the oldest first: each watch's `who`, `running` (REARM_S), `since` and
-    `ended`; none that ended over a day ago."""
+    """Who watches the tracker, for a UI, the oldest first: each watch's `who`, `role` (COORDINATOR, or ""), `running`
+    (`watch_running`), `since` and `ended`; none that ended over a day ago."""
     out = []
     for f in (WATCH_DIR / tr.slug).glob("*.json"):
         st = read_json(f)
-        if not st.get("who"):
+        ended = st.get("ended") or 0
+        if not st.get("who") or not isinstance(ended, (int, float)):  # not a watch's state, or a damaged one
             continue
-        ended, sid = st.get("ended", 0), str(st.get("sid") or "")
-        running = alive(int(st.get("pid") or 0)) or granted(sid) and time.time() - ended < REARM_S
+        running = watch_running(st)
         if running or time.time() - ended <= 86400:
-            out.append({"who": st["who"], "running": running, "since": st.get("started", 0),
-                        "ended": 0 if running else ended})
+            out.append({"who": st["who"], "role": str(st.get("role") or ""), "running": running,
+                        "since": st.get("started", 0), "ended": 0 if running else ended})
     return sorted(out, key=lambda w: w["since"])
 
 
@@ -298,8 +301,9 @@ class Watcher:
     repeats nothing."""
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal", only: frozenset[str] = frozenset(),
-                 hold: float = 0):
+                 hold: float = 0, role: str = ""):
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
+        self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -312,9 +316,16 @@ class Watcher:
     def save(self, now: float) -> None:
         write_json(state_path(self.slug, self.sid), {**self.st, "at": now})
 
+    def with_role(self, st: dict) -> dict:
+        """The state with this run's role, and none when it was given none: a role is held only while the watch that
+        was given it runs."""
+        st = {k: v for k, v in st.items() if k != "role"}
+        return {**st, "role": self.role} if self.role else st
+
     def claim(self, now: float) -> list[str]:
         """Take this session's (or the terminal's) watch of the tracker. Soon after its last run stopped: what
-        changed since. Else: the state now, as the baseline."""
+        changed since. Else: the state now, as the baseline. Its role is saved first, as the moves in its first lines
+        read it (`session.coordinated`)."""
         with locked():  # the test and the claim are one step; the rest runs outside the lock (sync asks GitHub)
             st = load_state(self.slug, self.sid)
             pid = int(st.get("pid") or 0)
@@ -322,7 +333,7 @@ class Watcher:
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
-            write_json(state_path(self.slug, self.sid), {**st, "pid": os.getpid()})
+            write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid()}))
         again = now - st.get("at", 0) < CATCH_UP_S and "snapshot" in st
         if again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
@@ -338,6 +349,7 @@ class Watcher:
             lines = summary(tr, self.others(), now)
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who,
                        started=st.get("started", now) if again and self.sid else now)
+        self.st = self.with_role(self.st)
         self.st.pop("ended", None)
         self.save(now)
         return lines
@@ -387,7 +399,7 @@ class Watcher:
             logged = read_events(tr, self.st["seq"])
             if logged:
                 self.st["seq"] = logged[-1]["seq"]
-            events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged)
+            events += ticket_events(self.st.get("snapshot", {}), new) + log_events(logged, tr, self.role)
             self.st["snapshot"] = new
         events += self.agents(tr, now)
         named = {e.key for e in events}
@@ -479,7 +491,7 @@ class Watcher:
         lines = self.claim(time.time())
         try:
             if not once and not self.sid:  # for a person; a session's first lines say what it watches
-                print(f"watching {self.slug} (Ctrl-C stops); `!` marks what needs you", flush=True)
+                print(f"watching {self.slug} (Ctrl-C stops); `!` marks what needs a human", flush=True)
             while not (once and lines):
                 if lines:
                     print("\n".join(lines), flush=True)

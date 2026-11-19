@@ -273,6 +273,68 @@ def answers(prs: list[dict]):
 class Moves(unittest.TestCase):
     """Whose move a ticket under way waits on: read from its PR by `sync`, and from its blockers."""
 
+    def waiting(self, owner: str = "", prs: dict | None = None) -> tuple[model.Tracker, model.Record]:
+        """A tracker whose T-1, under way, waits on the open decision D-01 of `owner`: T-2 under way, T-3 done; with
+        `prs`, T-1's open PRs and the facts `sync` read of them."""
+        s, t = new_tracker("Whose")
+        for ident, status in (("T-1", "in-progress"), ("T-2", "in-progress"), ("T-3", "done")):
+            run(*t, "new", ident, "--title", ident)
+            run(*t, "set", ident, f"status={status}")
+        run(*t, "decide", "Which store", "--blocks", "T-1", *(["--owner", owner] if owner else []))
+        tr = model.tracker_at(s)
+        if prs:
+            tr.lookup("T-1").save({"prs": [f"{n}:open" for n in prs]})
+            tr.save_state({**tr.raw_state(), "prs": {f"#{n}": r for n, r in prs.items()}})
+            tr = model.tracker_at(s)
+        return tr, tr.lookup("T-1")
+
+    def move(self, coordinated: bool, owner: str = "", prs: dict | None = None) -> moves.Move:
+        return moves.whose_move(*self.waiting(owner, prs), coordinated)
+
+    def test_a_decision_with_no_owner_is_a_humans(self):
+        m = self.move(False)
+        self.assertEqual((m.who, m.what, m.human, m.mine), ("human", "D-01 open", True, False))
+
+    def test_a_decision_with_no_owner_is_the_coordinators(self):
+        for owner in ("", "coordinator"):
+            with self.subTest(owner=owner):
+                m = self.move(True, owner)
+                self.assertEqual((m.who, m.what, m.human), ("coordinator", "D-01 open", False))
+                self.assertEqual((self.move(False, owner).who, self.move(False, owner).human), ("human", True))
+
+    def test_a_named_owner_is_that_human(self):
+        for coordinated in (False, True):
+            m = self.move(coordinated, "Sam")
+            self.assertEqual((m.who, m.what, m.human), ("Sam", "D-01 open", True))
+
+    def test_a_ticket_owner_is_its_session(self):
+        for coordinated in (False, True):
+            m = self.move(coordinated, "T-2")
+            self.assertEqual((m.who, m.what, m.human), ("T-2's session", "D-01 open", False))
+
+    def test_a_closed_or_missing_ticket_owner_is_a_humans(self):
+        for owner in ("T-9", "T-3"):  # no such ticket; a ticket that is done
+            with self.subTest(owner=owner):
+                m = self.move(True, owner)
+                self.assertEqual((m.who, m.human), (owner, True))
+
+    def test_an_open_action_is_a_humans(self):
+        s, t = new_tracker("Act")
+        run(*t, "new", "T-1", "--title", "One")
+        run(*t, "set", "T-1", "status=in-progress")
+        run(*t, "act", "Ask Sam", "--blocks", "T-1")
+        tr = model.tracker_at(s)
+        m = moves.whose_move(tr, tr.lookup("T-1"))
+        self.assertEqual((m.who, m.what, m.human, m.mine), (moves.YOU, "A-01 open", True, True))
+
+    def test_several_open_prs_keep_human(self):
+        m = self.move(False, prs={12: {}, 13: {}})
+        self.assertEqual((m.who, m.what, m.human), ("human", "#12 D-01 open", True))
+
+    def test_the_order_of_the_rule_is_unchanged(self):
+        m = self.move(False, prs={12: {"merge": "conflict"}})
+        self.assertEqual((m.who, m.what, m.human), (moves.YOU, "merge conflicts", False))
+
     def test_sync_follows_every_pr_of_a_ticket(self):
         s, t = new_tracker("Work", "a/x")
         run(*t, "new", "S-1", "--title", "One", "--branch", "f1")
@@ -468,7 +530,8 @@ class Moves(unittest.TestCase):
             self.assertIn("  you: draft — S-2\n  rev: review requested — S-1", index)
             self.assertIn("move: rev — review requested", run(*t, "context", "S-1"))
             now = viewmodel.now_view(tr)
-            self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True, "quiet": True})
+            self.assertEqual(now["items"][0]["move"], {"text": "you: draft", "mine": True, "human": False,
+                                                             "quiet": True})
 
             seen = session.watch(tr, [tr.lookup("S-1")])
             prs[0] = pull(11, branch="f1", decision="APPROVED", reviews=[
@@ -3136,9 +3199,9 @@ class Watch(unittest.TestCase):
         w1 = next(x for x in lines if " W-1: " in x)
         for fact in ("todo → in-progress", "move: you — no PR yet", "Built the parser", "next: Test it", "+5 commits"):
             self.assertIn(fact, w1)
-        self.assertNotIn("!", "".join(lines))  # the agent's own work: nothing needs the user
+        self.assertNotIn("!", "".join(x for x in lines if " D-01: " not in x))  # the agent's own work
         self.assertIn("W-3: can start now: stack on feat/W-1", "".join(lines))
-        self.assertIn("D-01: Opened D-01 Pick a store", "".join(lines))
+        self.assertIn("! D-01: Opened D-01 Pick a store", "".join(lines))  # no owner, no coordinator: a human's
 
         # A review comes back: the move is the user's.
         tr = model.Tracker(self.root)
@@ -3214,6 +3277,42 @@ class Watch(unittest.TestCase):
     def test_the_watch_counts_commits_from_the_event(self):
         commits = {"kind": "commits", "refs": ["W-1"], "text": "Commits on feat/W-1: a1 one", "count": 11}
         self.assertEqual(watcher.log_events([commits]), [watcher.Event("log", "W-1", False, "+11 commits")])
+
+    def opened(self, *flags: str) -> list[dict]:
+        """D-01 opened with `flags`: its events, as the watch reads them."""
+        run(*self.t, "decide", "Pick a store", *flags)
+        return [e for e in model.read_events(model.Tracker(self.root)) if e.get("decision") == "D-01"]
+
+    def coordinator(self, sid: str = "qb") -> None:
+        """A coordinator's watch of the tracker, running now."""
+        watcher.set_grant(sid, True)
+        watcher.state_path(self.s, sid).parent.mkdir(parents=True, exist_ok=True)
+        store.write_json(watcher.state_path(self.s, sid), {"who": "session qb", "sid": sid, "pid": os.getpid(),
+                                                            "role": "coordinator"})
+
+    def test_a_question_for_a_human_is_urgent(self):
+        events = self.opened()
+        self.assertEqual([e.urgent for e in watcher.log_events(events, model.Tracker(self.root))], [True])
+        self.assertEqual([e.urgent for e in watcher.log_events(events)], [False])  # no tracker: none looked up
+
+    def test_a_question_reaches_the_coordinators_watch(self):
+        self.opened()
+        run(*self.t, "decide", "D-1", "--note", "why")
+        events = [e for e in model.read_events(model.Tracker(self.root)) if e.get("decision") == "D-01"]
+        self.assertEqual([e["kind"] for e in events], ["decision.opened", "decision.updated"])
+        self.coordinator()
+        tr = model.Tracker(self.root)
+        self.assertEqual([e.urgent for e in watcher.log_events(events, tr, "coordinator")], [True, True])
+        self.assertEqual([e.urgent for e in watcher.log_events(events, tr)], [False, False])
+
+    def test_a_settled_question_is_not_urgent(self):
+        events = self.opened()
+        run(*self.t, "decide", "D-1", "--resolve", "S3")
+        events = [e for e in model.read_events(model.Tracker(self.root)) if e.get("decision") == "D-01"]
+        self.assertEqual(len(events), 2)
+        for role in ("", "coordinator"):
+            self.assertEqual([e.urgent for e in watcher.log_events(events, model.Tracker(self.root), role)],
+                             [False, False])
 
     def test_a_new_action_needs_the_user(self):
         events = watcher.log_events([
@@ -3890,7 +3989,9 @@ class DecisionOptions(unittest.TestCase):
         d.rewrite(d.path.read_text().replace("- Postgres", "- Postgres\nSome prose"))
         errors, _ = contract.check(model.tracker_at(s))
         self.assertTrue(any("D-01 ## Options: 'Some prose' is no choice" in x for x in errors), errors)
-        self.assertIn("fix it first", run(*t, "decide", "D-1", "--option", "SQLite", code=2))
+        before = tree(store.HOME / s)
+        self.assertIn("fix it first", run(*t, "decide", "D-1", "--option", "SQLite", "--owner", "Sam", code=2))
+        self.assertEqual(tree(store.HOME / s), before)  # refused before it wrote the owner
 
     def test_the_view_offers_an_open_decisions_choices(self):
         s, t = new_tracker("Options")
@@ -3910,6 +4011,94 @@ class DecisionOptions(unittest.TestCase):
         self.assertIn("## Options", d["body"])
         self.assertEqual(markdown.headings(model.tracker_at(s).lookup("D-01").body),
                          ["Question", "Options", "Notes", "Resolution"])
+
+
+class Coordinator(unittest.TestCase):
+    """A session takes the coordinator role by watching a tracker `--as coordinator`; while its watch runs, an open
+    decision with no owner is the coordinator's move, and a human's again once it stops."""
+
+    def setUp(self):
+        self.s, self.t = new_tracker("Coordinated")
+        run(*self.t, "new", "W-1", "--title", "One")
+        run(*self.t, "set", "W-1", "status=in-progress")
+        run(*self.t, "decide", "Which store", "--blocks", "W-1")
+        self.sid = f"co{time.monotonic_ns()}"
+
+    def tr(self) -> model.Tracker:
+        return model.tracker_at(self.s)
+
+    def watch(self, *flags: str, code: int = 0) -> str:
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.sid}):
+            return run("watch", self.s, "--once", *flags, code=code)
+
+    def test_a_session_takes_the_role(self):
+        self.assertFalse(session.coordinated(self.tr()))
+        self.watch("--as", "coordinator")
+        self.assertEqual([w["role"] for w in watcher.watches_of(self.tr())], ["coordinator"])
+        self.assertTrue(session.coordinated(self.tr()))  # between two `--once` runs, it still watches
+        self.assertIn("move: coordinator — D-01 open", run(*self.t, "context", "W-1"))
+
+    def test_a_terminal_cannot_take_the_role(self):
+        before = tree(store.HOME / self.s), tree(session.WATCH_DIR) if session.WATCH_DIR.exists() else {}
+        self.assertIn("--as coordinator: a session takes the role, not a terminal",
+                      run("watch", self.s, "--once", "--as", "coordinator", code=2))
+        self.assertEqual((tree(store.HOME / self.s), tree(session.WATCH_DIR) if session.WATCH_DIR.exists() else {}),
+                         before)
+
+    def test_a_dead_coordinator_hands_back_to_a_human(self):
+        watcher.set_grant(self.sid, True)
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        path = session.WATCH_DIR / self.s / f"{self.sid}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for ended, coordinated, move in ((time.time() - session.REARM_S - 1, False, "human — D-01 open"),
+                                         (time.time() - 5, True, "coordinator — D-01 open")):
+            with self.subTest(ended=ended):
+                store.write_json(path, {"who": "session co", "sid": self.sid, "pid": dead.pid, "role": "coordinator",
+                                        "ended": ended})
+                self.assertEqual(session.coordinated(self.tr()), coordinated)
+                self.assertIn(f"move: {move}", run(*self.t, "context", "W-1"))
+        store.write_json(path, {"who": "session co", "sid": self.sid, "pid": "x", "role": "coordinator", "ended": "y"})
+        self.assertFalse(session.coordinated(self.tr()))  # a damaged state: no coordinator, and nothing breaks
+        self.assertIn("move: human — D-01 open", run(*self.t, "context", "W-1"))
+        self.assertEqual(watcher.watches_of(self.tr()), [])
+        self.assertIn('"move"', run("data", self.s))
+
+    def test_the_coordinators_first_summary_knows_its_role(self):
+        line = next(x for x in self.watch("--as", "coordinator").splitlines() if "W-1 " in x)
+        self.assertRegex(line, r"^\d\d:\d\d W-1 in-progress · move: coordinator — D-01 open")
+        other = f"plain{time.monotonic_ns()}"
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": other}):
+            watcher.set_grant(self.sid, False)  # the coordinator has stopped
+            line = next(x for x in run("watch", self.s, "--once").splitlines() if "W-1 " in x)
+        self.assertRegex(line, r"^\d\d:\d\d ! W-1 in-progress · move: human — D-01 open")
+
+    def test_a_restarted_watch_drops_a_role_it_was_not_given(self):
+        self.watch("--as", "coordinator")
+        self.watch()
+        self.assertEqual([w["role"] for w in watcher.watches_of(self.tr())], [""])
+        self.assertNotIn("role", watcher.load_state(self.s, self.sid))
+        self.assertFalse(session.coordinated(self.tr()))
+
+    def test_the_view_never_names_the_owner_as_decider(self):
+        run(*self.t, "new", "W-2", "--title", "Two")
+        run(*self.t, "set", "W-2", "status=in-progress")
+        for owner, by, move in (("coordinator", "user", "human: D-01 open"),
+                                ("W-2", "user", "W-2's session: D-01 open"), ("Sam", "Sam", "Sam: D-01 open")):
+            with self.subTest(owner=owner):
+                run(*self.t, "decide", "D-1", "--owner", owner)
+                d = data(self.s)["records"]["D-01"]
+                self.assertEqual(d["answer"]["by"], by)
+                self.assertEqual((d["move"]["text"], d["move"]["human"]), (move, owner != "W-2"))
+
+    def test_passing_a_question_to_a_human_is_logged(self):
+        run(*self.t, "decide", "D-1", "--owner", "Sam")
+        updated = [e for e in model.read_events(self.tr()) if e["kind"] == "decision.updated"]
+        self.assertEqual([(e["owner"], e["text"]) for e in updated], [("Sam", "Updated D-01: owner Sam")])
+        run(*self.t, "decide", "D-1", "--owner", "Sam")  # no change: nothing logged
+        self.assertEqual(len([e for e in model.read_events(self.tr()) if e["kind"] == "decision.updated"]), 1)
+        run(*self.t, "decide", "Which queue", "--owner", "Kim")
+        self.assertEqual(model.read_events(self.tr())[-1]["owner"], "Kim")
 
 
 AGENT, VIEW, TERMINAL = {"TRACKER_SESSION": "s1"}, {"TRACKER_VIA": "view"}, {}

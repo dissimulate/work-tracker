@@ -746,12 +746,18 @@ def choice(text: str) -> Option:
     return found[0]
 
 
-def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
-    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
-    changed, for the log."""
+def options_of(d: Record) -> list[Option]:
+    """A decision's choices; dies when ## Options holds a line that is no choice, which a person fixes first."""
     options, bad = parse_options(strip_comments(section(d.body, "Options")))
     if bad:
         die(f"{d.id} ## Options holds a line that is no choice ({short(bad[0], 60)}): fix it first. {OPTION_RULE}")
+    return options
+
+
+def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
+    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
+    changed, for the log."""
+    options = options_of(d)
     known = {o.text.lower() for o in options}
     said = []
     for o in [*given, *([pick] if pick else [])]:
@@ -782,17 +788,21 @@ def cmd_decide(args):
         if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or args.owner or args.question):
             die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
                 "or --question")
+        if given or pick:
+            options_of(d)  # a refusal writes nothing: before the first write
         upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
-        d.change({**upd, **({"owner": args.owner} if args.owner else {})})
+        owner = args.owner if args.owner and args.owner != str(d.get("owner") or "") else ""
+        d.change({**upd, **({"owner": owner} if owner else {})})
         if args.question:
             append_to_section(d, "Question", dated(args.question))
-        said = add_choices(d, given, pick) if given or pick else []
+        said = [f"owner {owner}"] if owner else []  # whose move it is changes: a watch reads it from the event
+        said += add_choices(d, given, pick) if given or pick else []
         if args.note:
             append_to_section(d, "Notes", f"- {dated(args.note)}")
             said.append(short(args.note))
         if said:
             append_event(tr, "decision.updated", f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)],
-                         decision=d.id)
+                         decision=d.id, **({"owner": owner} if owner else {}))
         if msg := blocks_line(tr, d, blocks):
             print(msg)
         print(resolve_decision(tr, d, args.resolve, settled) if args.resolve else f"{d.id} updated")
@@ -812,7 +822,8 @@ def cmd_decide(args):
     else:
         newly = block_tickets(tr, d.id, blocks)
         append_event(tr, "decision.opened", LOG["opened"].format(id=d.id, title=args.target)
-                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id)
+                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id,
+                     **({"owner": args.owner} if args.owner else {}))
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
@@ -1092,6 +1103,8 @@ def cmd_watch(args):
     session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
     skill say so."""
     inside, sid = agent_session()
+    if args.role and not inside:
+        die(f"--as {args.role}: a session takes the role, not a terminal")
     if inside and not grant_path(sid):
         die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
     if args.stop:
@@ -1109,7 +1122,7 @@ def cmd_watch(args):
     if inside:
         set_grant(sid, True)
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
-            args.hold).run(args.once)
+            args.hold, args.role or "").run(args.once)
 
 
 def cmd_agents(args):

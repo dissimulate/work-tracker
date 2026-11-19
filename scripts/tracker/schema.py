@@ -147,7 +147,8 @@ KEYS = {
         "title": ("set", "short name of the decision"),
         "status": ("decide", "open until `decide --resolve` closes it; the answer is ## Resolution"),
         "refs": ("decide", "tickets it touches but does not block; a block is the ticket's depends_on"),
-        "owner": ("set", "who must decide"),
+        "owner": ("set", "who must decide: a person's name, a ticket id (the session on it), or coordinator; none: the "
+                         "coordinator when one is watching, else a human"),
         "due": ("set", DUE),
         "created_at": ("auto", "when it was opened"),
         "updated_at": ("auto", UPDATED),
@@ -499,6 +500,8 @@ README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required fro
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
 OPEN_DECISIONS_WARN = 12  # more open than this and the list is carrying ticket-level questions
 
+# A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
+COORDINATOR = "coordinator"
 # A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
 RESOLVE = ('`tracker decide D-<n> --resolve "..." --by <who decided>` (`--source "<where>"` when the spec, a settled '
            'decision or the code already answered it)')
