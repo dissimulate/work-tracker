@@ -8,8 +8,8 @@ import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
 from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
-from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, sequence,
-    sort_key, span, Dep, Record, Tracker)
+from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, log_line,
+    read_events, sequence, sort_key, span, Dep, Record, Tracker)
 from .moves import is_pr_link, linked_prs, whose_move, Move
 from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
 from .contract import check
@@ -262,8 +262,7 @@ def reference_view(tr: Tracker) -> dict:
     for h in README_SECTIONS:
         extra = without_section(extra, h)
     extra = strip_comments(extra).strip()
-    log_path = tr.root / "log.md"
-    log = [ln[2:] for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
+    log = [log_line(e)[2:] for e in read_events(tr)]
     return {"decisions": [decision_view(tr, d) for d in tr.decisions if d.closed],
             "actions": [action_view(tr, a) for a in closed],
             "more": {"body": extra} if headings(extra) else None,

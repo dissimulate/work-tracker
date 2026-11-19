@@ -10,8 +10,8 @@ from .system import BIN
 from .markdown import section, strip_comments
 from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, STAGES, STALE_ACTION_DAYS,
     STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
-from .model import (LOG_LINE, SPANS, cut, due_date, link_lines, logged_decision, resolution, sequence, short, span, Dep,
-    Record, Start, Tracker)
+from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_events, resolution, sequence, short,
+    span, Dep, Record, Start, Tracker)
 from .moves import whose_move
 from .git import cwd_repo
 from .session import ago, branch_handoff, handoff_line, lag, Match
@@ -189,16 +189,17 @@ CONTEXT_LOG = 3  # log lines `context` shows by default
 
 
 HISTORY_LAST = 30  # log lines `history` shows by default
+SHOWN_DECISION_KINDS = ("decision.opened", "decision.decided", "legacy")  # what a view of the decision says already
 
 
 def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset()) -> list[str]:
     """The log's last `last` lines (0: all), oldest first: those whose refs name any of `refs`, dated `since` or
-    later. A line that opened or settled a decision in `shown` is left out: the view shows that decision."""
-    path = tr.root / "log.md"
-    lines = [ln[2:] for ln in (path.read_text().splitlines() if path.exists() else [])
-             if (m := LOG_LINE.match(ln)) and m[1] >= since
-             and (not refs or set(refs) & set((m[2] or "").split()))
-             and logged_decision(ln[m.end():]) not in shown]
+    later. A line that opened or settled a decision in `shown` is left out: the view shows that decision. A legacy
+    line that had no day is left out too."""
+    lines = [log_line(e)[2:] for e in read_events(tr)
+             if (day := event_day(e)) and day >= since
+             and (not refs or set(refs) & set(e["refs"]))
+             and not (e.get("decision") in shown and e["kind"] in SHOWN_DECISION_KINDS)]
     return lines[-last:] if last > 0 else lines
 
 

@@ -798,12 +798,10 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------- the log
-# Each change is one event in the event file (EVENTS_FILE) and one line in log.md, `- <day> [<ids>] <text>`:
-# append_event writes both, and LOG_LINE reads log.md back. Most texts are for people. Those that code reads back have a LogForm in LOG, which both writes them and reads them, so a
-# change of words cannot part the two: `context` and the brief leave out the lines of a decision they show, and
-# the watcher counts the commits and marks a new action as one for the user.
-
-LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
+# Each change is one event in the event file (EVENTS_FILE), and its line in log.md, `- <day> [<ids>] <text>`, for
+# people: append_event writes both. Code reads only the events, by their fields: `context` and the brief leave out
+# the lines of a decision they show, and the watcher counts the commits and marks a new action as one for the user.
+# A hand edit of log.md changes nothing they show.
 
 
 def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
@@ -882,33 +880,30 @@ def ends_open(path: Path) -> bool:
         return False
 
 
+def event_day(e: dict) -> str:
+    """An event's day: a legacy event's own, else the local day of its time."""
+    return e["day"] if "day" in e else dt.date.fromtimestamp(utc_seconds(e["at"])).isoformat()
+
+
 def log_line(e: dict) -> str:
-    """An event as its line in log.md, `- <day> [<refs>] <text>`: the day is a legacy event's own, else the local day
-    of its time."""
-    day = e["day"] if "day" in e else dt.date.fromtimestamp(utc_seconds(e["at"])).isoformat()
-    return f"- {day}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
+    """An event as its line in log.md, `- <day> [<refs>] <text>`."""
+    return f"- {event_day(e)}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
 
 
 @dataclass(frozen=True)
 class LogForm:
-    """A log text that code reads back: `text` writes it from `template`, `read` matches its start, and group 1 of
-    the match is what the reader needs. A writer may add more after it."""
+    """A log text named outside its writer: `text` writes it from `template`. A writer may add more after it."""
     template: str
-    pattern: re.Pattern
 
     def text(self, **fields) -> str:
         return self.template.format(**fields)
 
-    def read(self, text: str) -> re.Match | None:
-        return self.pattern.match(text)
 
-
-DECISION_ID = rf"{KINDS['decision'].prefix}-\d+"
 LOG = {
-    "opened": LogForm("Opened {id} {title}", re.compile(rf"Opened ({DECISION_ID})\b")),
-    "decided": LogForm("Decided {id} {title}{who}: {answer}", re.compile(rf"Decided ({DECISION_ID})\b")),
-    "action": LogForm("Action for the user: {title}", re.compile(r"Action for the user: (.*)")),
-    "commits": LogForm("Commits on {branch}: {commits}", re.compile(r"Commits on \S+: (.*)")),
+    "opened": LogForm("Opened {id} {title}"),
+    "decided": LogForm("Decided {id} {title}{who}: {answer}"),
+    "action": LogForm("Action for the user: {title}"),
+    "commits": LogForm("Commits on {branch}: {commits}"),
 }
 COMMITS_LOGGED_MAX = 8  # the commits a log line names; the rest as a count
 
@@ -918,22 +913,6 @@ def commits_text(branch: str, commits: list[tuple[str, str]]) -> str:
     shown = "; ".join(f"{sha} {subject}" for sha, subject in commits[:COMMITS_LOGGED_MAX])
     more = f"; and {len(commits) - COMMITS_LOGGED_MAX} more" if len(commits) > COMMITS_LOGGED_MAX else ""
     return LOG["commits"].text(branch=branch, commits=shown + more)
-
-
-def commits_logged(text: str) -> int:
-    """How many commits a log text that commits_text wrote names; 0 for any other text."""
-    m = LOG["commits"].read(text)
-    if not m:
-        return 0
-    items = m[1].split("; ")
-    more = re.fullmatch(r"and (\d+) more", items[-1])
-    return len(items) - 1 + int(more[1]) if more else len(items)
-
-
-def logged_decision(text: str) -> str | None:
-    """The decision a log text opened or settled; None for any other text."""
-    m = LOG["opened"].read(text) or LOG["decided"].read(text)
-    return m[1] if m else None
 
 
 PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}

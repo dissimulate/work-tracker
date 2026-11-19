@@ -148,16 +148,6 @@ class Format(unittest.TestCase):
         self.assertTrue(got["check"]["errors"])
 
 
-    def test_log_forms_read_back_what_they_write(self):
-        fields = {"id": "D-07", "title": "Auth scheme", "who": " (me)", "answer": "JWT", "branch": "feat/x",
-                  "commits": "a1 one"}
-        for name, form in model.LOG.items():
-            with self.subTest(name=name):
-                self.assertTrue(form.read(form.text(**fields)))
-        self.assertEqual(model.logged_decision(model.LOG["decided"].text(**fields)), "D-07")
-        commits = [(f"c{i}", f"commit {i}") for i in range(model.COMMITS_LOGGED_MAX + 3)]
-        self.assertEqual(model.commits_logged(model.commits_text("feat/x", commits)), len(commits))
-
     def test_a_remote_names_its_repo(self):
         for remote, slug_ in [("git@github.com:Acme/API.git", "acme/api"), ("https://github.com/acme/api", "acme/api"),
                               ("https://user:token@github.com/acme/api.git/", "acme/api"),
@@ -1465,6 +1455,47 @@ class Events(unittest.TestCase):
         e = model.read_events(model.tracker_at(s))[-1]
         self.assertEqual((e["kind"], e["pr"], e["state"], e["refs"], e["repo"], e["text"]),
                          ("pr.state", "a/x#11", "merged", ["K-1"], "a/x", "PR #11 merged"))
+
+    def test_nothing_reads_log_md(self):
+        import ast
+        writers = {("commands.py", "cmd_init"), ("model.py", "append_event"), ("contract.py", "migrate"),
+                   ("commands.py", "cmd_find"), ("model.py", "data_files")}
+        found = set()
+        for path in sorted((ROOT / "scripts/tracker").glob("*.py")):
+            for fn in ast.walk(ast.parse(path.read_text())):
+                if isinstance(fn, ast.FunctionDef) and any(
+                        isinstance(x, ast.Constant) and x.value == "log.md" for x in ast.walk(fn)):
+                    found.add((path.name, fn.name))
+        self.assertLessEqual(found, writers)
+
+    def test_history_ignores_a_hand_edit_of_log_md(self):
+        run(*self.t, "log", "Written by the tool")
+        with open(store.HOME / self.s / "log.md", "a") as f:
+            f.write(f"- {schema.today()} Written by hand\n")
+        said = run(*self.t, "history")
+        self.assertIn("Written by the tool", said)
+        self.assertNotIn("Written by hand", said)
+        self.assertNotIn("Written by hand", json.dumps(data(self.s)))
+
+    def test_history_hides_a_shown_decisions_lines(self):
+        run(*self.t, "decide", "Which store")
+        run(*self.t, "decide", "D-01", "--note", "S3 is cheap")
+        run(*self.t, "decide", "D-01", "--resolve", "S3")
+        run(*self.t, "decide", "Which queue")
+        self.assertEqual([x.split(" ", 2)[2] for x in views.history_lines(self.tr, [], "", 0, {"D-01"})],
+                         ["Updated D-01: S3 is cheap", "Opened D-02 Which queue"])
+
+    def test_history_filters_by_ref_and_since(self):
+        run(*self.t, "new", "T-1", "--title", "One")
+        with mock.patch.object(model, "utc_now", lambda: "2025-01-02T12:00:00Z"):
+            run(*self.t, "log", "Long ago", "--ref", "T-1")
+        run(*self.t, "log", "Today, on T-1", "--ref", "T-1")
+        run(*self.t, "log", "Today, on nothing")
+        today = schema.today()
+        self.assertEqual(run(*self.t, "history", "--ref", "T-1").splitlines(),
+                         [f"{today} [T-1] Added T-1 One", "2025-01-02 [T-1] Long ago", f"{today} [T-1] Today, on T-1"])
+        self.assertEqual(run(*self.t, "history", "--since", "2025-06-01").splitlines(),
+                         [f"{today} [T-1] Added T-1 One", f"{today} [T-1] Today, on T-1", f"{today} Today, on nothing"])
 
     def test_commits_event_counts_every_commit(self):
         commits = [(f"c{i}", f"commit {i}") for i in range(11)]
@@ -2797,6 +2828,35 @@ class Watch(unittest.TestCase):
         w.poll(now)
         self.assertEqual(git.branch_of(self.work), "feat/W-2")
 
+    def test_a_watch_from_before_the_upgrade_reports_nothing_old(self):
+        w, now = self.watcher(), time.time()
+        w.claim(now)
+        w.release(now)
+        path = watcher.state_path(self.s)
+        st = json.loads(path.read_text())
+        st.pop("seq", None)
+        path.write_text(json.dumps({**st, "offset": 0}))  # a byte offset into log.md, as an older version kept
+        self.assertEqual(len(model.read_events(model.Tracker(self.root))), 3)
+        again = self.watcher()
+        self.assertEqual(again.claim(now), [])
+        self.assertNotIn("offset", again.st)
+        with store.locked():
+            model.append_event(model.Tracker(self.root), "note", "A note", ["W-2"])
+        lines = again.poll(now)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("W-2: A note", lines[0])
+
+    def test_the_watch_counts_commits_from_the_event(self):
+        commits = {"kind": "commits", "refs": ["W-1"], "text": "Commits on feat/W-1: a1 one", "count": 11}
+        self.assertEqual(watcher.log_events([commits]), [watcher.Event("log", "W-1", False, "+11 commits")])
+
+    def test_a_new_action_needs_the_user(self):
+        events = watcher.log_events([
+            {"kind": "action.added", "refs": ["A-01", "T-1"], "text": "Action for the user: Ask Sam"},
+            {"kind": "action.closed", "refs": ["A-01", "T-1"], "text": "A-01 done: Ask Sam"},
+            {"kind": "legacy", "refs": ["A-02"], "text": "Action for the user: Ask Kim", "day": "2026-01-01"}])
+        self.assertEqual([(e.key, e.urgent) for e in events], [("A-01", True), ("A-01", False)])  # legacy: never new
+
     def test_restart(self):
         """A restart misses nothing and repeats nothing; one watcher per tracker."""
         w, now = self.watcher(), time.time()
@@ -3321,11 +3381,6 @@ class Actions(unittest.TestCase):
         text = views.instructions(self.tr())
         self.assertLess(len(text), views.BRIEF_INSTRUCTIONS_CHARS + 200)
         self.assertTrue(text.endswith("… the rest: `tracker show tracker --section instructions`"))
-
-    def test_the_watch_marks_a_new_action(self):
-        events = watcher.log_events([f"- 2026-10-09 [A-01 T-1] {model.LOG['action'].text(title='Ask Sam')}",
-                                     "- 2026-10-09 [A-01 T-1] A-01 done: Ask Sam"])
-        self.assertEqual([e.urgent for e in events], [True, False])
 
 
 class Values(unittest.TestCase):
