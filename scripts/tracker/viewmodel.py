@@ -143,7 +143,7 @@ def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
             x["state"] = x["state"] or state
         for link in linked_prs(t):
             x = row(link.repo, link.number, t)
-            x["link"] = x["link"] or link_title(link)
+            x["link"] = x["link"] or link_title(link, note=False)
     coordinated, items = around(tr)[0], items_of(tr)
     out = []
     for key, x in rows.items():

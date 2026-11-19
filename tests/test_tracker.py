@@ -3255,7 +3255,7 @@ class Ui(unittest.TestCase):
     def test_a_prs_title_is_githubs_then_its_last_logged_then_its_links(self):
         s, t = self.pr_tracker()
         run(*t, "add", "S-1", "link", "PR: [Link text](https://github.com/a/x/pull/11)")
-        run(*t, "add", "S-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/7)")
+        run(*t, "add", "S-1", "link", "PR: [Elsewhere](https://github.com/b/y/pull/7) — the other half")
         self.synced(t, [pull(11, branch="f1", title="Old title")])
         self.synced(t, [pull(11, branch="f1", title="New title")])  # no new state: no new event
         titles = {x["key"]: x["title"] for x in data(s)["prs"]}

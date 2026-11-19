@@ -91,9 +91,11 @@ def link_url(link: Link) -> str:
     return (m[1] if m.lastindex else m[0]) if m else link.text
 
 
-def link_title(link: Link) -> str:
-    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`."""
-    return re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+def link_title(link: Link, note: bool = True) -> str:
+    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`; with no `note`,
+    `title`."""
+    text = re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+    return text if note else text.split(" — ")[0]
 
 
 def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0,
@@ -102,7 +104,7 @@ def link_lines(items: list[Link], root: Path | None = None, titles: bool = False
     keeps the label, title and why, without the URL. `width` (a brief) cuts each line to that many characters and
     leaves out the nested detail lines."""
     if titles:
-        return [f"  {x.label}: {link_title(x).split(' — ')[0]}" for x in items]
+        return [f"  {x.label}: {link_title(x, note=False)}" for x in items]
     if not urls:
         return [f"  {cut(f'{x.label}: {link_title(x)}', width)}" for x in items]
     out = []
