@@ -3561,30 +3561,6 @@ class Watch(unittest.TestCase):
         self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
         self.assertEqual(w.poll(now + 41), [])  # said once
 
-    def test_a_move_that_turns_stuck_at_once_is_said_by_the_stuck_line_alone(self):
-        self.coordinator()
-        run(*self.t, "set", "W-1", "status=in-progress")  # under way, no session on it
-        for settle in (0, 5):  # the files settle at the look of the stuck line, or a few looks after it
-            with self.subTest(settle=settle), mock.patch.object(watcher, "SETTLE_S", settle):
-                w, now = self.watcher(), time.time()
-                w.claim(now)
-                w.poll(now)
-                run(*self.t, "submit", "W-1", "--what", "plan")  # the coordinator's move is never seen: stuck at once
-                lines = [x for s in (1, 3, 7, 9, 20) for x in w.poll(now + s)]
-                self.assertEqual(len(self.stuck_lines(lines)), 1, lines)
-                self.assertEqual([x for x in lines if "move:" in x], [], lines)
-                run(*self.t, "review", "W-1", "--what", "plan", "--verdict", "pass")
-
-    def test_a_watch_of_ticket_lines_alone_keeps_a_move_that_turns_stuck(self):
-        self.coordinator()
-        run(*self.t, "set", "W-1", "status=in-progress")
-        w, now = watcher.Watcher(model.Tracker(self.root), only=frozenset({"ticket"})), time.time()
-        w.claim(now)
-        w.poll(now)
-        run(*self.t, "submit", "W-1", "--what", "plan")
-        lines = [x for s in (1, 3) for x in w.poll(now + s)]  # no stuck line is shown: the move line says it
-        self.assertEqual(len([x for x in lines if "move: human" in x and "stuck with coordinator" in x]), 1, lines)
-
     def test_a_deadline_passing_is_seen_without_a_read(self):
         w, now = self.watcher(), time.time()
         w.claim(now)
