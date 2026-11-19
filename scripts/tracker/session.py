@@ -172,8 +172,9 @@ def cited_word(sid: str, quote: str) -> dict | None:
         return " ".join(str(s).split()).casefold()
 
     quote = plain(quote)
-    words = kept_words(load_session(sid)) if quote else []
-    return next((w for w in reversed(words) if quote in plain(w["excerpt"])), None)
+    if not quote:
+        return None
+    return next((w for w in reversed(kept_words(load_session(sid))) if quote in plain(w["excerpt"])), None)
 
 
 def kept_words(entry: dict) -> list[dict]:

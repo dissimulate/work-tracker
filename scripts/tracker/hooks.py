@@ -14,7 +14,7 @@ from pathlib import Path
 from .system import env_int, spawn, warn
 from .store import locked, record_cli, OtherFormat
 from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
-from .model import append_event, pr_key, read_events, set_branch, short, Tracker
+from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, unlink_session,
@@ -240,19 +240,17 @@ def log_opened(tr: Tracker, response) -> None:
     """Log the PR a `gh pr create` opened (`pr.opened`): the last PR address in its output, where gh prints it, once
     per PR. Claude Code gives a Bash command's output as `stdout`. A command that failed reaches no `post-bash` hook,
     and one whose output holds no address logs nothing. A tracker the format guard refuses gets no event."""
-    out = response.get("stdout") if isinstance(response, dict) else response
+    out = response.get("stdout") if isinstance(response, dict) else None
     found = PR_PAGE.findall(out) if isinstance(out, str) else []
     if not found:
         return
     repo, number = found[-1]
     key = pr_key(repo, number)
-    ours = [r for r in tr.repos if r.lower() == repo.lower()]  # as `sync` names it in a pr.state event
-    name = f"#{number}" if len(tr.repos) == 1 and ours else f"{(ours or [repo])[0]}#{number}"
     try:
         with locked():
             tr = Tracker(tr.root)
             if not any(e["kind"] == "pr.opened" and e.get("pr") == key for e in read_events(tr)):
-                append_event(tr, "pr.opened", f"PR {name} opened by a session", [], pr=key)
+                append_event(tr, "pr.opened", f"PR {pr_name(tr, repo, number)} opened by a session", [], pr=key)
     except OtherFormat:
         pass
 

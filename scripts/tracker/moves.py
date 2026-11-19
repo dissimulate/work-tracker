@@ -84,12 +84,15 @@ class Handoff:
     fixed: set = field(default_factory=set)  # the numbers of that review's findings marked fixed since
 
 
+HANDOFF_KINDS = ("submission", "review", "finding.fixed")  # the events of a ticket's plan or code review cycle
+
+
 def handoffs(events: list[dict]) -> dict[tuple[str, str], Handoff]:
     """Per (ticket, what) the log holds a submission, review or fix of, where it stands, in one pass over the events:
     a review answers the submission before it, and a later submission replaces an earlier one."""
     out: dict[tuple[str, str], Handoff] = {}
     for e in events:
-        if e["kind"] not in ("submission", "review", "finding.fixed") or not e["refs"]:
+        if e["kind"] not in HANDOFF_KINDS or not e["refs"]:
             continue
         h = out.setdefault((e["refs"][0], str(e.get("what"))), Handoff())
         if e["kind"] == "submission":

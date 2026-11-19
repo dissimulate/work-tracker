@@ -11,7 +11,7 @@ from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, 
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
     log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
-from .moves import is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
+from .moves import HANDOFF_KINDS, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
 from .session import ago, around, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
@@ -117,9 +117,6 @@ def pr_views(tr: Tracker, t: Record) -> list[dict]:
     return list(prs.values())
 
 
-TICKET_HISTORY = ("submission", "review", "finding.fixed")  # a ticket's events that are its PR's history too
-
-
 def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
     """Every PR a ticket names (the ones `sync` follows, and its `PR:` links), once each by pr_key, open ones first,
     then by repo and number: its tickets; its state as `sync` read it ("" for a link never read); its title (GitHub's
@@ -148,16 +145,16 @@ def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
     out = []
     for key, x in rows.items():
         tickets = sorted(x["tickets"], key=sort_key)
-        own = [e for e in events if e.get("pr") == key or e["kind"] in TICKET_HISTORY and set(e["refs"]) & set(tickets)]
+        ids = set(tickets)
+        own = [e for e in events if e.get("pr") == key or (e["kind"] in HANDOFF_KINDS and ids & set(e["refs"]))]
         facts = tr.prs.get(key) if x["state"] in OPEN_PR else None
         under_way = next((t for t in map(tr.lookup, tickets) if t.in_flight), None)
+        move = pr_move(tr, under_way, facts, coordinated, items) if facts is not None and under_way else None
         logged = next((e.get("title") for e in reversed(own) if e["kind"] == "pr.state" and e.get("title")), "")
         out.append({
             "key": key, "repo": x["repo"], "number": x["number"], "url": pr_url(x["repo"], x["number"]),
             "title": (facts or {}).get("title") or logged or x["link"], "state": x["state"],
-            "move": move_view(pr_move(tr, under_way, facts, coordinated, items)) if facts is not None and under_way
-            else None,
-            "tickets": tickets,
+            "move": move_view(move), "tickets": tickets,
             "history": [{"at": e.get("at", ""), "kind": e["kind"], "text": e["text"]} for e in own],
         })
     return sorted(out, key=lambda x: (x["state"] not in OPEN_PR, x["repo"].lower(), int(x["number"])))

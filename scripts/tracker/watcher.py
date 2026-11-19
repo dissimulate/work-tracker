@@ -149,8 +149,9 @@ def log_events(events: list[dict], tr: Tracker | None = None, role: str = "", si
         if e["kind"] == "commits":
             commits[key] = commits.get(key, 0) + e["count"]
         elif e["kind"] == "pr.review":
-            at, n = reviews.get(e.get("pr"), (len(out), 0))
-            reviews[e.get("pr")] = (at, n + 1)
+            pr = e.get("pr")
+            at, n = reviews.get(pr, (len(out), 0))
+            reviews[pr] = (at, n + 1)
             event = Event("log", key, False, short(e["text"], 120) + (f" (+{n} earlier)" if n else ""))
             if n:
                 out[at] = event
