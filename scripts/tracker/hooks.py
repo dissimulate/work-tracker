@@ -13,13 +13,13 @@ from pathlib import Path
 
 from .system import env_int, spawn, warn
 from .store import locked, record_cli
-from .schema import DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
+from .schema import DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, drop_session,
     get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
     session_activity, take_over, watch, work_dir, Lag, Match)
-from .contract import other_format, prune_backups, refusal_request, refuse_other_format, upgrade_trackers, OtherFormat
+from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers, OtherFormat
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -388,9 +388,23 @@ CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
                   "answered": "PostToolUse"}
 
 
+# What the model does after `contract.other_format`'s sentence until the user acts (`refusal_request`): for a newer
+# format the user reloads; for an older one that could not migrate, no reload helps, and the user fixes what `check`
+# reports. A reload or a fix may start no new session, so no SessionStart brings the brief: `tracker start` prints it.
+RELOAD_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
+                  "plugin or restart the session, then run `tracker start`, which prints the brief.")
+REPAIR_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to fix what "
+                  "`tracker check` reports, then run `tracker start`, which prints the brief.")
+
+
+def refusal_request(root: Path) -> str:
+    """The model's request for the tracker at `root`, which `other_format` refuses."""
+    return RELOAD_REQUEST if Tracker(root).schema > SCHEMA else REPAIR_REQUEST
+
+
 def tell_refusal(data: dict, event: str, root: Path) -> None:
     """The session's tracker, at `root`, takes no write from this code: tell the user why (`contract.other_format`),
-    and the model why and what to do until the user acts (`contract.refusal_request`), once per context, at the first
+    and the model why and what to do until the user acts (`refusal_request`), once per context, at the first
     handler that can tell the model. A session start is a new context, after compaction too: it is told again, with
     the command prefix (`emit_context`). Not a subagent's: the session acts on it, not the subagent."""
     sid, why = where(data)[1], other_format(root)
