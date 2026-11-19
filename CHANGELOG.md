@@ -4,6 +4,14 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Added
+
+- `tracker check` reports a damaged event file.
+
+### Changed
+
+- A tracker's log is now kept as typed events in `events.jsonl`, each with a time, the session and the plugin version that wrote it. `log.md` reads the same as before and is written from the events; editing it by hand no longer changes what `tracker history` shows.
+
 ### Fixed
 
 - A session that still runs an older plugin version no longer writes its own format into a tracker that a newer version migrated: its commands refuse and say to reload the plugin or restart the session, and its hooks write nothing and say so once. Only this version and later refuse: 0.32.0 and earlier still write.

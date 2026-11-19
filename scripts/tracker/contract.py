@@ -11,15 +11,15 @@ from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, guard_writes, locked, read_json
-from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
-    ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
-    OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
-    RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES, STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE,
-    STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since, kind_names, options_problems, parse_options, stage_of,
-    valid_value, value_form)
-from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, level, names,
-    norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
+from .store import HOME, atomic_write, guard_writes, locked, read_json
+from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR,
+    FORMS, ISOLATION_RULE, ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR,
+    OPTION_RULE, OWNER_HINT, OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS,
+    README_SECTIONS, README_TOKEN_BUDGET, RENAMED_KEYS, SCALES, SCALE_RULE, SCHEMA, SCOPE_PARTS, STAGES,
+    STALE_DECISION_DAYS, STALE_TICKET_DAYS, START_RULE, STATE_RULES, STATUSES, TEXT_MAX, WAIT_RULE, days_since,
+    kind_names, options_problems, parse_options, stage_of, valid_value, value_form)
+from .model import (LOG, all_trackers, append_event, append_to_section, archived_trackers, blocker_link, event_of,
+    level, names, norm_id, pr_key, put_section, relabel, resolution, sequence, unknown_dep, Record, Tracker)
 from .moves import MOVE_RULE
 
 # ---------------------------------------------------------------- check
@@ -53,6 +53,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
                       f"plugin")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
+    errors += event_problems(tr)
     aliases: dict[str, str] = {}
     for t in tr.tickets:
         check_deps(tr, t, errors, warnings)
@@ -94,6 +95,25 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
     if tokens > README_TOKEN_BUDGET:
         warnings.append(f"README.md ~{tokens} tokens > {README_TOKEN_BUDGET} limit — move detail to tickets or log")
     return errors, warnings
+
+
+def event_problems(tr: Tracker) -> list[str]:
+    """The event file's lines that are no event (a half-written line too), and each number that does not follow the
+    event before it."""
+    try:
+        lines = (tr.root / EVENTS_FILE).read_bytes().splitlines()
+    except FileNotFoundError:
+        return []
+    out, last = [], 0
+    for n, line in enumerate(lines, 1):
+        e = event_of(line)
+        if not e or e.get("kind") not in EVENTS:
+            out.append(f"{EVENTS_FILE}:{n}: not an event")
+            continue
+        if e["seq"] != last + 1:
+            out.append(f"{EVENTS_FILE}:{n}: sequence breaks at {e['seq']}")
+        last = e["seq"]
+    return out
 
 
 def check_refs(tr: Tracker, r: Record, errors: list[str], warnings: list[str]) -> None:
@@ -218,9 +238,12 @@ def rules_lines(tr: Tracker | None) -> list[str]:
         f"long. Under ~{README_TOKEN_BUDGET} tokens; rewritten, never appended to. Frontmatter:",
         *keys("tracker"),
         *(line for kind in KINDS for line in files(kind)),
-        "  log.md: one dated line per change, append-only. Each write logs what the history needs; `tracker log` adds "
-        "a note no other write holds. The hooks add the branch's new commits (`"
-        + LOG["commits"].text(branch="<branch>", commits="...") + "`), `step --pause` the handoff's first words.",
+        f"  {EVENTS_FILE}: the log, one event per line in JSON with its time, kind, session and plugin version. Only "
+        "the tool writes it: each write logs what the history needs; `tracker log` adds a note no other write holds. "
+        "The hooks add the branch's new commits (`" + LOG["commits"].text(branch="<branch>", commits="...")
+        + "`), `step --pause` the handoff's first words.",
+        "  log.md: the log for people, one dated line per event, written with it. Editing it changes nothing the views "
+        "show.",
         f"  {EVIDENCE_DIR}/: files the records cite (`tracker attach`), linked as `{EVIDENCE_DIR}/<name>`.",
         "  .state.json (machine state, per repo and branch; never edit): " + "; ".join(f"{k}: {v}" for k, v in
                                                                              STATE_RULES.items()) + ".",
@@ -305,6 +328,36 @@ def move_notes(d: Record) -> None:
             append_to_section(d, "Notes", "\n".join(b))
 
 
+# Format 5's log.md lines, read only to carry them over as legacy events (`legacy_events`)
+LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
+DECISION_ID = rf"{KINDS['decision'].prefix}-\d+"
+OPENED, DECIDED = (re.compile(rf"{verb} ({DECISION_ID})\b") for verb in ("Opened", "Decided"))
+
+
+def legacy_events(tr: Tracker) -> None:
+    """Format 6 keeps the log as events: each `- ` line of log.md becomes a legacy event, oldest first, with its day
+    and ids, and the decision it opened or settled. A line of no known form is kept whole, with no day. All in one
+    write, so a run that stops leaves no event file or the whole of it; an event file with events stays as it is.
+    log.md stays too: it reads the same."""
+    path = tr.root / EVENTS_FILE
+    if path.exists() and path.stat().st_size:
+        return
+    log = tr.root / "log.md"
+    lines = [ln for ln in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []) if ln.startswith("- ")]
+    events = []
+    for seq, line in enumerate(lines, 1):
+        e = {"seq": seq, "kind": "legacy", "session": "", "version": "", "repo": ""}
+        if m := LOG_LINE.match(line):
+            text = line[m.end():]
+            e.update(refs=(m[2] or "").split(), text=text, day=m[1])
+            if d := OPENED.match(text) or DECIDED.match(text):
+                e["decision"] = d[1]
+        else:
+            e.update(refs=[], text=line, day="")
+        events.append(json.dumps(e, ensure_ascii=False) + "\n")
+    atomic_write(path, "".join(events))
+
+
 def migrate(tr: Tracker) -> None:
     """Bring a tracker written for an older version to the current rules. Each step looks for what it changes, so a run
     that stopped part way can run again; the schema goes last. Only here does code read an older format."""
@@ -381,6 +434,8 @@ def migrate(tr: Tracker) -> None:
     extra = sorted(used - set(tr.labels) - {ISSUE, BLOCKER})
     if extra:
         tr.readme.save({"labels": [x for x in tr.labels if x not in DEFAULT_LABELS] + extra})
+    if tr.schema < 6:
+        legacy_events(tr)
     tr.readme.save({"schema": SCHEMA})
 
 

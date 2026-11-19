@@ -593,7 +593,7 @@ class Tracker:
 
     def data_files(self) -> list[Path]:
         """Every file that holds the tracker's facts: a change to one is a change a UI and the watcher show."""
-        return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
+        return [self.root / "README.md", self.root / "log.md", self.root / EVENTS_FILE, self.root / ".state.json",
                 *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
 
 
@@ -798,10 +798,11 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------- the log
-# Each change is one event in the event file (EVENTS_FILE), and its line in log.md, `- <day> [<ids>] <text>`, for
-# people: append_event writes both. Code reads only the events, by their fields: `context` and the brief leave out
-# the lines of a decision they show, and the watcher counts the commits and marks a new action as one for the user.
-# A hand edit of log.md changes nothing they show.
+# The event file (EVENTS_FILE) is the log's one home: one event per change. log.md holds each event's line,
+# `- <day> [<ids>] <text>`, for people; append_event writes both. The views read the events by their fields, so a
+# hand edit of log.md changes nothing they show: `context` and the brief leave out the lines of a decision they show,
+# and the watcher counts the commits and marks a new action as one for the user. Only `tracker find` reads log.md, as
+# text, and `contract.legacy_events` carries an older format's lines over.
 
 
 def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
@@ -886,13 +887,16 @@ def event_day(e: dict) -> str:
 
 
 def log_line(e: dict) -> str:
-    """An event as its line in log.md, `- <day> [<refs>] <text>`."""
+    """An event as its line in log.md, `- <day> [<refs>] <text>`; a legacy line that had no day is its text, the line
+    as it was."""
+    if e.get("day") == "":
+        return e["text"]
     return f"- {event_day(e)}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
 
 
 @dataclass(frozen=True)
 class LogForm:
-    """A log text named outside its writer: `text` writes it from `template`. A writer may add more after it."""
+    """A log text from a template, which `text` fills in. A writer may add more after it."""
     template: str
 
     def text(self, **fields) -> str:

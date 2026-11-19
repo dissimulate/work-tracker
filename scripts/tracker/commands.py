@@ -15,9 +15,9 @@ from .system import ROOT, die, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIVE_SYNC_S,
-    MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA,
-    STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS,
+    LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES,
+    SCHEMA, STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
     parse_options, read_value, stage_of, today, utc_now, Option)
 from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
     archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
@@ -108,6 +108,7 @@ def cmd_init(args):
             "owner": args.owner, "created_at": utc_now(), "schema": SCHEMA}
     create(root / "README.md", from_template("README", meta, DEFAULT_LABELS))
     create(root / "log.md", f"# Log — {args.title}\n\nAppend-only. Newest at the bottom.\n\n")
+    create(root / EVENTS_FILE, "")
     create(root / ".gitignore", ".state.json\n*.tmp\n")
     print(f"created {root}. Next: `tracker start {args.slug}` ties this session to it (in a terminal, pass "
           f"`--tracker {args.slug}` to each command), then `tracker new <ID> --title \"...\"` adds tickets")

@@ -1150,6 +1150,62 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(markdown.headings(tr.lookup("D-02").body), ["Question", "Options", "Notes", "Resolution"])
         self.assertNotIn("D-0", run(*t, "check"))
 
+    OLD_LOG = ("# Log — Old\n\nAppend-only. Newest at the bottom.\n\n"
+               "- 2026-01-02 [T-1 T-2] A plain line\n"
+               "- 2026-01-03 [D-1 T-1] Opened D-1 Which store\n"
+               "- 2026-01-04 [D-1] Decided D-1 Which store (me): S3\n"
+               "- 2026-01-05 [A-01] Action for the user: x\n"
+               "- 2026-01-06 [T-1] Commits on b: a s; and 3 more\n"
+               "- no date here\n")
+
+    def format_5_log(self) -> tuple[str, tuple[str, str], Path]:
+        """A tracker as format 5 left it: log.md and no event file."""
+        s, t = self.old_tracker(schema=5)
+        root = store.HOME / s
+        (root / schema.EVENTS_FILE).unlink()
+        (root / "log.md").write_text(self.OLD_LOG)
+        return s, t, root
+
+    def test_format_5_log_becomes_legacy_events(self):
+        s, t, root = self.format_5_log()
+        run(*t, "index")
+        events = model.read_events(model.tracker_at(s))
+        self.assertEqual([e["seq"] for e in events], list(range(1, 8)))
+        legacy = [e for e in events if e["kind"] == "legacy"]
+        self.assertEqual([(e["day"], e["refs"], e.get("decision")) for e in legacy],
+                         [("2026-01-02", ["T-1", "T-2"], None), ("2026-01-03", ["D-1", "T-1"], "D-1"),
+                          ("2026-01-04", ["D-1"], "D-1"), ("2026-01-05", ["A-01"], None),
+                          ("2026-01-06", ["T-1"], None), ("", [], None)])
+        self.assertEqual(legacy[-1]["text"], "- no date here")  # kept whole
+        self.assertEqual({(e["session"], e["version"], e["repo"], "at" in e) for e in legacy}, {("", "", "", False)})
+        migrated = events[-1]
+        self.assertEqual((migrated["kind"], migrated["schema"]), ("migrated", schema.SCHEMA))
+        self.assertRegex(migrated["at"], r"Z$")
+        self.assertEqual((root / "log.md").read_text(), self.OLD_LOG + model.log_line(migrated) + "\n")
+        self.assertEqual([model.log_line(e) for e in legacy],
+                         [ln for ln in self.OLD_LOG.splitlines() if ln.startswith("- ")])
+
+    def test_migration_runs_once(self):
+        s, t, root = self.format_5_log()
+        run(*t, "index")
+        before = (root / schema.EVENTS_FILE).read_bytes()
+        model.tracker_at(s).readme.save({"schema": 5})  # a run that stopped after the events, before the format
+        run(*t, "index")
+        events = model.read_events(model.tracker_at(s))
+        self.assertEqual([e["kind"] for e in events].count("legacy"), 6)
+        self.assertTrue((root / schema.EVENTS_FILE).read_bytes().startswith(before))
+
+    def test_the_odd_line_stays_out_of_history(self):
+        _, t, _ = self.format_5_log()
+        self.assertNotIn("no date here", run(*t, "history", "--last", "0"))
+
+    def test_history_is_the_same_before_and_after(self):
+        _, t, _ = self.format_5_log()
+        before = [ln[2:] for ln in self.OLD_LOG.splitlines() if re.match(r"- \d{4}-\d\d-\d\d ", ln)]  # as 0.32
+        after = run(*t, "history", "--last", "0").splitlines()
+        self.assertEqual(after[:-1], before)
+        self.assertTrue(after[-1].startswith(f"{schema.today()} Migrated to tracker format {schema.SCHEMA}"))
+
     def test_migrate_to_format_3_reads_open_issues_again(self):
         s, t = self.old_tracker(schema=schema.SCHEMA)
         for ident in ("T-1", "T-2"):
@@ -1360,6 +1416,22 @@ class Events(unittest.TestCase):
             f.write("not an event " * 1000 + "\n")  # longer than the first block read back
         self.assertEqual(self.append()["seq"], 4)
 
+    def test_a_failed_write_leaves_no_log_line_without_its_event(self):
+        self.append(text="first")
+        real, calls = model.append, []
+
+        def second_fails(path, text):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            real(path, text)
+
+        with mock.patch.object(model, "append", second_fails), self.assertRaises(OSError):
+            self.append(text="second")
+        rendered = [model.log_line(e) for e in model.read_events(self.tr)]
+        log = [ln for ln in (store.HOME / self.s / "log.md").read_text().splitlines() if ln.startswith("- ")]
+        self.assertEqual([ln for ln in log if ln not in rendered], [])
+
     def test_one_event_is_one_line(self):
         self.append()
         before = len(self.file.read_bytes().splitlines())
@@ -1456,9 +1528,26 @@ class Events(unittest.TestCase):
         self.assertEqual((e["kind"], e["pr"], e["state"], e["refs"], e["repo"], e["text"]),
                          ("pr.state", "a/x#11", "merged", ["K-1"], "a/x", "PR #11 merged"))
 
+    def test_init_creates_the_event_file(self):
+        self.assertEqual(self.file.read_bytes(), b"")
+        self.assertIn(self.file, self.tr.data_files())
+
+    def test_check_reports_a_damaged_event_file(self):
+        for _ in range(2):
+            self.append()
+        jumped = json.dumps({"seq": 4, "kind": "note", "refs": [], "text": "x"}) + "\n"
+        with open(self.file, "a") as f:
+            f.write("not an event\n" + jumped + jumped)  # a garbage line, a jump, and a number again
+        errors = [x for x in contract.check(self.tr)[0] if x.startswith(schema.EVENTS_FILE)]
+        self.assertEqual(errors, [f"{schema.EVENTS_FILE}:3: not an event",
+                                  f"{schema.EVENTS_FILE}:4: sequence breaks at 4",
+                                  f"{schema.EVENTS_FILE}:5: sequence breaks at 4"])
+        self.assertEqual(self.append()["seq"], 5)  # the next follows the last
+        self.assertEqual([x for x in contract.check(self.tr)[0] if x.startswith(schema.EVENTS_FILE)], errors)
+
     def test_nothing_reads_log_md(self):
         import ast
-        writers = {("commands.py", "cmd_init"), ("model.py", "append_event"), ("contract.py", "migrate"),
+        writers = {("commands.py", "cmd_init"), ("model.py", "append_event"), ("contract.py", "legacy_events"),
                    ("commands.py", "cmd_find"), ("model.py", "data_files")}
         found = set()
         for path in sorted((ROOT / "scripts/tracker").glob("*.py")):

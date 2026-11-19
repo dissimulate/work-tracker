@@ -75,7 +75,8 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `tickets/<ID>.md` | one ticket: status, branch, next action, dependencies, priority, size, due day, its times; Plan, Carry forward (facts later tickets need), Links |
 | `decisions/D-<n>.md` | one direction decision: Question, Options (one line per choice, one may be marked recommended), Notes, Resolution |
 | `actions/A-<n>.md` | one action for you: what to do, the tickets or decisions it concerns, notes |
-| `log.md` | dated one-line history |
+| `events.jsonl` | the log: one event per change, each with its time, the session and the plugin version that wrote it. Only the tool writes it |
+| `log.md` | the log as dated lines, for reading. Editing it changes nothing the views show |
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
@@ -176,7 +177,7 @@ Environment variables. All are optional.
 2. `markdown`: the file format as text (frontmatter, sections, link lines)
 3. `store`: writing the tracker's files: atomic writes, JSON files, the lock, the guard on each write
 4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
-5. `model`: records, the `Tracker`, dependencies, the log, body edits
+5. `model`: records, the `Tracker`, dependencies, the log (its events, and log.md written from them), body edits
 6. `moves`: whose move a ticket under way waits on
 7. `git`
 8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
