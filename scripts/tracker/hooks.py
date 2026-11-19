@@ -220,11 +220,11 @@ def hook_post_bash(data: dict) -> None:
     out = []
     if pr:
         adopt_branch(m, cwd)
+        if PR_CREATE.search(command):  # before the sync, which can fail or run out of time: nothing sees it again
+            log_opened(m.tracker, data.get("tool_response"))
         changes = sync(m.tracker, every=0)
         if changes and not subagent:
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
-        if PR_CREATE.search(command):
-            log_opened(m.tracker, data.get("tool_response"))
     if commit:
         record_commits(m, cwd)
         if not subagent and (ask := next_request(m, cwd, sid)):

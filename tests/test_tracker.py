@@ -2267,6 +2267,24 @@ class PrsOpened(unittest.TestCase):
         self.bash(self.CREATE, out)
         self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#14"])
 
+    def fake_gh(self, answer: dict) -> dict:
+        """A PATH whose `gh` prints `answer`, as the hook's sync reads it."""
+        folder = Path(tempfile.mkdtemp(dir=BASE))
+        (folder / "answer.json").write_text(json.dumps(answer))
+        (folder / "gh").write_text(f"#!/bin/sh\ncat '{folder / 'answer.json'}'\n")
+        (folder / "gh").chmod(0o755)
+        return {"PATH": f"{folder}:{no_gh()['PATH']}"}
+
+    def test_the_opening_is_logged_before_the_sync_and_whatever_it_does(self):
+        env = self.fake_gh({"data": {"r0": {"b0": {"nodes": [pull(12, branch="f1")]}}}})
+        tool("Bash", self.sid, self.work, env=env, tool_input=self.CREATE, tool_response=self.CREATED)
+        kinds = [e["kind"] for e in model.read_events(model.tracker_at(self.s)) if e["kind"].startswith("pr.")]
+        self.assertEqual(kinds, ["pr.opened", "pr.state"])  # opened, then open for review
+        self.setUp()
+        broken = self.fake_gh({"data": {"r0": {"b0": {"nodes": [{"title": "no number"}]}}}})  # the sync raises
+        tool("Bash", self.sid, self.work, env=broken, tool_input=self.CREATE, tool_response=self.CREATED)
+        self.assertEqual([e["pr"] for e in opened_prs(self.s)], ["a/x#12"])
+
     def test_a_silent_pr_create_logs_nothing(self):
         before = tree(store.HOME / self.s)
         for response in ({"stdout": "", "stderr": "aborted"}, None, {"stdout": "see github.com/a/x"}):
