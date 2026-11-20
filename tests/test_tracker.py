@@ -3380,6 +3380,18 @@ class SessionNews(TwoSessions):
             self.as_a("start", self.s, cwd=feat)
         self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-2"])
 
+    def test_an_own_command_before_the_update_seed_leaves_what_it_seeds_from(self):
+        run(*self.t, "new", "T-3", "--title", "Three")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.as_a("start", self.s, "--on", "T-2,T-3")
+        self.message()
+        self.as_released(self.a)  # its brief showed T-1, T-2 and T-3
+        self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")
+        plain = Path(tempfile.mkdtemp(dir=BASE))
+        self.as_a(*self.t, "log", "--ref", "T-1", "my note", cwd=plain)  # mid-turn, before any hook after the update
+        hook("prompt", self.a, plain, env=no_gh(), prompt="go on")
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-2"])
+
     def test_an_update_seed_leaves_out_a_ticket_that_closed(self):
         self.message()
         self.as_released(self.a)  # its brief showed T-1
@@ -3424,38 +3436,6 @@ class SessionNews(TwoSessions):
         hook("session-start", after, self.work, env=env, source="clear")
         self.assertIn("T-1: base branch moved", said(hook("prompt", after, self.work, env=env, prompt="go on")))
 
-    def test_a_cleared_session_stays_off_its_tickets_once_its_wait_ends(self):
-        c, message = self.env_session()
-        env = {**no_gh(), "TRACKER": self.s}
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
-            run("start", self.s, cwd=self.work)
-        message()
-        hook("waiting", c, self.work, env=env, tool_name="Bash")  # it waits on a permission
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
-            run("start", "--clear", cwd=self.work)
-        hook("post-tool", c, self.work, env=env, tool_name="Bash", tool_input={"command": "tracker start --clear"},
-             tool_response={"stdout": ""})  # the wait ends
-        message()
-        self.assertEqual(session.load_session(c).get("tickets"), [])
-
-    def test_a_hook_that_seeds_during_a_start_on_another_tracker_leaves_that_start(self):
-        other = self.other_tracker()
-        c, _ = self.env_session()
-        real, done = session.start_subscription, []
-
-        def seeded(sid, m, ids=None, seed=False):
-            if seed and not done:  # the hook's seed runs while the session starts on the other tracker
-                done.append(1)
-                with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
-                    run("start", other, "--on", "T-1", cwd=self.work)
-            return real(sid, m, ids, seed)
-
-        with mock.patch.dict(os.environ, {"TRACKER": self.s, "TRACKER_SESSION": c}), \
-                mock.patch.object(session, "start_subscription", seeded):
-            hooks.session_match({"session_id": c, "cwd": str(self.work)})
-        entry = session.load_session(c)
-        self.assertEqual((entry["tracker"], entry["tickets_on"], entry["tickets"]), (other, other, ["T-1"]))
-
     def test_a_hook_that_seeds_during_a_clear_leaves_the_session_on_no_tracker(self):
         c = f"cl{time.monotonic_ns()}"
         self.addCleanup(session.drop_session, c)
@@ -3492,13 +3472,37 @@ class SessionNews(TwoSessions):
         self.assertEqual((entry["tracker"], entry["tickets_on"]), (other, other))
         self.assertNotIn("old other note", said(hook("prompt", self.a, self.work, env=no_gh(), prompt="go on")))
 
-    def test_a_session_that_names_its_tracker_stays_off_its_tickets_once_cleared(self):
+    def test_a_hook_during_a_clear_of_a_session_named_in_its_environment_does_not_seed_it(self):
         c, message = self.env_session()
         message()
+        real, during = commands.match_cwd, []
+
+        def between(*args, **kwargs):  # a hook of the session between the unlink and the empty subscription
+            hooked = threading.Thread(target=hooks.session_match, args=({"session_id": c, "cwd": str(self.work)},))
+            hooked.start()
+            hooked.join(1.0)
+            during.append(hooked)
+            return real(*args, **kwargs)
+
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}), \
+                mock.patch.object(commands, "match_cwd", between):
+            run("start", "--clear", cwd=self.work)
+            during[0].join()
+        self.assertEqual(session.load_session(c)["tickets"], [])
+
+    def test_a_session_that_names_its_tracker_stays_off_its_tickets_once_cleared(self):
+        c, message = self.env_session()
+        env = {**no_gh(), "TRACKER": self.s}
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
+            run("start", self.s, cwd=self.work)
+        message()
+        hook("waiting", c, self.work, env=env, tool_name="Bash")  # it waits on a permission
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
             run("start", "--clear", cwd=self.work)
+        hook("post-tool", c, self.work, env=env, tool_name="Bash", tool_input={"command": "tracker start --clear"},
+             tool_response={"stdout": ""})  # the wait ends
         message()
-        self.assertEqual(session.subscribed(session.load_session(c), model.tracker_at(self.s)), [])
+        self.assertEqual(session.load_session(c).get("tickets"), [])
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertNotIn("base branch moved", message())
 

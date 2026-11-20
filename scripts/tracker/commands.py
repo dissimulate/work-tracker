@@ -1161,10 +1161,12 @@ def cmd_start(args):
     the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
-        unlink_session(sid)
-        named = match_cwd(cwd, sid) if sid else None  # TRACKER names a tracker: its hooks still run there
+        with locked():  # one step: a hook between the unlink and the empty subscription would seed it
+            unlink_session(sid)
+            named = match_cwd(cwd, sid) if sid else None  # TRACKER names a tracker: its hooks still run there
+            if named:
+                start_subscription(sid, named, [])  # on none of its tickets, which no hook seeds again
         if named:
-            start_subscription(sid, named, [])  # on none of its tickets, which no hook seeds again
             print(f"this session is on no ticket of {named.tracker.slug} now (TRACKER names it)")
             return
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))

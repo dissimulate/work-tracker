@@ -171,13 +171,13 @@ def state_on(entry: dict, slug: str | None = None) -> dict:
 
 def save_state(sid: str, slug: str, **fields) -> None:
     """The one writer of a session's state (PER_TRACKER): `fields` of it on the tracker `slug` (None drops one), the
-    state stamped as on that tracker. When the file's state was on another tracker, none of it is kept, nor an older
-    version's `seen_for`. Nothing is written when the session's tracker (`context_tracker`) is no longer `slug`: a
-    concurrent `tracker start` moved it. A caller that read the state holds `locked()` across the read and this save."""
+    state stamped as on that tracker. When the file's state was on another tracker, none of it is kept. Nothing is
+    written when the session's tracker (`context_tracker`) is no longer `slug`: a concurrent `tracker start` moved it.
+    A caller that read the state holds `locked()` across the read and this save."""
     with locked():
         own = context_tracker(sid)
         if own and own.slug == slug:
-            save_session(sid, **{**state_on(load_session(sid), slug), **fields, "tickets_on": slug, "seen_for": None})
+            save_session(sid, **{**state_on(load_session(sid), slug), **fields, "tickets_on": slug})
 
 
 def relink_session(sid: str, tracker: str, **fields) -> None:
@@ -846,12 +846,14 @@ def ensure_subscription(sid: str, m: Match) -> None:
     the checkout the hook or command runs in; a guess that finds no open ticket writes nothing. The one reader of
     that older format: session files are not tracker data, so `contract.migrate` does not reach them. A subscription
     a start or a command made, even empty, stays."""
-    with locked():  # read and seed as one step: a concurrent start does not get the seed of the tracker it left
+    # Read and seed as one step: a start's subscription made after this read is not topped up by the seed.
+    with locked():
         entry = load_session(sid)
         state = state_on(entry, m.tracker.slug)
         if state["tickets"] is not None:
             return
-        told = entry.get("seen_for") if state["tickets_on"] and isinstance(entry.get("seen_for"), list) else []
+        told = entry.get("seen_for") if entry.get("tracker") == m.tracker.slug else []
+        told = told if isinstance(told, list) else []
         still = [t.id for t in map(m.tracker.lookup, map(str, told)) if t and t.kind == "ticket" and not t.closed]
         start_subscription(sid, m, still or None, seed=True)
 
@@ -865,10 +867,9 @@ def agent_sid() -> str:
 def subscribe(tr: Tracker, ids: list[str]) -> None:
     """Add tickets to the subscription of the session that ran a command on them on purpose (the commands that call
     this), on its tracker (`context_tracker`). Not for a command entered in the view, which carries the session's id,
-    or at a terminal, nor for a command on another tracker."""
+    or at a terminal, nor for a command on another tracker (`save_state` writes nothing there)."""
     sid = agent_sid()
-    own = context_tracker(sid) if sid else None
-    if not own or own.slug != tr.slug:
+    if not sid:
         return
     new = [r.id for r in map(tr.lookup, ids) if r and r.kind == "ticket"]
     with locked():
@@ -1062,7 +1063,7 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
         if starting or ending:
             log_waits(entry, waits, starting, ending, tool, failed)
         if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file,
-            # and the state of a session that TRACKER names, which `tracker start --clear` left on none of its tickets
+            # and any state it holds on a tracker (a session that TRACKER names, after `tracker start --clear`)
             if waits or state_on(entry)["tickets_on"]:
                 save_session(sid, waits=waits or None)
             else:
