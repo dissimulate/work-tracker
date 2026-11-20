@@ -5257,7 +5257,7 @@ class WatchAsk(TwoSessions):
     def test_a_turn_that_ends_outside_any_ticket_uses_up_no_ask(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
         self.asked(self.stop(), "T-1")
-        self.assertIsNone(self.stop(cwd=Path(tempfile.mkdtemp(dir=BASE))))  # a scratch folder: its waits are unknown
+        self.assertIsNone(self.stop(cwd=Path(tempfile.mkdtemp(dir=BASE))))  # no git: its waits are still T-1's
         self.assertIsNone(self.stop())  # the same wait: asked once
 
     def test_the_ask_survives_tracker_start(self):
