@@ -3348,7 +3348,9 @@ class SessionNews(TwoSessions):
             env = {**no_gh(), "TRACKER": slug, "CLAUDE_CODE_SESSION_ATTENDED": "1"}
             return said(hook("stop", c, self.work, env=env, stop_hook_active=False))
         self.assertIn("T-1 waits on", stop(self.s))
-        self.assertNotIn("waits on", stop(self.other_tracker()))
+        other = self.other_tracker()
+        run("--tracker", other, "decide", "Hold that too", "--blocks", "T-1")  # its T-1 is no ticket of this session
+        self.assertNotIn("waits on", stop(other))
         self.assertNotIn("waits on", stop(self.s))  # asked here already
 
     def test_a_released_file_of_a_session_named_in_its_environment_starts_on_that_tracker(self):
@@ -3359,6 +3361,25 @@ class SessionNews(TwoSessions):
         self.assertEqual((entry.get("tickets_on"), "tickets" in entry), (self.s, False))  # no cursor of no tracker
         message()
         self.assertEqual(session.load_session(c)["tickets"], ["T-1"])
+
+    def test_a_command_on_another_tracker_leaves_what_it_was_told_here(self):
+        other = self.other_tracker()
+        run("--tracker", other, "set", "T-1", "status=done", "summary=Shipped")  # the same id, closed there
+        c, message = self.env_session()
+        message()
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": other}):
+            run("--tracker", other, "new", "T-9", "--title", "Nine")  # its own write there
+        self.as_b(*self.t, "log", "--ref", "T-1", "a note")
+        self.assertIn("T-1: a note", message())
+
+    def test_a_start_whose_branch_a_pr_ties_to_a_ticket_subscribes_it(self):
+        self.setUp("a/x")
+        feat = repo("feat")
+        remote(feat, "a/x")
+        listed = [{"number": 7, "title": "T-2: the second part", "body": "", "isCrossRepository": False}]
+        with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False: listed):
+            self.as_a("start", self.s, cwd=feat)
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-2"])
 
     def test_an_update_seed_leaves_out_a_ticket_that_closed(self):
         self.message()
