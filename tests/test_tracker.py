@@ -3495,9 +3495,8 @@ class SessionNews(TwoSessions):
         env = {**no_gh(), "TRACKER": self.s}
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
             run("start", self.s, cwd=self.work)
-        message()
-        hook("waiting", c, self.work, env=env, tool_name="Bash")  # it waits on a permission
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
+            message()
+            hook("waiting", c, self.work, env=env, tool_name="Bash")  # it waits on a permission
             run("start", "--clear", cwd=self.work)
         hook("post-tool", c, self.work, env=env, tool_name="Bash", tool_input={"command": "tracker start --clear"},
              tool_response={"stdout": ""})  # the wait ends
