@@ -3311,7 +3311,7 @@ class SessionNews(TwoSessions):
         run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
         return other
 
-    def test_a_session_on_another_tracker_with_no_ticket_there_leaves_this_trackers_cursor_alone(self):
+    def test_a_session_on_another_tracker_with_no_ticket_there_starts_afresh_there_and_back(self):
         other = self.other_tracker()
         for n in range(8):
             run("--tracker", other, "log", "--ref", "T-1", f"b note {n}")  # its events outnumber this tracker's
@@ -3355,12 +3355,13 @@ class SessionNews(TwoSessions):
 
     def test_a_released_file_of_a_session_named_in_its_environment_starts_on_that_tracker(self):
         c, message = self.env_session()
-        session.save_session(c, seen={"T-1": {"role": "own", "stage": "in-progress"}}, seen_for=["T-1"])  # no tracker
-        hook("prompt", c, Path(tempfile.mkdtemp(dir=BASE)), env={**no_gh(), "TRACKER": self.s}, prompt="go on")
-        entry = session.load_session(c)
-        self.assertEqual((entry.get("tickets_on"), "tickets" in entry), (self.s, False))  # no cursor of no tracker
+        session.save_session(c, seen={"T-2": {"role": "own", "stage": "todo"}}, seen_for=["T-2"])  # no tracker
+        for n in range(2):  # in folders that hold no ticket: its old `seen_for` names no tracker, at either hook
+            hook("prompt", c, Path(tempfile.mkdtemp(dir=BASE)), env={**no_gh(), "TRACKER": self.s}, prompt="go on")
+            entry = session.load_session(c)
+            self.assertEqual((entry.get("tickets_on"), "tickets" in entry), (self.s, False))  # no cursor of no tracker
         message()
-        self.assertEqual(session.load_session(c)["tickets"], ["T-1"])
+        self.assertEqual(session.load_session(c)["tickets"], ["T-1"])  # its checkout's
 
     def test_a_wait_asked_on_one_tracker_is_asked_on_another_its_environment_moves_to(self):
         c, message = self.env_session()
@@ -3438,6 +3439,56 @@ class SessionNews(TwoSessions):
         self.addCleanup(session.drop_session, after)
         hook("session-start", after, self.work, env=env, source="clear")
         self.assertIn("T-1: base branch moved", said(hook("prompt", after, self.work, env=env, prompt="go on")))
+
+    def test_a_cleared_session_stays_off_its_tickets_once_its_wait_ends(self):
+        c, message = self.env_session()
+        env = {**no_gh(), "TRACKER": self.s}
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
+            run("start", self.s, cwd=self.work)
+        message()
+        hook("waiting", c, self.work, env=env, tool_name="Bash")  # it waits on a permission
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
+            run("start", "--clear", cwd=self.work)
+        hook("post-tool", c, self.work, env=env, tool_name="Bash", tool_input={"command": "tracker start --clear"},
+             tool_response={"stdout": ""})  # the wait ends
+        message()
+        self.assertEqual(session.load_session(c).get("tickets"), [])
+
+    def test_a_hook_that_seeds_during_a_start_on_another_tracker_leaves_that_start(self):
+        other = self.other_tracker()
+        c, _ = self.env_session()
+        real, done = session.start_subscription, []
+
+        def seeded(sid, m, ids=None, seed=False):
+            if seed and not done:  # the hook's seed runs while the session starts on the other tracker
+                done.append(1)
+                with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+                    run("start", other, "--on", "T-1", cwd=self.work)
+            return real(sid, m, ids, seed)
+
+        with mock.patch.dict(os.environ, {"TRACKER": self.s, "TRACKER_SESSION": c}), \
+                mock.patch.object(session, "start_subscription", seeded):
+            hooks.session_match({"session_id": c, "cwd": str(self.work)})
+        entry = session.load_session(c)
+        self.assertEqual((entry["tracker"], entry["tickets_on"], entry["tickets"]), (other, other, ["T-1"]))
+
+    def test_a_start_whose_pr_match_lands_after_another_start_leaves_that_start(self):
+        other = self.other_tracker()
+        for n in range(8):
+            run("--tracker", other, "log", "--ref", "T-1", f"old other note {n}")
+        real = commands.match_pr
+
+        def pr(m, cwd):
+            if m.tracker.slug == other:
+                return real(m, cwd)
+            self.as_a("start", other, "--on", "T-1", cwd=repo("other"))  # the same session starts there meanwhile
+            return session.match_cwd(cwd, self.a, model.tracker_at(self.s)), ""  # and this start's match ties one
+
+        with mock.patch.object(commands, "match_pr", pr):
+            self.as_a("start", self.s)
+        entry = session.load_session(self.a)
+        self.assertEqual((entry["tracker"], entry["tickets_on"]), (other, other))
+        self.assertNotIn("old other note", said(hook("prompt", self.a, self.work, env=no_gh(), prompt="go on")))
 
     def test_a_session_that_names_its_tracker_stays_off_its_tickets_once_cleared(self):
         c, message = self.env_session()

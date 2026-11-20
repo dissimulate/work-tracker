@@ -158,8 +158,9 @@ PER_TRACKER = ("tickets", "tickets_on", "seen", "seen_seq", "told_watch")
 def state_on(entry: dict, slug: str | None = None) -> dict:
     """The one reader of a session entry's state on the tracker `slug` (PER_TRACKER), or with None on the tracker it
     is on: `tickets_on`, else, in a file from before subscriptions, the session's `tracker`. Every field is None when
-    the state is on another tracker or none, and a damaged one is None too: `tickets` is a list of ids, `seen` a dict,
-    `seen_seq` a whole number, `told_watch` a list."""
+    the state is on another tracker or none, and so is a field of the wrong type: `tickets` is a list of ids, `seen`
+    a dict, `seen_seq` a whole number, `told_watch` a list. What a field holds is not checked: a damaged entry inside
+    `seen` still raises in `changes_since`."""
     on = str(entry.get("tickets_on") or entry.get("tracker") or "")
     if not on or slug not in (None, on):
         return dict.fromkeys(PER_TRACKER)
@@ -171,10 +172,13 @@ def state_on(entry: dict, slug: str | None = None) -> dict:
 
 def save_state(sid: str, slug: str, **fields) -> None:
     """The one writer of a session's state (PER_TRACKER): `fields` of it on the tracker `slug` (None drops one), the
-    state stamped as on that tracker. When the file's state was on another tracker, none of it is kept. A caller that
-    read the state holds `locked()` across the read and this save."""
+    state stamped as on that tracker. When the file's state was on another tracker, none of it is kept, nor an older
+    version's `seen_for`. Nothing is written when the session's tracker (`context_tracker`) is no longer `slug`: a
+    concurrent `tracker start` moved it. A caller that read the state holds `locked()` across the read and this save."""
     with locked():
-        save_session(sid, **{**state_on(load_session(sid), slug), **fields, "tickets_on": slug})
+        own = context_tracker(sid)
+        if own and own.slug == slug:
+            save_session(sid, **{**state_on(load_session(sid), slug), **fields, "tickets_on": slug, "seen_for": None})
 
 
 def relink_session(sid: str, tracker: str, **fields) -> None:
@@ -844,13 +848,14 @@ def ensure_subscription(sid: str, m: Match) -> None:
     the checkout the hook or command runs in; a guess that finds no open ticket writes nothing. The one reader of
     that older format: session files are not tracker data, so `contract.migrate` does not reach them. A subscription
     a start or a command made, even empty, stays."""
-    entry = load_session(sid)
-    state = state_on(entry, m.tracker.slug)
-    if state["tickets"] is not None:
-        return
-    told = entry.get("seen_for") if state["tickets_on"] and isinstance(entry.get("seen_for"), list) else []
-    still = [t.id for t in map(m.tracker.lookup, map(str, told)) if t and t.kind == "ticket" and not t.closed]
-    start_subscription(sid, m, still or None, seed=True)
+    with locked():  # read and seed as one step: a concurrent start does not get the seed of the tracker it left
+        entry = load_session(sid)
+        state = state_on(entry, m.tracker.slug)
+        if state["tickets"] is not None:
+            return
+        told = entry.get("seen_for") if state["tickets_on"] and isinstance(entry.get("seen_for"), list) else []
+        still = [t.id for t in map(m.tracker.lookup, map(str, told)) if t and t.kind == "ticket" and not t.closed]
+        start_subscription(sid, m, still or None, seed=True)
 
 
 def agent_sid() -> str:
@@ -1058,8 +1063,12 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
             starting, ending = [], [asker] if asker in waits else []
         if starting or ending:
             log_waits(sid, entry, waits, starting, ending, tool, failed)
-        if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file
-            save_session(sid, waits=waits) if waits else drop_session(sid)
+        if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file,
+            # and the state of a session that TRACKER names, which `tracker start --clear` left on none of its tickets
+            if waits or state_on(entry)["tickets_on"]:
+                save_session(sid, waits=waits or None)
+            else:
+                drop_session(sid)
             return
         status = "waiting" if waits else status
         now = time.time()
