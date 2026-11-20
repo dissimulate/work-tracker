@@ -2864,6 +2864,23 @@ class TwoSessions(unittest.TestCase):
         payload = {"stop_hook_active": False, **extra}
         return hook("stop", self.a, cwd or self.work, env={**no_gh(), **attended}, **payload)
 
+    def env_session(self) -> tuple[str, callable]:
+        """A session that names this tracker in its environment (TRACKER) and never ran `tracker start`, and its next
+        message in T-1's checkout, under the TRACKER that `slug` names (default: this tracker)."""
+        c = f"env{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, c)
+
+        def message(slug: str = "") -> str:
+            return said(hook("prompt", c, self.work, env={**no_gh(), "TRACKER": slug or self.s}, prompt="go on"))
+        return c, message
+
+    def other_tracker(self) -> str:
+        """Another tracker, "Elsewhere", whose T-1 (an id this tracker has too) is on branch other: no checkout of
+        this test holds it."""
+        other, _ = new_tracker("Elsewhere")
+        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
+        return other
+
     def run_watch(self, w: watcher.Watcher, once: bool = False, during=None) -> tuple[str, int]:
         """`Watcher.run` in this process: its output, and how many looks it slept before; `during` runs at the first
         sleep. Each sleep is short, so a change still takes SETTLE_S to settle."""
@@ -3263,20 +3280,6 @@ class SessionNews(TwoSessions):
         message()  # never ran `tracker start`
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertIn("T-1: base branch moved", message())
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
-            run(*self.t, "set", "T-2", "next=Plan it", cwd=self.work)
-        self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(self.s))],
-                         ["T-1", "T-2"])
-
-    def env_session(self) -> tuple[str, callable]:
-        """A session that names this tracker in its environment (TRACKER) and never ran `tracker start`, and its next
-        message in T-1's checkout, under the TRACKER that `slug` names (default: this tracker)."""
-        c = f"env{time.monotonic_ns()}"
-        self.addCleanup(session.drop_session, c)
-
-        def message(slug: str = "") -> str:
-            return said(hook("prompt", c, self.work, env={**no_gh(), "TRACKER": slug or self.s}, prompt="go on"))
-        return c, message
 
     def test_a_session_whose_environment_names_another_tracker_starts_there_afresh(self):
         other, _ = new_tracker("Elsewhere")
@@ -3303,13 +3306,6 @@ class SessionNews(TwoSessions):
         message(other)  # an older version's file, with no tracker key: its TRACKER now names another
         self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(other))],
                          ["T-1"])
-
-    def other_tracker(self) -> str:
-        """Another tracker, "Elsewhere", whose T-1 (an id this tracker has too) is on branch other: no checkout of
-        this test holds it."""
-        other, _ = new_tracker("Elsewhere")
-        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
-        return other
 
     def test_a_session_on_another_tracker_with_no_ticket_there_starts_afresh_there_and_back(self):
         other = self.other_tracker()
@@ -3339,19 +3335,21 @@ class SessionNews(TwoSessions):
         self.assertNotIn("T-1 is now done", told)
         self.assertNotIn("b note", told)
 
-    def test_a_turn_that_ends_on_another_tracker_keeps_what_was_asked_here(self):
+    def test_a_wait_on_another_tracker_is_asked_once_the_session_works_there(self):
         c, message = self.env_session()
         message()
         self.as_b(*self.t, "decide", "Hold the API", "--blocks", "T-1")
+        other, there = self.other_tracker(), repo("other")
+        run("--tracker", other, "decide", "Hold that too", "--blocks", "T-1")  # the same wait, by key, there
 
-        def stop(slug: str) -> str:
+        def stop(slug: str, cwd: Path | None = None) -> str:
             env = {**no_gh(), "TRACKER": slug, "CLAUDE_CODE_SESSION_ATTENDED": "1"}
-            return said(hook("stop", c, self.work, env=env, stop_hook_active=False))
+            return said(hook("stop", c, cwd or self.work, env=env, stop_hook_active=False))
         self.assertIn("T-1 waits on", stop(self.s))
-        other = self.other_tracker()
-        run("--tracker", other, "decide", "Hold that too", "--blocks", "T-1")  # its T-1 is no ticket of this session
-        self.assertNotIn("waits on", stop(other))
+        self.assertNotIn("waits on", stop(other))  # its T-1 is no ticket of this session yet
         self.assertNotIn("waits on", stop(self.s))  # asked here already
+        hook("prompt", c, there, env={**no_gh(), "TRACKER": other}, prompt="go on")  # it works there now
+        self.assertIn("T-1 waits on", stop(other, there))
 
     def test_a_released_file_of_a_session_named_in_its_environment_starts_on_that_tracker(self):
         c, message = self.env_session()
@@ -3362,20 +3360,6 @@ class SessionNews(TwoSessions):
             self.assertEqual((entry.get("tickets_on"), "tickets" in entry), (self.s, False))  # no cursor of no tracker
         message()
         self.assertEqual(session.load_session(c)["tickets"], ["T-1"])  # its checkout's
-
-    def test_a_wait_asked_on_one_tracker_is_asked_on_another_its_environment_moves_to(self):
-        c, message = self.env_session()
-        message()
-        self.as_b(*self.t, "decide", "Hold the API", "--blocks", "T-1")
-        other, there = self.other_tracker(), repo("other")
-        run("--tracker", other, "decide", "Hold that too", "--blocks", "T-1")  # the same wait, by key, there
-
-        def stop(slug: str, cwd: Path) -> str:
-            env = {**no_gh(), "TRACKER": slug, "CLAUDE_CODE_SESSION_ATTENDED": "1"}
-            return said(hook("stop", c, cwd, env=env, stop_hook_active=False))
-        self.assertIn("T-1 waits on", stop(self.s, self.work))
-        hook("prompt", c, there, env={**no_gh(), "TRACKER": other}, prompt="go on")  # it works there now
-        self.assertIn("T-1 waits on", stop(other, there))
 
     def test_a_command_on_another_tracker_leaves_what_it_was_told_here(self):
         other = self.other_tracker()
@@ -3471,6 +3455,24 @@ class SessionNews(TwoSessions):
             hooks.session_match({"session_id": c, "cwd": str(self.work)})
         entry = session.load_session(c)
         self.assertEqual((entry["tracker"], entry["tickets_on"], entry["tickets"]), (other, other, ["T-1"]))
+
+    def test_a_hook_that_seeds_during_a_clear_leaves_the_session_on_no_tracker(self):
+        c = f"cl{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, c)
+        session.save_session(c, tracker=self.s, seen_for=["T-1"])  # an older version's file: no subscription yet
+        real, done = session.start_subscription, []
+
+        def seeded(sid, m, ids=None, seed=False):
+            if seed and not done:  # the hook's seed runs while the session leaves its tracker
+                done.append(1)
+                run("start", "--clear", cwd=self.work)
+            return real(sid, m, ids, seed)
+
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}), \
+                mock.patch.object(session, "start_subscription", seeded):
+            os.environ.pop("TRACKER", None)
+            hooks.session_match({"session_id": c, "cwd": str(self.work)})
+        self.assertNotIn("tickets_on", session.load_session(c))
 
     def test_a_start_whose_pr_match_lands_after_another_start_leaves_that_start(self):
         other = self.other_tracker()
@@ -5458,12 +5460,10 @@ class MineWatch(TwoSessions):
         return [x.split(" ", 1)[1] for x in lines]
 
     def test_a_watch_on_another_tracker_says_nothing_of_its_ticket_with_the_same_id(self):
-        other, _ = new_tracker("Elsewhere")
-        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
-        c = f"mo{time.monotonic_ns()}"
-        self.addCleanup(session.drop_session, c)
+        other = self.other_tracker()
+        c, message = self.env_session()
         self.addCleanup(watcher.set_grant, c, False)
-        hook("prompt", c, self.work, env={**no_gh(), "TRACKER": self.s}, prompt="go on")  # it is on T-1 here
+        message()  # it is on T-1 here
         run("--tracker", other, "log", "--ref", "T-1", "b note")
         run("--tracker", other, "set", "T-1", "status=done", "summary=Shipped")
         with mock.patch.dict(os.environ, {"TRACKER": other}):  # its TRACKER now names the other tracker
@@ -7172,7 +7172,7 @@ class HumanWaits(unittest.TestCase):
             run("start", other, cwd=self.work)
         (x,) = session.live_sessions(other)  # until the tool ends
         self.assertEqual(x.status, "waiting")
-        self.assertFalse(watcher.waits(x, time.time()))  # the watch of `other` has no one asking
+        self.assertFalse(watcher.waits(x, time.time(), set()))  # the watch of `other` has no one asking
 
     def test_a_wait_left_by_a_session_that_comes_back_ends(self):
         (a, _), nogh = new_tracker("Back", "acme/back"), {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"}

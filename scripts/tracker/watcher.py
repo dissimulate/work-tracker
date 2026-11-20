@@ -121,7 +121,7 @@ def needs_you(fact: dict) -> bool:
     return bool(fact.get("human")) or bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
 
 
-def waits(x: Live, now: float, watched: set[str] = frozenset()) -> bool:
+def waits(x: Live, now: float, watched: set[str]) -> bool:
     """An agent that waits on the user: it has asked for a while, or been idle for long and is not of `watched`."""
     if x.status == "busy" or not x.since:
         return False
@@ -459,7 +459,7 @@ class Watcher:
             self.changed = now
         settled = force or bool(self.changed) and now - self.changed >= SETTLE_S
         if self.mine:
-            return self.mine_batch(tr, sig, now, settled)
+            return self.mine_batch(tr, sig, settled)
         if settled:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
@@ -480,7 +480,7 @@ class Watcher:
                 self.st.setdefault("activity", {})[sid] = now
         return events
 
-    def mine_batch(self, tr: Tracker, sig: str, now: float, settled: bool) -> list[Event]:
+    def mine_batch(self, tr: Tracker, sig: str, settled: bool) -> list[Event]:
         """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle. A sync that
         fails is not said: a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is
         on another tracker or none, or has no open subscribed ticket, with the news of a ticket that closed before

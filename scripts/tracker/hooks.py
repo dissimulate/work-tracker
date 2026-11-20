@@ -17,11 +17,10 @@ from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE
 from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, context_tracker, declined, get_mark, hand_over, in_repos, keep_folder,
-    keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, keep_told_next,
-    ensure_subscription, save_session, save_state, session_activity, shown_tickets, state_on, subscribed, take_over,
-    told_about, watch_running,
-    work_dir, Lag, Match)
+from .session import (behind, branch_matches, context_tracker, declined, ensure_subscription, get_mark, hand_over,
+    in_repos, keep_folder, keep_told_next, keep_word, lag, load_session, match_cwd, move_of, news, own_edit,
+    record_commits, relink_session, save_session, save_state, session_activity, shown_tickets, state_on, subscribed,
+    take_over, told_about, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -393,7 +392,6 @@ def hook_prompt(data: dict) -> None:
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
-    tickets = subscribed(entry, m.tracker)
     ids = [t.id for t in told_about(entry, m.tracker)]
     told = news(sid, m.tracker)
     fields = {"prompts": n + 1}
@@ -426,7 +424,7 @@ def hook_prompt(data: dict) -> None:
         lines.append(state_line(m, work))
         if idle and new:
             fields["idle_told"] = work.since
-    if tickets:  # a session with no open ticket learns of GitHub at its next start
+    if subscribed(entry, m.tracker):  # a session with no open ticket learns of GitHub at its next start
         sync_later(m.tracker, entry, fields)
     if sid:
         save_session(sid, **fields)

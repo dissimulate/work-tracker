@@ -75,8 +75,7 @@ class Match:
 # On Claude Code, scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a
 # command prefix (`hooks.command_context`), else `session_id` reads the host's variable. Hooks get it in their input.
 # Per session: `focus`, the tickets `tracker start --on` chose, which its checkout's match uses; its state on one
-# tracker (PER_TRACKER): `tickets`, its subscription (`subscribed`), `seen` and `seen_seq`, what it was told of them
-# (`news`), and `told_watch`; `cwd`, the last folder outside $TRACKER_HOME a hook of it ran in, and `work`, the last one
+# tracker (PER_TRACKER); `cwd`, the last folder outside $TRACKER_HOME a hook of it ran in, and `work`, the last one
 # that is a checkout of its tracker's work (`keep_folder`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
@@ -814,8 +813,7 @@ def subscribed(entry: dict, tr: Tracker) -> list[Record]:
 
 def start_subscription(sid: str, m: Match, ids: list[str] | None = None, seed: bool = False) -> None:
     """What a session subscribes to on `m.tracker`, for a start, a seed and a subscribing command (`save_state` writes
-    it): it subscribes the session to
-    `ids` (a start's `--on` tickets, a subscribing command's), or with None to its checkout's open tickets
+    it): `ids` (a start's `--on` tickets, a subscribing command's), or with None its checkout's open tickets
     (`Match.mine`, not closed). On the tracker the session's state is on it adds them, and keeps what the session was
     told and asked; on another it starts that state afresh (`state_on`). With no cursor yet the cursor starts now, and
     `seen` too unless the entry kept one (a session live across the update). A `seed` (`ensure_subscription`) that
@@ -1062,7 +1060,7 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
         else:
             starting, ending = [], [asker] if asker in waits else []
         if starting or ending:
-            log_waits(sid, entry, waits, starting, ending, tool, failed)
+            log_waits(entry, waits, starting, ending, tool, failed)
         if not linked:  # taken off its tracker while it waited (`unlink_session`): only its open waits keep a file,
             # and the state of a session that TRACKER names, which `tracker start --clear` left on none of its tickets
             if waits or state_on(entry)["tickets_on"]:
@@ -1085,8 +1083,7 @@ def session_activity(sid: str, status: str, asker: str | None = None, where: dic
                      **places)
 
 
-def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: list[str], tool: str,
-              failed: str) -> None:
+def log_waits(entry: dict, waits: dict, starting: list[str], ending: list[str], tool: str, failed: str) -> None:
     """Log the waits on a human that end and start, on the session's tickets (its subscription when the wait starts;
     its end names the same ones), and keep `waits` to match: a wait whose start was written ends with `of` its seq, in
     the tracker it started in (the command it asked about may have moved the session to another, where that seq is
