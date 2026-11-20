@@ -19,7 +19,7 @@ from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, declined, get_mark, hand_over, in_repos, keep_folder,
     keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, keep_told_next,
-    ensure_subscription, save_session, session_activity, shown_tickets, start_subscription, subscribed, take_over,
+    ensure_subscription, save_session, session_activity, shown_tickets, subscribed, take_over,
     told_about, watch_running,
     work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
@@ -132,8 +132,7 @@ def hook_session_start(data: dict) -> None:
                 emit_context("SessionStart", "")
             return
         relink_session(sid, tracker=sure.tracker.slug)  # a wait it left open ends at its next event
-        m = match_cwd(cwd, sid)
-        start_subscription(sid, m)
+        m = match_cwd(cwd, sid)  # its subscription: `ensure_subscription` below, by the rule a start uses
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")

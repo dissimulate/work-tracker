@@ -789,10 +789,11 @@ def subscribed(entry: dict, tr: Tracker) -> list[Record]:
 
 
 def start_subscription(sid: str, m: Match, ids: list[str] | None = None) -> None:
-    """The one home of what a session subscribes to when it starts on `m.tracker` (`tracker start`, `sure_link`), or
-    is seeded there (`ensure_subscription`): `ids`, its `--on` tickets, else its checkout's open tickets (`Match.mine`,
-    not closed). On the tracker its subscription is already on they join it, and the session keeps what it was told;
-    on another they replace it. Its news cursor starts now unless it has one."""
+    """The one home of what a session subscribes to when it starts on `m.tracker` (`tracker start`), or is seeded
+    there (`ensure_subscription`, which also serves the session-start link, `sure_link`): `ids`, its `--on` tickets,
+    else its checkout's open tickets (`Match.mine`, not closed). On the tracker its subscription is already on they
+    join it, and the session keeps what it was told; on another they replace it. Its news cursor starts now unless it
+    has one."""
     if not sid:
         return
     tr = m.tracker
@@ -808,9 +809,9 @@ def start_subscription(sid: str, m: Match, ids: list[str] | None = None) -> None
 
 def ensure_subscription(sid: str, m: Match) -> None:
     """Seed, once, the subscription of a session that has none on `m.tracker`: one live when the plugin updated, whose
-    file predates subscriptions, or one that names its tracker in its environment (TRACKER) and never ran `tracker
-    start`. From the checkout the hook or command runs in (`start_subscription`). A file that has one, even empty,
-    keeps it."""
+    file predates subscriptions, one that names its tracker in its environment (TRACKER) and never ran `tracker
+    start`, or one the session-start hook just linked (`sure_link`). From the checkout the hook or command runs in
+    (`start_subscription`). A file that has one, even empty, keeps it."""
     entry = load_session(sid)
     if sid and not ("tickets" in entry and subscription_on(entry) == m.tracker.slug):
         start_subscription(sid, m)
