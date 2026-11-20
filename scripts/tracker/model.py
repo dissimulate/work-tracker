@@ -14,7 +14,7 @@ from . import store
 from .system import die
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
-from .store import HOME, atomic_write, read_json, write_json
+from .store import HOME, append, atomic_write, read_json, write_json
 from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE,
     PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
     utc_now, utc_seconds, Stage)
@@ -807,8 +807,7 @@ LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 i
 
 def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
     line = f"- {today()}" + (f" [{' '.join(refs)}]" if refs else "") + f" {' '.join(msg.split())}"
-    with open(tr.root / "log.md", "a", encoding="utf-8", newline="\n") as f:  # Windows: no CRLF
-        f.write(line + "\n")
+    append(tr.root / "log.md", line + "\n")
     return line
 
 

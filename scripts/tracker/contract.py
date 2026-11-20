@@ -1,4 +1,5 @@
-"""The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it."""
+"""The contract in use: `check` enforces it, `rules` prints it, `migrate` brings an older tracker to it, and
+`refuse_newer` keeps this code from writing a newer one."""
 
 from __future__ import annotations
 
@@ -6,10 +7,11 @@ import datetime as dt
 import json
 import os
 import re
+from pathlib import Path
 
 from .markdown import BULLET, headings, link_ident, parse_links, section, strip_comments
 from .system import warn
-from .store import HOME, locked, read_json
+from .store import HOME, guard_writes, locked, read_json
 from .schema import (ACTION_BAR, BLOCKER, DAY_KEYS, DECISION_BAR, DEFAULT_LABELS, EVIDENCE_DIR, FORMS, ISOLATION_RULE,
     ISSUE, KEYS, KINDS, LABEL_RULES, MERGED_CARRY_FORWARD_MAX, OPEN_DECISIONS_WARN, OPEN_PR, OPTION_RULE, OWNER_HINT,
     OWN_VALUE_RULE, PRIORITY_WORDS, PR_STAGE, README_INSTRUCTIONS, README_KEYS, README_SECTIONS, README_TOKEN_BUDGET,
@@ -48,8 +50,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
         warnings.append(f"README.md: tracker format {tr.schema} is older than {SCHEMA}: it could not migrate — the "
                         f"next command tries again, and says why on stderr")
     elif tr.schema > SCHEMA:
-        errors.append(f"README.md: tracker format {tr.schema} is newer than this plugin's {SCHEMA} — update the "
-                      f"plugin")
+        errors.append(f"README.md: {newer_format(tr.root)}")
     errors += [f"README.md: {x}" for x in tr.readme_problems]
     aliases: dict[str, str] = {}
     for t in tr.tickets:
@@ -433,10 +434,33 @@ def stop_old_viewer() -> None:
     OLD_VIEWER.unlink(missing_ok=True)
 
 
+class NewerFormat(Exception):
+    """`refuse_newer` refused a write."""
+
+
+def newer_format(root: Path) -> str:
+    """Why this code writes nothing to the tracker at `root`, and what to do, in one sentence that holds for every
+    reader: a refused command in a session or a terminal, the hooks' user notice, a UI, the watch, `check`. Its format
+    is newer than SCHEMA. A session runs the plugin version it loaded until it reloads, and the newer version that
+    migrated the tracker never migrates it again: what this one wrote there would stay in the older format. Empty when
+    this code may write it."""
+    newer = Tracker(root).schema
+    return (f"{root.name} was written by a newer version of the work-tracker plugin (tracker format {newer}; this one "
+            f"writes {SCHEMA}), so this one writes nothing to it: use the newer version (update the plugin, then "
+            f"reload it or restart each session that still runs this one)" if newer > SCHEMA else "")
+
+
+def refuse_newer(root: Path) -> None:
+    """Refuse a write into a tracker in a newer format (`newer_format`): raise NewerFormat."""
+    if why := newer_format(root):
+        raise NewerFormat(why)
+
+
 def upgrade_trackers() -> None:
     """Bring every tracker, archived ones too, to the current format (`migrate`): each command and hook starts here. A
-    tracker that fails stays as it is, says why, and tries again next time. Also stops the old viewer
-    (`stop_old_viewer`)."""
+    tracker that fails stays as it is, says why, and tries again next time. From here on, refuse each write into a
+    tracker in a newer format (`refuse_newer`). Also stops the old viewer (`stop_old_viewer`)."""
+    guard_writes(refuse_newer)
     if OLD_VIEWER.exists():
         stop_old_viewer()
     for tr in (*all_trackers(), *archived_trackers()):

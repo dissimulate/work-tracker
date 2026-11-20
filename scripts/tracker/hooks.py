@@ -16,10 +16,10 @@ from .store import locked, record_cli
 from .schema import DECIDED, ISOLATION_RULE, RESOLVE, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
 from .model import set_branch, short, Tracker
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, changes_since, declined, drop_session, get_mark, hand_over, in_repos,
-    inside_home, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session, session_activity,
-    take_over, watch, work_dir, Lag, Match)
-from .contract import prune_backups, upgrade_trackers
+from .session import (behind, branch_matches, changes_since, context_tracker, cwd_field, declined, drop_session,
+    get_mark, hand_over, in_repos, lag, load_session, match_cwd, own_edit, record_commits, remember, save_session,
+    session_activity, take_over, watch, work_dir, Lag, Match)
+from .contract import newer_format, prune_backups, refuse_newer, upgrade_trackers, NewerFormat
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
 from .watcher import granted, set_grant
@@ -73,28 +73,35 @@ def offer(found: list[Match]) -> tuple[str, str]:
     """For a session with no tracker on a branch with open tickets: the model's request to ask the user whether to
     link it, and the line the user sees at once (a hook cannot start a model turn in an interactive session, so the
     model asks at the first message). Only the user's answer links; the hook writes nothing. A sure match
-    (`sure_link`) links without the question."""
+    (`sure_link`) links without the question. A tracker in a newer format is told (`contract.newer_format`), not
+    offered: its `start` would refuse."""
+    why = {m.tracker.slug: newer_format(m.tracker.root) for m in found}
+    newer = "".join(f"\n[work-tracker] {x}." for x in why.values() if x)
+    found = [m for m in found if not why[m.tracker.slug]]
+    if not found:
+        return newer.lstrip(), newer.lstrip()
     names = "; ".join(f"{m.tracker.slug} ({m.tracker.title}): {m.summary()}" for m in found[:3])
     options = [f'"Link {m.tracker.slug}" (run `tracker start {m.tracker.slug}`, which prints the brief)'
                for m in found[:3]]
     ask = (f"[work-tracker] This session is on no tracker. Branch `{found[0].branch}` has open tickets in {names}.\n"
            "In your first reply, before other work, use the host's question tool to ask whether to link this session "
            f"to it. Options: {', '.join(options)}, and \"Not now\" (run `tracker start --decline`: no link or offer "
-           "on this branch for a day). Skip the question when the user's message already answers it.")
+           "on this branch for a day). Skip the question when the user's message already answers it.") + newer
     return ask, (f"[work-tracker] Branch `{found[0].branch}` has open tickets in {names}. The agent asks at your first "
-                 "message whether to link this session.")
+                 "message whether to link this session.") + newer
 
 
 def sure_link(found: list[Match], cwd: str | Path, sid: str) -> Match | None:
     """The match a session with no tracker links at its start without asking the user: one tracker only, and a
     ticket's `branch` names this branch, which is not a default branch (where many works share a branch, the user
-    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos)."""
+    chooses), in this repo by name (a ticket with no repo matches any repo, and branch names repeat across repos).
+    None for a tracker in a newer format: the session stays on no tracker, and `offer` tells it."""
     if len(found) != 1 or found[0].how != "branch" or not sid:
         return None
     m, slug = found[0], cwd_repo(cwd)
     if not slug or any(m.tracker.repo_of(t).lower() != slug for t in m.tickets):
         return None
-    return m if m.branch not in default_branches(cwd) else None
+    return m if m.branch not in default_branches(cwd) and not newer_format(m.tracker.root) else None
 
 
 AUTO_LINKED = ("Linked at session start: this branch is the branch of {ids}. If the user says this session is not "
@@ -125,13 +132,16 @@ def hook_session_start(data: dict) -> None:
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
+    refuse_newer(m.tracker.root)  # the tracker /clear kept (take_over): its brief would ask for writes that are refused
     record_version()
     m, found = match_pr(m, cwd)
     record_commits(m, cwd)  # made since the last session, as in the terminal
     remember(sid, m, cwd)
     note = "\n\n".join(x for x in (note, found) if x)
     text = brief(m, cwd, note, compact=source == "compact")
-    fields = {"told_updates": updates_told(m.tracker)}  # the brief lists them: no prompt repeats them
+    # The brief lists the updates, so no prompt repeats them, and carries the protocol, so a session told its tracker
+    # took no write (`tell_newer`) needs none from `tracker start` now.
+    fields = {"told_updates": updates_told(m.tracker), "told_refusal": None}
     # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
     sync_later(m.tracker, load_session(sid), fields)
     if sid:
@@ -283,9 +293,7 @@ def hook_prompt(data: dict) -> None:
     issue update newly due (updates_told), each once. With a ticket under way, the first message and
     every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With none, only work since the
     branch's mark brings it: at once, once per mark, then on those messages while the work stays. With a ticket under
-    way, a stale GitHub sync starts in the background (`sync_later`)."""
-    if watch_request(data):
-        return
+    way, a stale GitHub sync starts in the background (`sync_later`). run_hook handles a watch request first."""
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if not m:
@@ -297,7 +305,7 @@ def hook_prompt(data: dict) -> None:
     now = watch(m.tracker, m.focus)
     # A brief on other tickets (the branch changed) is no baseline: start again from now.
     news = changes_since(m.tracker, entry["seen"], now) if entry.get("seen_for") == ids and ids else []
-    fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | ({} if inside_home(cwd) else {"cwd": str(cwd)})
+    fields = {"prompts": n + 1, "seen": now, "seen_for": ids} | cwd_field(cwd)
     lines = []
     if news and not granted(sid):  # a watching session has them from its watch
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
@@ -375,6 +383,47 @@ HOOKS = {"session-start": hook_session_start, "stop": hook_stop, "session-end": 
          "waiting": lambda data: None, "resumed": lambda data: None, "stop-failure": lambda data: None}
 
 
+# The handlers whose event can tell the session's model, and that event as emit_context names it: not SubagentStart,
+# whose text reaches the subagent (`tell_newer`).
+CONTEXT_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit", "post-bash": "PostToolUse",
+                  "answered": "PostToolUse"}
+
+
+# What the model does on a tracker that takes no write from this code, after `contract.newer_format`'s sentence. A
+# plugin reload may start no new session, so no SessionStart brings the brief: `tracker start` prints it.
+NEWER_REQUEST = ("Record nothing in it and run only `tracker` commands that read; wait for the user to reload the "
+                 "plugin or restart the session, then run `tracker start`, which prints the brief.")
+
+
+def tell_newer(data: dict, event: str, why: str) -> None:
+    """The session's tracker takes no write from this code (`contract.newer_format` says `why`): tell the user why, and
+    the model what to do until the user acts (NEWER_REQUEST), once per context, at the first handler that can tell
+    the model. A session start is a new context, after compaction too: it is told again, with the command prefix
+    (`emit_context`). Not a subagent's: the session reloads, not it."""
+    sid = where(data)[1]
+    notice = f"[work-tracker] {why}."
+    text = f"{notice} {NEWER_REQUEST}"
+    told = event != "session-start" and load_session(sid).get("told_refusal") == text
+    if event not in CONTEXT_EVENTS or data.get("agent_id") or told:
+        warn(f"hook {event}: {why}")
+        return
+    save_session(sid, told_refusal=text)
+    emit_context(CONTEXT_EVENTS[event], text, notice)
+
+
+def newer_told(data: dict, event: str) -> bool:
+    """Whether the session's tracker is in a newer format, on an event that can tell the model: then `tell_newer`
+    says so, and no handler runs, as each would ask the model for a write that is refused. A refusal in a handler that
+    cannot tell the model (Stop) is told here, at the session's next such event."""
+    if event not in CONTEXT_EVENTS or data.get("agent_id"):
+        return False
+    tr = context_tracker(where(data)[1])
+    why = newer_format(tr.root) if tr else ""
+    if why:
+        tell_newer(data, event, why)
+    return bool(why)
+
+
 HOOK_GH_BUDGET_S = 10  # all gh calls of one hook; hooks.json gives the hooks that call gh 15 s
 
 
@@ -396,7 +445,11 @@ def run_hook(*events: str) -> None:
             status = STATUS_OF.get(event)
             if event == "session-end" and not data.get("agent_id"):
                 session_activity(sid, status)  # first: the host may cut a SessionEnd hook short
-            HOOKS[event](data)
+            try:  # a watch request writes nothing to the tracker: `stop` ends the watch on a newer one too
+                if not (event == "prompt" and watch_request(data)) and not newer_told(data, event):
+                    HOOKS[event](data)
+            except NewerFormat as exc:  # the guard stopped the first tracker write; session_activity below still runs
+                tell_newer(data, event, str(exc))
             # A subagent's turn is not the session's, but its wait on the user is.
             asker = str(data.get("agent_id") or "") if event in ("waiting", "resumed") else None
             if status and event != "session-end" and (not data.get("agent_id") or asker is not None):

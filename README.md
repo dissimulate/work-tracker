@@ -147,7 +147,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 
 ### Upgrading a tracker
 
-The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/`, all but its `evidence/` folder (no migration changes it), and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. A session that still runs the older plugin version does not read the new format: start it again.
+The `schema` key in a tracker's README names its format. A tracker in an older format, archived or not, migrates itself the first time a command or hook of a newer version runs. It backs up first to `$TRACKER_HOME/.backups/<slug>-schema<n>/`, all but its `evidence/` folder (no migration changes it), and adds a log line. If it fails, the tracker stays as it was, the next command tries again and says why, and `tracker check` warns. A command or hook of an older version writes nothing to a tracker in a newer format: a command refuses before it changes anything and says to use the newer version. The hooks of a session on such a tracker tell the session once, at the first hook that can reach the agent (its start, or the next message you send or commit it makes when the tracker becomes newer later), and again after compaction or /clear. They ask the agent to record nothing until you reload the plugin or restart the session, and then to run `tracker start` for its brief. A session on no tracker is told of such a tracker on its branch, not linked or offered a link to it. Commands that only read still run, and `tracker here` and a bare `tracker start` say so after the brief. Versions up to 0.32.0 do not refuse, and write their own format: restart each session that runs one.
 
 ### Settings
 
@@ -174,13 +174,13 @@ Environment variables. All are optional.
 
 1. `system`: this Python and the CLI as processes, the plugin's folder, whether a process runs and which run under it, the system's trash
 2. `markdown`: the file format as text (frontmatter, sections, link lines)
-3. `store`: writing the tracker's files: atomic writes, JSON files, the lock
+3. `store`: writing the tracker's files: atomic writes, JSON files, the lock, the guard on each write
 4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
 5. `model`: records, the `Tracker`, dependencies, the log, body edits
 6. `moves`: whose move a ticket under way waits on
 7. `git`
 8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now
-9. `contract`: `check`, `rules`, `migrate`
+9. `contract`: `check`, `rules`, `migrate`, and no write into a newer format
 10. `views`: text views and the brief
 11. `github`: the GitHub adapter: `sync` reads PR state with `gh` and maps GitHub's words onto the tracker's (`PR_FACTS`). Another forge is another adapter
 12. `watcher`: `tracker watch` and the watching sessions' grants; `tracker agents`; `tracker await-change`
