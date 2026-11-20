@@ -148,7 +148,7 @@ def hook_session_start(data: dict) -> None:
     # The brief lists the updates, so no prompt repeats them, and carries the protocol, so a session told its tracker
     # took no write (`tell_refusal`) needs none from `tracker start` now.
     fields = {"told_updates": updates_told(m.tracker), "told_refusal": None}
-    # After the brief and `remember`: what the sync changes is news for the next message, not lost in the brief.
+    # After the brief and `keep_told_next`: what the sync changes is news for the next message, not lost in the brief.
     sync_later(m.tracker, load_session(sid), fields)
     if sid:
         save_session(sid, **fields)
@@ -403,7 +403,7 @@ def hook_prompt(data: dict) -> None:
     watched = load_state(m.tracker.slug, sid)
     if told and not (watch_running(watched) and not watched.get("mine")):
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
-                     "another session, a terminal, you in the view or a PR sync): " + "; ".join(told) + ".")
+                     "another session, a terminal, the user in the view or a PR sync): " + "; ".join(told) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say

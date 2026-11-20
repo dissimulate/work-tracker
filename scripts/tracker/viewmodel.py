@@ -12,7 +12,7 @@ from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, 
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
     log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
 from .moves import HANDOFF_KINDS, PR_NUMBER, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
-from .session import ago, around, items_of, live_by_tracker, live_sessions, move_of, session_tickets, Live
+from .session import ago, around, items_of, live_by_tracker, live_sessions, load_session, move_of, subscribed, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -255,7 +255,7 @@ def now_view(tr: Tracker) -> dict:
 
     # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket under way they subscribe
     # to (`subscribed`); a session with none gets its own entry, with its open subscribed tickets.
-    live = [(x, session_tickets(x.sid, tr)) for x in live_sessions(tr.slug)]
+    live = [(x, subscribed(load_session(x.sid), tr)) for x in live_sessions(tr.slug)]
     agents = {i: [x for x, mine in live if i in (r.id for r in mine)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:

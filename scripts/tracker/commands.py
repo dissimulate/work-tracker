@@ -1162,6 +1162,11 @@ def cmd_start(args):
     sid, cwd = session_id(), work_dir()
     if args.clear:
         unlink_session(sid)
+        named = match_cwd(cwd, sid) if sid else None  # TRACKER names a tracker: its hooks still run there
+        if named:
+            start_subscription(sid, named, [])  # on none of its tickets, which no hook seeds again
+            print(f"this session is on no ticket of {named.tracker.slug} now (TRACKER names it)")
+            return
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
         return
     if args.decline:
@@ -1208,7 +1213,7 @@ def cmd_start(args):
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
     relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
-    start_subscription(sid, m, [r.id for r in picks])  # on its own tracker it adds, and keeps what it was told
+    start_subscription(sid, m, [r.id for r in picks] or None)  # on its own tracker it adds, and keeps what it was told
     keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
     keep_told_next(sid, m, cwd)

@@ -21,7 +21,7 @@ from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEE
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, context_tracker, coordinated,
-    grant_path, granted, is_time, items_of, load_session, move_of, news, save_session, session_path, session_tickets,
+    grant_path, granted, is_time, items_of, load_session, move_of, news, save_session, session_path, subscribed,
     state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
@@ -418,7 +418,7 @@ class Watcher:
         """A new `mine` watch's first line: the session's subscription, each ticket with its stage and move."""
         tr = self.tracker()
         tickets = [f"{t.id} {t.stage}" + (f" · move: {move.text(' — ')}" if (move := move_of(tr, t)) else "")
-                   for t in session_tickets(self.sid, tr)]
+                   for t in subscribed(load_session(self.sid), tr)]
         return short(f"{time.strftime('%H:%M', time.localtime(now))} watching your tickets on {self.slug}: "
                      + ("; ".join(tickets) or "none open"), LINE_MAX)
 
@@ -495,7 +495,7 @@ class Watcher:
         if not settled:
             return []
         self.sig, self.changed = sig, 0.0
-        self.ended = not session_tickets(self.sid, tr)
+        self.ended = not subscribed(load_session(self.sid), tr)
         return [Event("log", "", False, x) for x in news(self.sid, tr)]
 
     def github(self, now: float) -> list[Event]:

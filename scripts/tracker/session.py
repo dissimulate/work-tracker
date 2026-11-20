@@ -74,9 +74,10 @@ class Match:
 # at its start a link it is sure of (`hooks.sure_link`, `take_over`).
 # On Claude Code, scripts/hook.sh puts the session id in TRACKER_SESSION for its Bash commands; other hosts get it in a
 # command prefix (`hooks.command_context`), else `session_id` reads the host's variable. Hooks get it in their input.
-# Per session: `focus`, the tickets `tracker start --on` chose, which its checkout's match uses; `tickets`, its
-# subscription (`subscribed`); `seen` and `seen_seq`, what it was told of them (`news`); `cwd`, the last folder outside
-# $TRACKER_HOME a hook of it ran in, and `work`, the last one that is a checkout of its tracker's work (`keep_folder`).
+# Per session: `focus`, the tickets `tracker start --on` chose, which its checkout's match uses; its state on one
+# tracker (PER_TRACKER): `tickets`, its subscription (`subscribed`), `seen` and `seen_seq`, what it was told of them
+# (`news`), and `told_watch`; `cwd`, the last folder outside $TRACKER_HOME a hook of it ran in, and `work`, the last one
+# that is a checkout of its tracker's work (`keep_folder`).
 
 SESSIONS_DIR = HOME / ".sessions"  # <session id>.json; scripts/hook.sh tests for it before it starts Python
 SESSIONS_MAX = 200
@@ -144,21 +145,29 @@ def unlink_session(sid: str) -> None:
         write_json(path, {k: v for k, v in kept.items() if v is not None})
 
 
-# What a session keeps when it moves to another tracker or tickets (`relink_session`): the human's words it kept
-# (`keep_word`), the user's stop of its watch (`no_watch`) and the waits the turn-end hook asked it to watch for
-# (`told_watch`).
-CARRIED = ("words", "no_watch", "told_watch")
-SUBSCRIPTION = ("tickets", "tickets_on", "seen", "seen_seq")  # a session's subscription and what it was told of it
+# What a session keeps whatever tracker it moves to (`relink_session`): the human's words it kept (`keep_word`) and
+# the user's stop of its watch (`no_watch`).
+CARRIED = ("words", "no_watch")
+# A session's state on one tracker (`subscription_on` names it): its subscription, what it was told of it (`seen`) and
+# its cursor in that tracker's events, and the waits the turn-end hook asked it to watch for (`told_watch`). Ids such
+# as T-1 and event numbers repeat across trackers, so none of it moves to another (`state_on`).
+PER_TRACKER = ("tickets", "tickets_on", "seen", "seen_seq", "told_watch")
+
+
+def state_on(entry: dict, slug: str) -> dict:
+    """A session entry's state on the tracker `slug` (PER_TRACKER): every field as the entry holds it when its state is
+    on that tracker, else None, which a save drops. The one rule for a session that changes tracker."""
+    same = subscription_on(entry) == slug
+    return {k: entry.get(k) if same else None for k in PER_TRACKER}
 
 
 def relink_session(sid: str, **fields) -> None:
-    """Put the session on a tracker afresh, as `unlink_session` leaves it, with `fields` and what it carries
-    (CARRIED). On the tracker its subscription is on, it keeps that too (SUBSCRIPTION): a start there adds to it."""
+    """Put the session on the tracker `fields` names, as `unlink_session` leaves it, with `fields`, what it carries
+    (CARRIED) and its state on that tracker (`state_on`: kept when it was on it, so a start there adds to it)."""
     with locked():
         entry = load_session(sid)
-        same = bool(fields.get("tracker")) and subscription_on(entry) == fields["tracker"]
         unlink_session(sid)
-        save_session(sid, **{k: entry.get(k) for k in (*CARRIED, *(SUBSCRIPTION if same else ()))}, **fields)
+        save_session(sid, **{k: entry.get(k) for k in CARRIED}, **state_on(entry, fields["tracker"]), **fields)
 
 
 # `/compact`, `/work-tracker:tracker index`, a skill `$work-tracker:watch` (a skill's name is lower case: not `$HOME`)
@@ -247,14 +256,17 @@ def save_cleared(entries: dict) -> None:
         CLEARED_FILE.unlink(missing_ok=True)
 
 
-CLEAR_KEPT = ("tracker", "focus", *SUBSCRIPTION)  # what `/clear` hands to the next session
+# What `/clear` hands to the next session: its tracker and focus, and its state on that tracker but `told_watch`, as
+# the next session's model was never asked to watch.
+CLEAR_KEPT = ("tracker", "focus", *(k for k in PER_TRACKER if k != "told_watch"))
 
 
 def hand_over(sid: str, cwd: str | Path) -> None:
     """A session that `/clear` ends: keep its tracker, its subscription and what it was told (CLEAR_KEPT) for the next
-    session in this directory."""
+    session in this directory; also for a session whose tracker its environment names (TRACKER), which has only its
+    subscription."""
     entry = load_session(sid)
-    if not entry.get("tracker"):
+    if not subscription_on(entry):
         return
     with locked():
         now = time.time()
@@ -263,17 +275,17 @@ def hand_over(sid: str, cwd: str | Path) -> None:
 
 
 def take_over(sid: str, cwd: str | Path) -> str:
-    """A session that `/clear` started: link the tracker the cleared session in this directory was on, with what it
-    keeps across the clear (CLEAR_KEPT: its focus, its tickets and what it was told). Its slug, or "" when none
-    waits. The session start hook keeps the folder (`keep_folder`)."""
+    """A session that `/clear` started: take what the cleared session in this directory kept across the clear
+    (CLEAR_KEPT: its tracker, its focus, its tickets and what it was told). The slug of the tracker that state is on,
+    or "" when none waits. The session start hook keeps the folder (`keep_folder`)."""
     with locked():
         entries = cleared_entries(time.time())
         got = entries.pop(str(Path(cwd).resolve()), None)
         save_cleared(entries)
-    if not got or not tracker_at(got.get("tracker", "")):
+    if not got or not tracker_at(subscription_on(got)):
         return ""
     save_session(sid, **{k: got.get(k) for k in CLEAR_KEPT})
-    return got["tracker"]
+    return subscription_on(got)
 
 
 def session_tracker(sid: str) -> Tracker | None:
@@ -773,48 +785,67 @@ GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, wh
 
 
 def subscription_on(entry: dict) -> str:
-    """The tracker a session entry's subscription is on: the one it was made on (`tickets_on`), else the session's."""
+    """The tracker a session entry's state (PER_TRACKER) belongs to: the one its subscription was made on
+    (`tickets_on`), else, in a file from before subscriptions, the session's tracker."""
     return str(entry.get("tickets_on") or entry.get("tracker") or "")
 
 
+def subscription_ids(entry: dict, slug: str) -> list[str]:
+    """The ids a session entry subscribes to on the tracker `slug`, in the order subscribed: none when its state is on
+    another tracker, where the same ids can name other tickets, or when the list is damaged."""
+    ids = entry.get("tickets")
+    return [str(i) for i in ids] if subscription_on(entry) == slug and isinstance(ids, list) else []
+
+
 def subscribed(entry: dict, tr: Tracker) -> list[Record]:
-    """A session's subscription (its `tickets`, as a session entry holds them) on `tr`: its open tickets, in the order
-    it subscribed; none when its subscription is on another tracker, where the same ids can name other tickets. A
-    ticket whose PRs merged reads closed and is left out, and comes back when a next PR is linked to it: an id is
-    never dropped for its stage."""
-    if subscription_on(entry) != tr.slug or not isinstance(entry.get("tickets"), list):
-        return []
-    found = (tr.lookup(str(i)) for i in entry["tickets"])
+    """A session's subscription on `tr` (`subscription_ids`): its open tickets, in the order it subscribed. A ticket
+    whose PRs merged reads closed and is left out, and comes back when a next PR is linked to it: an id is never
+    dropped for its stage."""
+    found = map(tr.lookup, subscription_ids(entry, tr.slug))
     return [t for t in found if t and t.kind == "ticket" and not t.closed]
 
 
-def start_subscription(sid: str, m: Match, ids: list[str] | None = None) -> None:
-    """The one home of what a session subscribes to when it starts on `m.tracker` (`tracker start`), or is seeded
-    there (`ensure_subscription`, which also serves the session-start link, `sure_link`): `ids`, its `--on` tickets,
-    else its checkout's open tickets (`Match.mine`, not closed). On the tracker its subscription is already on they
-    join it, and the session keeps what it was told; on another they replace it. Its news cursor starts now unless it
-    has one."""
+def start_subscription(sid: str, m: Match, ids: list[str] | None = None, seed: bool = False) -> None:
+    """The one writer of a session's state on a tracker (PER_TRACKER), here `m.tracker`: it subscribes the session to
+    `ids` (a start's `--on` tickets, a subscribing command's), or with None to its checkout's open tickets
+    (`Match.mine`, not closed). On the tracker the session's state is on it adds them, and keeps what the session was
+    told and asked; on another it starts that state afresh (`state_on`). With no cursor yet the cursor starts now, and
+    `seen` too unless the entry kept one (a session live across the update). A `seed` (`ensure_subscription`) that
+    finds no ticket writes nothing, so a later hook in the checkout seeds the session; a start's empty subscription
+    is kept."""
     if not sid:
         return
     tr = m.tracker
-    ids = list(dict.fromkeys(ids or [t.id for t in m.mine if not t.closed]))
+    ids = [str(i) for i in ([t.id for t in m.mine if not t.closed] if ids is None else ids)]
     with locked():
         entry = load_session(sid)
-        have = [str(i) for i in entry.get("tickets") or []] if subscription_on(entry) == tr.slug else []
-        fields = {"tickets": [*have, *(i for i in ids if i not in have)], "tickets_on": tr.slug}
-        if type(entry.get("seen_seq")) is not int:
-            fields.update(seen=watch(tr, subscribed({**entry, **fields}, tr)), seen_seq=last_seq(tr))
-        save_session(sid, **fields)
+        state = state_on(entry, tr.slug)
+        have = subscription_ids(entry, tr.slug)
+        state.update(tickets=[*have, *(i for i in dict.fromkeys(ids) if i not in have)], tickets_on=tr.slug)
+        if seed and not state["tickets"]:
+            return
+        if type(state["seen_seq"]) is not int:
+            state["seen_seq"] = last_seq(tr)
+            if not isinstance(state["seen"], dict):
+                state["seen"] = watch(tr, subscribed(state, tr))
+        if state != state_on(entry, tr.slug):
+            save_session(sid, **state)
 
 
 def ensure_subscription(sid: str, m: Match) -> None:
-    """Seed, once, the subscription of a session that has none on `m.tracker`: one live when the plugin updated, whose
-    file predates subscriptions, one that names its tracker in its environment (TRACKER) and never ran `tracker
-    start`, or one the session-start hook just linked (`sure_link`). From the checkout the hook or command runs in
-    (`start_subscription`). A file that has one, even empty, keeps it."""
+    """Seed, once, the subscription on `m.tracker` of a session that has none there: one live when the plugin updated,
+    whose file predates subscriptions, one that names its tracker in its environment (TRACKER) and never ran `tracker
+    start`, one whose environment now names another tracker, or one the session-start hook just linked (`sure_link`).
+    From the tickets an older file says the session was told of (`seen_for`, else the own entries of its `seen`),
+    else from the checkout the hook or command runs in. The one reader of that older format: session files are not
+    tracker data, so `contract.migrate` does not reach them. A subscription a start or a command made, even empty,
+    stays."""
     entry = load_session(sid)
-    if sid and not ("tickets" in entry and subscription_on(entry) == m.tracker.slug):
-        start_subscription(sid, m)
+    if "tickets" in entry and subscription_on(entry) == m.tracker.slug:
+        return
+    old = entry if subscription_on(entry) == m.tracker.slug else {}
+    told = old["seen_for"] if isinstance(old.get("seen_for"), list) else sorted(told_before(old)[1])
+    start_subscription(sid, m, told or None, seed=True)
 
 
 def agent_sid() -> str:
@@ -831,13 +862,12 @@ def subscribe(tr: Tracker, ids: list[str]) -> None:
     own = context_tracker(sid) if sid else None
     if not own or own.slug != tr.slug:
         return
+    new = [r.id for r in map(tr.lookup, ids) if r and r.kind == "ticket"]
     with locked():
-        ensure_subscription(sid, match_cwd(work_dir(), sid, tr))
-        entry = load_session(sid)
-        have = [str(i) for i in entry.get("tickets") or []]
-        new = [r.id for r in map(tr.lookup, ids) if r and r.kind == "ticket" and r.id not in have]
+        m = match_cwd(work_dir(), sid, tr)
+        ensure_subscription(sid, m)
         if new:
-            save_session(sid, tickets=[*have, *dict.fromkeys(new)])
+            start_subscription(sid, m, new)
 
 
 def told_before(entry: dict) -> tuple[dict, set[str]]:
@@ -859,8 +889,8 @@ def keep_folder(sid: str, tr: Tracker, folder: str | Path) -> None:
     """Keep where a hook of the session ran (`folder`, as the hook got it): `cwd`, the last folder outside
     $TRACKER_HOME, by which `tracker agents`, the view and a host with no process file find the session; and `work`,
     the last one that is a checkout of the tracker's work (a branch, in a repo the tracker names, in any repo when it
-    names none), which `work_dir` gives a command run in the tracker folder. Neither decides the session's tickets
-    (`subscribed`)."""
+    names none), which `work_dir` gives a command run in the tracker folder. Neither is in the session's subscription,
+    which only a start, a subscribing command or a seed changes (`start_subscription`)."""
     if not sid or inside_home(folder):
         return
     fields = {"cwd": str(folder)}
@@ -904,21 +934,17 @@ def news(sid: str, tr: Tracker) -> list[str]:
 
 
 def shown_tickets(m: Match, sid: str) -> list[Record]:
-    """The tickets a brief, a subagent's note and an issue request show a session: its checkout's (`Match.focus`), then
-    its subscribed tickets that this checkout does not hold (`Match.mine`), so a session elsewhere still sees what it
-    works on, and one in its own checkout reads as it always did."""
-    here = {t.id for t in m.mine}
-    return [*m.focus, *(t for t in session_tickets(sid, m.tracker) if t.id not in here)]
-
-
-def session_tickets(sid: str, tr: Tracker) -> list[Record]:
-    """A session's subscription on `tr` (`subscribed`), from its file."""
-    return subscribed(load_session(sid), tr)
+    """The tickets a brief, a subagent's note and an issue request show a session: its checkout's focus (`Match.focus`,
+    which follows its latest `--on` choice), then its subscribed tickets that this checkout does not hold
+    (`Match.tickets`), so a session elsewhere still sees what it works on, and one in its own checkout reads as it
+    always did. Its news still comes on every ticket it subscribed (`news`)."""
+    held = {t.id for t in m.tickets}
+    return [*m.focus, *(t for t in subscribed(load_session(sid), m.tracker) if t.id not in held)]
 
 
 def own_event(e: dict, sid: str) -> bool:
     """An event the session's agent wrote: one entered in the view or at a terminal is someone else's."""
-    return bool(sid) and e.get("session") == sid and e.get("via") == "agent"
+    return e.get("session") == sid and e.get("via") == "agent"
 
 
 def keep_told_next(sid: str, m: Match, cwd: str | Path) -> None:
@@ -998,7 +1024,7 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
 
 def agent_tickets(tr: Tracker, sid: str) -> list[str]:
     """The tickets a session is on, as a UI, a watch and the stuck rule show them: its subscription (`subscribed`)."""
-    return [t.id for t in session_tickets(sid, tr)]
+    return [t.id for t in subscribed(load_session(sid), tr)]
 
 
 def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None, tool: str = "",
@@ -1070,7 +1096,7 @@ def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: l
             logged(slug, "human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
                    kept[0] if kept else [], asker=who, of=seq, seconds=seconds, **error)
     on = tracker_at(entry["tracker"]) if starting else None
-    refs = agent_tickets(on, sid) if on else []
+    refs = [t.id for t in subscribed(entry, on)] if on else []
     for who in starting:
         text = "Waiting on a human" + (f": {tool}" if tool else "")
         waits[who] = [logged(entry["tracker"], "human.wait", text, refs, asker=who, why=tool), now, entry["tracker"],
@@ -1083,9 +1109,8 @@ class Live:
     sid: str
     name: str
     status: str
-    cwd: str  # where the session's hooks last saw it work, else where it started
+    cwd: str  # the last folder outside $TRACKER_HOME a hook of it ran in (`keep_folder`), else its process file's
     branch: str
-    focus: list[str]  # the tickets `tracker start --on` chose
     since: float  # when the status last changed (epoch s); 0 when not known
     transcript: str  # its transcript's file, as its hooks last gave it; "" when not known
     claude: str  # its name in Claude Code, which lists it by that name; "" on another host
@@ -1119,7 +1144,7 @@ def live_by_tracker(slugs: set[str] | None = None) -> dict[str, list[Live]]:
         cwd = entry.get("cwd") or cwd
         out.setdefault(entry["tracker"], {})[sid] = Live(
             sid, claude or sid[:8], status, cwd, branch_of(cwd) if cwd and Path(cwd).is_dir() else "",
-            entry.get("focus", []), since, entry.get("transcript", ""), claude, entry.get("terminal", ""))
+            since, entry.get("transcript", ""), claude, entry.get("terminal", ""))
 
     for c in claude_sessions():
         try:

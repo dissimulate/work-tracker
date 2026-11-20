@@ -341,10 +341,11 @@ def protocol(slug: str) -> str:
 
 HOW = {"branch": "", "use": " (chosen with `tracker use`)",
        "name": " (matched by the id in the branch name; if wrong, `tracker use <id>`)"}
-CHOSEN = " (this session's choice, from `tracker start --on`; `tracker start <slug>` clears it)"
+CHOSEN = (" (this session's choice, from `tracker start --on`, which the brief shows; news still comes on the "
+          "tickets it joined before; `tracker start <slug>` clears the choice)")
 PICK_ONE = ("More than one ticket is under way here. When this session's work is one of them, "
-            "`tracker start --on <id>` puts the session on it alone: the brief, the hooks, and `step` and `set` "
-            "without an id then use it.")
+            "`tracker start --on <id>` narrows the brief, the hooks' checks of this checkout, and `step` and `set` "
+            "without an id to it; news still comes on the tickets this session already joined.")
 BRANCH_RULE = ("Change git branches only when the user asks. When the user asks for a branch for a ticket, run "
                "`tracker context <id>` first, start the branch from the one its `start:` line names (else the "
                "default branch), and name it for the work, led by the ticket's Issue id when it has one; "
