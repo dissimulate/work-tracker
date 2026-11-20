@@ -28,7 +28,7 @@ from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
     context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date, match_cwd,
     matched, no_tracker, on_branch, record_commits, relink_session, remember, resolve, save_session, session_id,
-    session_tracker, start_news, subscribe, subscribed, trackers_for_repo, unlink_session, work_dir)
+    session_tracker, start_subscription, subscribe, subscribed, trackers_for_repo, unlink_session, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -237,7 +237,7 @@ def cmd_set(args):
         append_event(tr, "status", status_line(rec), [] if rec.kind == "tracker" else [rec.id],
                      status=str(rec.get("status")))
     if rec.kind == "ticket" and ("next" in updates or "status" in updates and not to.closed):
-        subscribe(session_id(), tr, [rec.id])  # its work: also a status it already had, which writes nothing
+        subscribe(tr, [rec.id])  # its work: also a status it already had, which writes nothing
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if starts:
@@ -1019,7 +1019,7 @@ def cmd_submit(args):
     tr, t = open_ticket(args)
     note = f": {args.note}" if args.note else ""
     append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
-    subscribe(session_id(), tr, [t.id])
+    subscribe(tr, [t.id])
     print(f"submitted {t.id}'s {args.what}")
 
 
@@ -1057,7 +1057,7 @@ def cmd_review(args):
         listed = numbered("finding", fixed)
         append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
                      of=review["seq"], findings=fixed)
-        subscribe(session_id(), tr, [t.id])
+        subscribe(tr, [t.id])
         print(f"marked {listed} of {t.id}'s {name} fixed")
         return
     findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
@@ -1107,7 +1107,7 @@ def cmd_step(args):
         done.append("logged")
     if args.done:
         append_event(tr, "status", status_line(t), [t.id], status=str(t.get("status")))
-    subscribe(session_id(), tr, [t.id])
+    subscribe(tr, [t.id])
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
@@ -1206,11 +1206,9 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)  # a new start: nothing seen yet
+    relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
     m, found = match_pr(match_cwd(cwd, sid), cwd)
-    # Its subscription: the --on tickets, else the open tickets of the checkout it starts in; and its news cursor.
-    save_session(sid, tickets=[r.id for r in picks] or [t.id for t in m.mine if not t.closed])
-    start_news(sid, m.tracker)
+    start_subscription(sid, m, [r.id for r in picks])  # on its own tracker it adds, and keeps what it was told
     keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
     remember(sid, m, cwd)
@@ -1322,7 +1320,7 @@ def cmd_use(args):
     recs = [first, *(tr.find(i) for i in ids[1:])]
     if any(r.kind != "ticket" for r in recs):
         die("`use` takes ticket ids")
-    subscribe(session_id(), tr, [r.id for r in recs])
+    subscribe(tr, [r.id for r in recs])
     if branch not in default_branches(cwd):
         # Recorded on each ticket (set_branch); the branch keeps its other tickets.
         for t in recs:

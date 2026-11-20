@@ -2952,8 +2952,11 @@ class SessionNews(TwoSessions):
 
     def test_events_from_before_the_brief_are_no_news(self):
         self.as_b(*self.t, "log", "--ref", "T-1", "written before the brief")
-        self.as_a("start", self.s)
-        self.assertNotIn("written before the brief", self.message())
+        c = f"c{time.monotonic_ns()}"  # a session's first start on the tracker
+        self.addCleanup(session.drop_session, c)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+            run("start", self.s, cwd=self.work)
+        self.assertNotIn("written before the brief", said(hook("prompt", c, self.work, env=no_gh(), prompt="go")))
 
     def test_a_terminals_note_is_news(self):
         self.message()
@@ -3202,6 +3205,72 @@ class SessionNews(TwoSessions):
                 contextlib.redirect_stdout(io.StringIO()):
             hooks.hook_prompt({"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
         spawn.assert_called_once_with("--tracker", self.s, "sync")
+
+    def as_released(self, sid: str) -> None:
+        """The session file as a released version left it, with no subscription: models a session that was live when
+        the plugin updated."""
+        path = session.session_path(sid)
+        entry = json.loads(path.read_text())
+        entry.pop("tickets", None)
+        path.write_text(json.dumps(entry))
+
+    def test_a_session_live_across_the_update_is_subscribed_from_its_checkout(self):
+        self.message()
+        self.as_released(self.a)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertIn("T-1: base branch moved", self.message())  # its cursor and `seen` were kept
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1"])
+
+    def test_a_session_live_across_the_update_is_not_asked_again(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIn("T-1 waits on", said(self.stop()))
+        self.as_released(self.a)
+        self.assertIsNone(self.stop())  # told of that wait already
+
+    def test_an_empty_subscription_is_left_alone(self):
+        self.as_b("start", self.s, cwd=Path(tempfile.mkdtemp(dir=BASE)))  # B starts where it holds no ticket
+        hook("prompt", self.b, self.work, env=no_gh(), prompt="go on")  # then works in T-1's checkout
+        self.assertEqual(session.load_session(self.b)["tickets"], [])
+
+    def test_a_session_that_names_its_tracker_in_its_environment_subscribes(self):
+        other, _ = new_tracker("Elsewhere")
+        run("--tracker", other, "new", "T-1", "--title", "Same id, another tracker")
+        c = f"env{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, c)
+        env = {**no_gh(), "TRACKER": self.s}
+
+        def message() -> str:
+            return said(hook("prompt", c, self.work, env=env, prompt="go on"))
+
+        message()  # never ran `tracker start`
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.assertIn("T-1: base branch moved", message())
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": self.s}):
+            run(*self.t, "set", "T-2", "next=Plan it", cwd=self.work)
+        self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(self.s))],
+                         ["T-1", "T-2"])
+        self.assertEqual(session.subscribed(session.load_session(c), model.tracker_at(other)), [])  # ids repeat
+
+    def test_a_start_on_its_tracker_adds_and_keeps_what_it_was_told(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.message()
+        run(*self.t, "set", "T-2", "status=in-progress", "branch=f1")
+        self.assertIn("More than one ticket is under way here", self.as_a("here"))  # it is told to pick one
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")  # before it picks: still to tell
+        self.as_a("start", self.s, "--on", "T-2")
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-2"])
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        told = self.message()
+        self.assertIn("T-1: base branch moved", told)
+        self.assertIn("T-1 plan review: changes", told)
+
+    def test_a_start_on_another_tracker_replaces_the_subscription(self):
+        other, _ = new_tracker("Elsewhere")
+        self.as_b(*self.t, "log", "--ref", "T-1", "a note")  # this tracker's cursor moves on
+        self.as_a("start", other)
+        entry = session.load_session(self.a)
+        self.assertEqual(entry["tickets"], [])
+        self.assertEqual(entry["seen_seq"], model.last_seq(model.tracker_at(other)))  # its cursor is the new one's
 
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
@@ -5074,7 +5143,7 @@ class MineWatch(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertNotIn("Changed on", self.message())
 
-    def test_the_watch_follows_the_session_to_other_tickets(self):
+    def test_a_start_on_other_tickets_adds_them_to_the_watch(self):
         w = self.mine()
         w.claim(self.clock)
         run(*self.t, "set", "T-2", "status=in-progress")
@@ -5082,8 +5151,8 @@ class MineWatch(TwoSessions):
         self.assertEqual(self.look(w), [])  # the change of tickets is no news
         self.as_b(*self.t, "log", "--ref", "T-2", "about two")
         self.assertEqual(self.texts(self.look(w)), ["T-2: about two"])
-        self.as_b(*self.t, "log", "--ref", "T-1", "about one")
-        self.assertEqual(self.look(w), [])
+        self.as_b(*self.t, "log", "--ref", "T-1", "about one")  # T-1 is still its own
+        self.assertEqual(self.texts(self.look(w)), ["T-1: about one"])
 
     def test_a_note_survives_a_ticket_of_mine_closing(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
@@ -5117,6 +5186,7 @@ class MineWatch(TwoSessions):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         run(*self.t, "set", "T-3", "status=in-progress")
         self.as_a("start", self.s)  # on T-1 and T-3
+        self.message()  # what it was not told yet: T-3's start
 
         def close_both():
             self.as_a(*self.t, "set", "T-3", "status=done", "summary=Shipped")

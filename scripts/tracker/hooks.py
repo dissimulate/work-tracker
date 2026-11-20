@@ -19,7 +19,8 @@ from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, declined, get_mark, hand_over, in_repos, keep_folder,
     keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, remember,
-    save_session, session_activity, shown_tickets, start_news, subscribed, take_over, told_about, watch_running,
+    ensure_subscription, save_session, session_activity, shown_tickets, start_subscription, subscribed, take_over,
+    told_about, watch_running,
     work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
@@ -130,14 +131,14 @@ def hook_session_start(data: dict) -> None:
             elif command_context():
                 emit_context("SessionStart", "")
             return
-        # Its subscription and news cursor start here; a wait it left open ends at its next event.
-        relink_session(sid, tracker=sure.tracker.slug, tickets=[t.id for t in sure.mine if not t.closed])
+        relink_session(sid, tracker=sure.tracker.slug)  # a wait it left open ends at its next event
         m = match_cwd(cwd, sid)
-        start_news(sid, m.tracker)
+        start_subscription(sid, m)
         note = AUTO_LINKED.format(ids=", ".join(t.id for t in sure.focus))
         notice = (f"[work-tracker] Linked this session to {sure.tracker.slug}: branch `{sure.branch}` holds "
                   f"{sure.summary()}. To unlink, tell the agent this is not that work.")
     keep_folder(sid, m.tracker, folder)  # the session's file only, so before the format guard
+    ensure_subscription(sid, m)
     refuse_other_format(m.tracker.root)  # the tracker /clear kept (take_over): its brief asks for writes it refuses
     record_version()
     m, found = match_pr(m, cwd)
@@ -196,6 +197,19 @@ WATCH_ASK = ("[work-tracker] {waits}. Nothing wakes this session when that chang
              "user told you not to watch, end the turn.")
 
 
+def session_match(data: dict) -> tuple[Match | None, Path, str]:
+    """The checkout a hook of the session runs in (its folder; inside $TRACKER_HOME, the one it last worked in:
+    `work_dir`), its match there, and the session's id. A session on a tracker keeps the folder (`keep_folder`: a turn
+    a watch line started brings no message) and, if it has none yet, gets its subscription (`ensure_subscription`)."""
+    folder, sid = where(data)
+    cwd = work_dir(folder)
+    m = match_cwd(cwd, sid)
+    if m:
+        keep_folder(sid, m.tracker, folder)
+        ensure_subscription(sid, m)
+    return m, cwd, sid
+
+
 def hook_stop(data: dict, ask: bool = True) -> bool:
     """The end of a turn or of the session: log the commits no other hook saw (made in the terminal, or by a command
     the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
@@ -203,12 +217,9 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
     back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`.
     Whether it held the turn, which then goes on. The commits are this checkout's; the waits are the session's
     subscription's (`subscribed`)."""
-    folder, sid = where(data)
-    cwd = work_dir(folder)  # a `cd` to the tracker: the checkout the session works in
-    m = match_cwd(cwd, sid)
+    m, cwd, sid = session_match(data)
     if not m:
         return False
-    keep_folder(sid, m.tracker, folder)  # a turn a watch line started brings no message, whose hook would keep it
     if m.branch:
         adopt_branch(m, cwd)
         record_commits(m, cwd)
@@ -376,14 +387,11 @@ def hook_prompt(data: dict) -> None:
     stays. With a ticket of the session open, a stale GitHub sync starts in the background (`sync_later`). run_hook
     handles a watch request first. The state line is this checkout's; the news is the session's subscription's
     (`subscribed`)."""
-    folder, sid = where(data)
-    cwd = work_dir(folder)  # a `cd` to the tracker: the checkout the session works in
-    m = match_cwd(cwd, sid)
+    m, cwd, sid = session_match(data)
     if not m:
         return
     keep_word(sid, str(data.get("prompt") or ""))
     record_version()
-    keep_folder(sid, m.tracker, folder)
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     tickets = subscribed(entry, m.tracker)
