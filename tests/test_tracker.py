@@ -2487,6 +2487,7 @@ class Hooks(unittest.TestCase):
         self.assertIn("Linked at session start", auto)
         self.assertIn("Tracker protocol", auto)
         self.assertEqual(session.load_session(f"{sid}a")["tracker"], a)
+        self.assertEqual(session.load_session(f"{sid}a")["tickets"], ["U-1"])  # its branch's open ticket
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": f"{sid}a"}):
             self.assertIn(f"this session is off {a} now", run("start", "--decline", cwd=mine))
         self.assertNotIn("tracker", session.load_session(f"{sid}a"))
@@ -3106,6 +3107,17 @@ class SessionNews(TwoSessions):
         self.message()
         self.view(*self.t, "log", "--ref", "T-1", "Keep the old API")  # a human, in the view's CLI
         self.assertIn("T-1: Keep the old API", self.message())
+
+    def test_each_subscribing_command_subscribes_its_ticket(self):
+        for i in (3, 4, 5, 6):
+            run(*self.t, "new", f"T-{i}", "--title", f"Part {i}")
+        self.as_a(*self.t, "submit", "T-3", "--what", "plan")
+        self.as_a(*self.t, "set", "T-4", "next=Plan it")
+        self.as_b(*self.t, "review", "T-5", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        self.as_a(*self.t, "review", "T-5", "--what", "plan", "--fixed", "1")
+        self.as_a(*self.t, "use", "T-6", cwd=repo("f6"))
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-3", "T-4", "T-5", "T-6"])
+        self.assertNotIn("tickets", session.load_session(self.b))  # a review verdict subscribes nobody
 
     def test_a_status_it_already_had_still_subscribes(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f3")
