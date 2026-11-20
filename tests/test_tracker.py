@@ -3290,15 +3290,28 @@ class SessionNews(TwoSessions):
     def test_a_session_whose_environment_names_another_tracker_starts_there_afresh(self):
         other, _ = new_tracker("Elsewhere")
         run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "f1")
+        run("--tracker", other, "new", "T-2", "--title", "Other two")
         c, message = self.env_session()
         for n in range(4):
             self.as_b(*self.t, "log", "--ref", "T-1", f"note {n}")  # this tracker's events outnumber the other's
         message()
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": c, "TRACKER": other}):
-            run("--tracker", other, "set", "T-1", "next=Plan it", cwd=self.work)  # its first act there: no message
+            run("--tracker", other, "set", "T-2", "next=Plan it", cwd=self.work)  # its first act there: no message
         run("--tracker", other, "log", "--ref", "T-1", "a note on the other T-1")
         self.assertIn("T-1: a note on the other T-1", message(other))
         self.assertEqual(session.load_session(c)["seen_seq"], model.last_seq(model.tracker_at(other)))
+        self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(other))],
+                         ["T-1", "T-2"])  # its checkout's there, then the one its command named
+
+    def test_an_older_file_of_a_session_on_another_tracker_seeds_from_its_checkout(self):
+        other, _ = new_tracker("Elsewhere")
+        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "f1")
+        run("--tracker", other, "new", "T-2", "--title", "Other two")
+        c, message = self.env_session()
+        session.save_session(c, seen={"T-2": {"role": "own", "stage": "todo"}}, seen_for=["T-2"])  # of this tracker
+        message(other)  # an older version's file, with no tracker key: its TRACKER now names another
+        self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(other))],
+                         ["T-1"])
 
     def test_a_session_whose_first_act_is_a_command_also_subscribes_its_checkout(self):
         c, _ = self.env_session()
@@ -3327,6 +3340,17 @@ class SessionNews(TwoSessions):
         self.assertEqual(session.subscribed(session.load_session(c), model.tracker_at(self.s)), [])
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertNotIn("base branch moved", message())
+
+    def test_a_wait_asked_before_clear_is_asked_again_after(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.assertIn("T-1 waits on", said(self.stop()))
+        hook("session-end", self.a, self.work, env=no_gh(), reason="clear")
+        after = f"{self.a}c"
+        self.addCleanup(session.drop_session, after)
+        hook("session-start", after, self.work, env=no_gh(), source="clear")
+        out = hook("stop", after, self.work, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"},
+                   stop_hook_active=False)
+        self.assertIn("T-1 waits on", said(out))  # the new session's model was never asked
 
     def test_a_wait_asked_on_one_tracker_is_asked_again_on_another(self):
         other, _ = new_tracker("Elsewhere")

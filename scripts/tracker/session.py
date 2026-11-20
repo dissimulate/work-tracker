@@ -836,16 +836,16 @@ def ensure_subscription(sid: str, m: Match) -> None:
     """Seed, once, the subscription on `m.tracker` of a session that has none there: one live when the plugin updated,
     whose file predates subscriptions, one that names its tracker in its environment (TRACKER) and never ran `tracker
     start`, one whose environment now names another tracker, or one the session-start hook just linked (`sure_link`).
-    From the tickets an older file says the session was told of (`seen_for`, else the own entries of its `seen`),
-    else from the checkout the hook or command runs in. The one reader of that older format: session files are not
-    tracker data, so `contract.migrate` does not reach them. A subscription a start or a command made, even empty,
-    stays."""
+    From the tickets an older file on that tracker says its brief showed (`seen_for`, which those versions wrote
+    with every `seen`), else from the checkout the hook or command runs in. The one reader of that older format:
+    session files are not tracker data, so `contract.migrate` does not reach them. A subscription a start or a
+    command made, even empty, stays."""
     entry = load_session(sid)
     if "tickets" in entry and subscription_on(entry) == m.tracker.slug:
         return
     old = entry if subscription_on(entry) == m.tracker.slug else {}
-    told = old["seen_for"] if isinstance(old.get("seen_for"), list) else sorted(told_before(old)[1])
-    start_subscription(sid, m, told or None, seed=True)
+    told = old.get("seen_for") if isinstance(old.get("seen_for"), list) else []
+    start_subscription(sid, m, [str(i) for i in told] or None, seed=True)
 
 
 def agent_sid() -> str:
