@@ -26,9 +26,9 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
-    context_tracker, in_repos, items_of, kept_words, load_session, locate, mark_up_to_date, match_cwd, matched,
-    no_tracker, on_branch, record_commits, relink_session, remember, resolve, save_session, session_id, session_tracker,
-    trackers_for_repo, unlink_session, work_dir)
+    context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date, match_cwd,
+    matched, no_tracker, on_branch, record_commits, relink_session, remember, resolve, save_session, session_id,
+    session_tracker, start_news, subscribe, subscribed, trackers_for_repo, unlink_session, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -135,7 +135,7 @@ def cmd_here(args):
               + (f". Trackers for this repo: {', '.join(t.slug for t in repo)}" if repo else " in any tracker")
               + ". `tracker start <name>` ties this session to a tracker.")
         return
-    print(brief(m, cwd, full=args.full, with_protocol=False))
+    print(brief(m, cwd, full=args.full, with_protocol=False, tickets=subscribed(load_session(session_id()), m.tracker)))
     if why := other_format(m.tracker.root):  # as a bare `start` says it (cmd_start)
         print(f"{why}.")
 
@@ -236,6 +236,8 @@ def cmd_set(args):
     if moved:
         append_event(tr, "status", status_line(rec), [] if rec.kind == "tracker" else [rec.id],
                      status=str(rec.get("status")))
+    if rec.kind == "ticket" and ("next" in updates or "status" in updates and not to.closed):
+        subscribe(session_id(), tr, [rec.id])  # its work: also a status it already had, which writes nothing
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if starts:
@@ -1017,6 +1019,7 @@ def cmd_submit(args):
     tr, t = open_ticket(args)
     note = f": {args.note}" if args.note else ""
     append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
+    subscribe(session_id(), tr, [t.id])
     print(f"submitted {t.id}'s {args.what}")
 
 
@@ -1054,6 +1057,7 @@ def cmd_review(args):
         listed = numbered("finding", fixed)
         append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
                      of=review["seq"], findings=fixed)
+        subscribe(session_id(), tr, [t.id])
         print(f"marked {listed} of {t.id}'s {name} fixed")
         return
     findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
@@ -1103,6 +1107,7 @@ def cmd_step(args):
         done.append("logged")
     if args.done:
         append_event(tr, "status", status_line(t), [t.id], status=str(t.get("status")))
+    subscribe(session_id(), tr, [t.id])
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
@@ -1175,7 +1180,7 @@ def cmd_start(args):
         # A session told its tracker takes no write got that line in place of its brief (hooks.tell_refusal), so it
         # has no protocol: the first brief once this code may write the tracker brings it.
         told = bool(load_session(sid).get("told_refusal")) and not why
-        print(brief(m, cwd, with_protocol=told))
+        print(brief(m, cwd, with_protocol=told, tickets=subscribed(load_session(sid), m.tracker)))
         if told:
             save_session(sid, told_refusal=None)
         if why:  # the brief asks for writes that refuse_other_format refuses
@@ -1203,9 +1208,13 @@ def cmd_start(args):
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
     relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)  # a new start: nothing seen yet
     m, found = match_pr(match_cwd(cwd, sid), cwd)
+    # Its subscription: the --on tickets, else the open tickets of the checkout it starts in; and its news cursor.
+    save_session(sid, tickets=[r.id for r in picks] or [t.id for t in m.mine if not t.closed])
+    start_news(sid, m.tracker)
+    keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
     remember(sid, m, cwd)
-    print(brief(m, cwd, note=found))
+    print(brief(m, cwd, note=found, tickets=subscribed(load_session(sid), m.tracker)))
     tell_updates(m.tracker)
 
 
@@ -1313,6 +1322,7 @@ def cmd_use(args):
     recs = [first, *(tr.find(i) for i in ids[1:])]
     if any(r.kind != "ticket" for r in recs):
         die("`use` takes ticket ids")
+    subscribe(session_id(), tr, [r.id for r in recs])
     if branch not in default_branches(cwd):
         # Recorded on each ticket (set_branch); the branch keeps its other tickets.
         for t in recs:

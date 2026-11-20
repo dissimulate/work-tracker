@@ -21,8 +21,8 @@ from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEE
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, context_tracker, coordinated,
-    grant_path, granted, is_time, items_of, load_session, match_cwd, move_of, news, save_session, session_path,
-    state_pid, live_sessions, session_id, ticket_facts, watch_running, work_dir, Live)
+    grant_path, granted, is_time, items_of, load_session, move_of, news, save_session, session_path, state_pid,
+    live_sessions, session_id, subscribed, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -214,7 +214,7 @@ def agents_lines(tr: Tracker, now: float) -> list[str]:
     program that reaches an agent knows it by (Claude Code's session name, Herdr's terminal); its transcript."""
     out = []
     for x in live_sessions(tr.slug):
-        on = agent_tickets(tr, x.cwd, x.sid)
+        on = agent_tickets(tr, x.sid)
         facts = [f"on {', '.join(on)}" if on else "", f"branch {x.branch}" if x.branch else "", x.cwd,
                  f"claude {x.claude}" if x.claude else "", f"herdr {x.terminal}" if x.terminal else "",
                  f"transcript {x.transcript}" if x.transcript else ""]
@@ -239,7 +239,7 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.in_flight]
-    on = {x.sid: agent_tickets(tr, x.cwd, x.sid) for x in live}
+    on = {x.sid: agent_tickets(tr, x.sid) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]
     watched = watching(tr.slug, live)
@@ -339,14 +339,14 @@ class Watcher:
     until the oldest is that many seconds old, so that they come as one batch. What it reported and holds lives in
     WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the terminal, misses nothing and
     repeats nothing. `mine`: a session's watch of its own tickets, which prints its news alone (`session.news`, which
-    the prompt hook shares, so each thing is told once) and ends by itself when none is under way."""
+    the prompt hook shares, so each thing is told once) and ends by itself when none of them is open."""
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal", only: frozenset[str] = frozenset(),
                  hold: float = 0, role: str = "", mine: bool = False):
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.mine = mine
-        self.ended = False  # a `mine` look found the session off this tracker, or with no ticket under way: it ends
+        self.ended = False  # a `mine` look found the session off this tracker, or with no open ticket: it ends
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -415,11 +415,10 @@ class Watcher:
         self.save(now)
 
     def first_line(self, now: float) -> str:
-        """A new `mine` watch's first line: the session's tickets, each with its stage and move."""
+        """A new `mine` watch's first line: the session's subscription, each ticket with its stage and move."""
         tr = self.tracker()
-        m = match_cwd(load_session(self.sid).get("cwd") or work_dir(), self.sid, tr)
         tickets = [f"{t.id} {t.stage}" + (f" · move: {move.text(' — ')}" if (move := move_of(tr, t)) else "")
-                   for t in m.focus]
+                   for t in subscribed(load_session(self.sid), tr)]
         return short(f"{time.strftime('%H:%M', time.localtime(now))} watching your tickets on {self.slug}: "
                      + ("; ".join(tickets) or "none open"), LINE_MAX)
 
@@ -481,27 +480,23 @@ class Watcher:
         return events
 
     def mine_batch(self, tr: Tracker, sig: str, now: float, settled: bool) -> list[Event]:
-        """A `mine` look: the session's news (`session.news`) once the files settle. A sync that fails is not said:
-        a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is on another tracker
-        or none, or has no ticket under way, with the news of a ticket that ended before the end."""
+        """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle. A sync that
+        fails is not said: a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is
+        on another tracker or none, or has no open subscribed ticket, with the news of a ticket that closed before
+        the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
             self.ended = True
-            return []  # its baseline is another tracker's now: it is not this watch's to move
-        entry = load_session(self.sid)
-        m = match_cwd(entry.get("cwd") or work_dir(), self.sid, tr)
-        # The end waits for a change of the files to settle like any other: a hand edit is written before its hook
-        # counts it as the session's own (`own_edit`). With no change pending (a branch switch), it ends at once.
+            return []  # its cursor is another tracker's now: it is not this watch's to move
+        # A change waits to settle, the end too: a hand edit is written before its hook counts it as the session's
+        # own (`own_edit`).
         # ponytail: the wait runs from the first change seen, so an own hand edit just before an earlier change settles
         # can still be told back once; restart the wait on each new signature if that is ever seen.
-        if not settled and self.changed:
-            return []
-        if not m.active:
-            self.ended = True  # with the news of the ticket that ended: `news` tells it before the end
-            return [Event("log", "", False, x) for x in news(self.sid, m)]
         if not settled:
             return []
         self.sig, self.changed = sig, 0.0
-        return [Event("log", "", False, x) for x in news(self.sid, m)]
+        tickets = subscribed(load_session(self.sid), tr)
+        self.ended = not tickets
+        return [Event("log", "", False, x) for x in news(self.sid, tr)]
 
     def github(self, now: float) -> list[Event]:
         """Start a SyncJob at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and once it ends, say once when
@@ -541,7 +536,7 @@ class Watcher:
         agents, out, live = {}, [], self.others()
         watched = watching(self.slug, live)
         for x in live:
-            on = agent_tickets(tr, x.cwd, x.sid)
+            on = agent_tickets(tr, x.sid)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
             was = old.get(x.sid)
@@ -625,7 +620,7 @@ class Watcher:
             if lines:
                 print("\n".join(lines))
             if self.ended:  # a `mine` watch with nothing left to watch: an end, not a refusal
-                print(f"{time.strftime('%H:%M')} no ticket of this session is under way: the watch has ended",
+                print(f"{time.strftime('%H:%M')} no ticket of this session is open: the watch has ended",
                       flush=True)
                 self.st["over"] = True  # it does not start again (`watch_running`)
                 # The grant is the session's: another watch of the session goes on with it.

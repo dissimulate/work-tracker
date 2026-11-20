@@ -53,6 +53,11 @@ def repo(branch: str) -> Path:
     return path
 
 
+def remote(path: Path, slug: str) -> None:
+    """Give a repo the GitHub origin `slug` (owner/name)."""
+    subprocess.run(["git", "-C", str(path), "remote", "add", "origin", f"git@github.com:{slug}.git"], check=True)
+
+
 def commit(path: Path, msg: str) -> None:
     (path / f"{time.monotonic_ns()}.txt").write_text(msg)
     subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
@@ -850,8 +855,8 @@ class LiveSessions(unittest.TestCase):
             if tracker:
                 session.save_session(sid, tracker=tracker, cwd=str(cwd), **fields)
 
-        running("agent-a", os.getpid())
-        running("agent-b", os.getpid(), "idle", cwd=spare, focus=["L-2"])
+        running("agent-a", os.getpid(), tickets=["L-1"])  # as `tracker start` subscribes it
+        running("agent-b", os.getpid(), "idle", cwd=spare, focus=["L-2"], tickets=["L-2"])
         running("agent-c", gone.pid)  # stopped without removing its file
         running("agent-d", os.getpid(), tracker="other")
         running("agent-e", os.getpid(), tracker="")  # no `tracker start`
@@ -2826,6 +2831,8 @@ class TwoSessions(unittest.TestCase):
         run(*self.t, "new", "T-2", "--title", "Two")
         run(*self.t, "set", "T-1", "status=in-progress")
         self.work = repo("f1")
+        if repos:  # a checkout of the tracker's work
+            remote(self.work, repos.split(",")[0])
         n = time.monotonic_ns()
         self.a, self.b = f"sa{n}", f"sb{n}"
         for sid in (self.a, self.b):
@@ -2847,6 +2854,13 @@ class TwoSessions(unittest.TestCase):
     def message(self) -> str:
         """A's next message: what the prompt hook tells it."""
         return said(hook("prompt", self.a, self.work, env=no_gh(), prompt="go on"))
+
+    def stop(self, cwd: Path | None = None, env: dict | None = None, **extra) -> dict | None:
+        """A's turn ends in `cwd` (default: its checkout), as Claude Code sends it, in a session a person attends:
+        `stop_hook_active` false unless `extra` says otherwise."""
+        attended = {"CLAUDE_CODE_SESSION_ATTENDED": "1", **(env or {})}
+        payload = {"stop_hook_active": False, **extra}
+        return hook("stop", self.a, cwd or self.work, env={**no_gh(), **attended}, **payload)
 
     def run_watch(self, w: watcher.Watcher, once: bool = False, during=None) -> tuple[str, int]:
         """`Watcher.run` in this process: its output, and how many looks it slept before; `during` runs at the first
@@ -2966,18 +2980,17 @@ class SessionNews(TwoSessions):
         self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
         self.assertNotIn("Changed on", self.message())
 
-    def test_news_survives_another_ticket_starting_on_my_branch(self):
+    def test_a_ticket_someone_else_starts_on_my_branch_is_not_mine(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         self.message()
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
-        run(*self.t, "set", "T-3", "status=in-progress")  # A's focus is now T-1 and T-3
-        self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")  # before A looks again
+        run(*self.t, "set", "T-3", "status=in-progress")  # a terminal starts it: A ran nothing on it
+        self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
         told = self.message()
-        self.assertIn("Changed on T-1, T-3 since", told)
         self.assertIn("T-1: base branch moved", told)
-        self.assertIn("T-3: the API changed under you", told)
-        self.as_b(*self.t, "log", "--ref", "T-3", "after it started")
-        self.assertIn("T-3: after it started", self.message())
+        self.assertNotIn("the API changed", told)
+        self.assertIn("T-3 in-progress", said(hook("session-start", self.a, self.work, env=no_gh(),
+                                                    source="compact")))  # its brief shows it
 
     def test_a_note_on_a_ticket_i_started_myself_is_news(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
@@ -3057,7 +3070,8 @@ class SessionNews(TwoSessions):
         other = repo("main")  # a repo the tracker does not name, on a branch: not its work
         subprocess.run(["git", "-C", str(other), "remote", "add", "origin", "git@github.com:b/y.git"], check=True)
         hook("stop", self.a, other, env=no_gh(), stop_hook_active=False)
-        self.assertEqual(session.load_session(self.a)["cwd"], str(self.work))
+        self.assertEqual(session.load_session(self.a)["work"], str(self.work))  # what `work_dir` gives
+        self.assertEqual(session.load_session(self.a)["cwd"], str(other))  # where the session was last seen
 
     def test_a_session_on_no_ticket_in_the_tracker_folder_is_nudged_for_its_branch(self):
         b = repo("explore")
@@ -3077,6 +3091,106 @@ class SessionNews(TwoSessions):
         [logged] = self.commit_events()
         self.assertIn("terminal work", logged["text"])
 
+    def view(self, *args: str) -> str:
+        """A human's command in the view, whose CLI carries the session id of the agent that opened it."""
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a, system.VIA_ENV: "view"}):
+            return run(*args, cwd=self.work)
+
+    def test_a_humans_answer_in_the_view_reaches_the_session_that_opened_it(self):
+        self.as_a(*self.t, "decide", "Pick a store", "--blocks", "T-1")  # it waits on the human's answer
+        self.message()
+        self.view(*self.t, "decide", "D-01", "--resolve", "Postgres")
+        self.assertIn("D-01 settled: ", self.message())
+
+    def test_a_note_entered_in_the_view_is_news_to_the_session_that_opened_it(self):
+        self.message()
+        self.view(*self.t, "log", "--ref", "T-1", "Keep the old API")  # a human, in the view's CLI
+        self.assertIn("T-1: Keep the old API", self.message())
+
+    def test_a_status_it_already_had_still_subscribes(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f3")
+        run(*self.t, "set", "T-3", "status=in-progress")  # someone else started it
+        self.as_a(*self.t, "set", "T-3", "status=in-progress")  # A takes it up: nothing to write
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-3"])
+
+    def test_terminal_and_view_commands_subscribe_nobody(self):
+        run(*self.t, "set", "T-2", "next=Plan it")  # a terminal
+        self.view(*self.t, "set", "T-2", "next=Plan it again")
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1"])
+        self.as_a(*self.t, "set", "t-2", "next=Plan it")  # its own command, the id as typed
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-2"])
+
+    def test_a_ticket_whose_pr_merged_comes_back_with_its_next_pr(self):
+        self.setUp("a/x")
+        self.message()
+        merged = pull(11, branch="f1", state="MERGED", merged_at="2026-09-04T01:00:00Z")
+        with mock.patch.object(github, "gh", answers([merged])):
+            run(*self.t, "sync")
+        self.assertTrue(model.tracker_at(self.s).lookup("T-1").closed)  # all its PRs merged: it reads done
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # a subscribing command while T-1 reads closed
+        run(*self.t, "add", "T-1", "link", "PR: [Part two](https://github.com/a/x/pull/12)")  # its next PR
+        rounds = [review_round(201, "rev", "CHANGES_REQUESTED", "2026-09-05T00:00:00Z")]
+        with mock.patch.object(github, "gh", answers([merged, pull(12, branch="f1b", rounds=rounds)])):
+            run(*self.t, "sync")
+        self.assertFalse(model.tracker_at(self.s).lookup("T-1").closed)  # open again, in review
+        self.assertIn("PR #12 review by rev: changes requested", self.message())
+
+    def test_a_bare_step_subscribes_the_ticket_its_folder_resolves(self):
+        self.as_b("start", self.s, cwd=Path(tempfile.mkdtemp(dir=BASE)))  # B: on the tracker, on no ticket
+        self.assertEqual(session.load_session(self.b)["tickets"], [])
+        self.as_b(*self.t, "step", "Reviewed the branch", cwd=self.work)  # in A's worktree: it works on T-1 there
+        self.assertEqual(session.load_session(self.b)["tickets"], ["T-1"])
+
+    def test_clear_carries_the_subscription_and_the_cursor(self):
+        for where in (self.work, store.HOME / self.s):
+            with self.subTest(where=where.name):
+                self.setUp()
+                self.message()
+                self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+                hook("session-end", self.a, where, env=no_gh(), reason="clear")
+                after = f"{self.a}c"
+                self.addCleanup(session.drop_session, after)
+                hook("session-start", after, where, env=no_gh(), source="clear")
+                told = said(hook("prompt", after, self.work, env=no_gh(), prompt="go on"))
+                self.assertIn("T-1: base branch moved", told)
+                self.assertNotIn("now waits on", told)
+
+    def test_a_session_is_found_by_the_last_folder_its_hooks_ran_in(self):
+        plain = Path(tempfile.mkdtemp(dir=BASE))
+        hook("prompt", self.a, plain, env=no_gh(), prompt="go on")  # a host with no process file: it is found here
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        self.assertEqual(session.attached_tracker(gone.pid, str(plain)), self.s)
+        self.assertEqual(session.load_session(self.a)["work"], str(self.work))  # `work_dir` still gives its checkout
+
+    def test_set_in_the_tracker_folder_uses_the_last_checkout(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        b = repo("explore")
+        hook("prompt", self.a, b, env=no_gh(), prompt="go on")
+        self.stop(b)
+        commit(b, "explore")
+        hook("prompt", self.a, Path(tempfile.mkdtemp(dir=BASE)), env=no_gh(), prompt="go on")  # then a scratch folder
+        self.as_a(*self.t, "set", "T-2", "status=in-progress", cwd=store.HOME / self.s)  # after a `cd` there
+        self.assertEqual(model.tracker_at(self.s).lookup("T-2").get("branch"), "explore")
+
+    def test_a_compaction_elsewhere_keeps_the_ticket_and_its_news(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.message()
+        plain = Path(tempfile.mkdtemp(dir=BASE))
+        hook("prompt", self.a, plain, env=no_gh(), prompt="go on")
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        brief = hook("session-start", self.a, plain, env=no_gh(), source="compact")["hookSpecificOutput"]
+        self.assertIn("T-1 · One", brief["additionalContext"])  # its ticket, though this folder holds none
+        self.assertIn("T-1 plan review: changes", said(hook("prompt", self.a, plain, env=no_gh(), prompt="next")))
+
+    def test_a_message_elsewhere_still_syncs_the_sessions_tickets(self):
+        self.setUp("a/x")
+        plain = Path(tempfile.mkdtemp(dir=BASE))
+        with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            hooks.hook_prompt({"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
+        spawn.assert_called_once_with("--tracker", self.s, "sync")
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE
@@ -3092,17 +3206,19 @@ class SessionNews(TwoSessions):
 
 
 class WhereTheSessionWorks(TwoSessions):
-    """A message, a turn's end or a compaction in a folder other than the session's work: the session's own tickets
-    (its watch, the waits the turn-end hook asks about) stay where they are unless that folder holds a ticket it has
-    under way; what the hook does for that folder's own checkout (its commits, the state line, the brief) is for that
-    checkout. One row per folder kind and hook, on a tracker that names a repo and on one that names none."""
+    """A message, a turn's end or a compaction in a folder other than the session's work: its subscription (its
+    watch, the waits the turn-end hook asks about) does not depend on the folder; what the hook does for that folder's
+    own checkout (its commits, the state line, the brief) is for that checkout. One row per folder kind and hook, on a
+    tracker that names a repo and on one that names none, for a session that submitted and for one that wrote
+    nothing."""
 
-    KINDS = ("no git", "detached HEAD", "another repo", "ticket-less branch", "default branch",
-             "closed tickets only", "tracker folder", "work subfolder", "saved folder deleted")
+    KINDS = ("no git", "detached HEAD", "another repo", "ticket-less branch", "open ticket not started",
+             "closed tickets only", "another session's worktree", "tracker folder", "work subfolder",
+             "saved folder deleted", "deleted nested worktree")
+    CHECKOUTS = ("ticket-less branch", "open ticket not started", "closed tickets only")  # no ticket under way there
+    BRANCHES = {"ticket-less branch": "explore", "open ticket not started": "todo5", "closed tickets only": "old",
+                "another session's worktree": "f3"}
     HOOKS = ("message", "turn end", "compaction")
-
-    def remote(self, path: Path, slug: str) -> None:
-        subprocess.run(["git", "-C", str(path), "remote", "add", "origin", f"git@github.com:{slug}.git"], check=True)
 
     def folder(self, kind: str, repos: str) -> Path:
         """A folder of `kind`, set up as a session would leave it."""
@@ -3114,15 +3230,23 @@ class WhereTheSessionWorks(TwoSessions):
             return path
         if kind == "another repo":
             path = repo("other")
-            self.remote(path, "b/y")
+            remote(path, "b/y")
             return path
-        if kind == "closed tickets only":
-            run(*self.t, "new", "T-9", "--title", "Old", "--branch", "old")
-            run(*self.t, "set", "T-9", "status=done", "summary=Shipped")
-        if kind in ("ticket-less branch", "default branch", "closed tickets only"):
-            path = repo({"ticket-less branch": "explore", "default branch": "main"}.get(kind, "old"))
+        if kind in self.BRANCHES:
+            branch = self.BRANCHES[kind]
+            if kind == "open ticket not started":
+                run(*self.t, "new", "T-5", "--title", "Next", "--branch", branch)
+            if kind == "closed tickets only":
+                run(*self.t, "new", "T-9", "--title", "Old", "--branch", branch)
+                run(*self.t, "set", "T-9", "status=done", "summary=Shipped")
+            if kind == "another session's worktree":
+                run(*self.t, "new", "T-3", "--title", "Theirs", "--branch", branch)
+                run(*self.t, "set", "T-3", "status=in-progress")
+            path = repo(branch)
             if repos:
-                self.remote(path, repos)
+                remote(path, repos)
+            if kind == "another session's worktree":
+                self.as_b("start", self.s, cwd=path)
             return path
         if kind == "tracker folder":
             return store.HOME / self.s
@@ -3130,62 +3254,63 @@ class WhereTheSessionWorks(TwoSessions):
             path = self.work / "sub"
             path.mkdir()
             return path
-        gone = self.work / "gone"  # "saved folder deleted": it worked there, which is then deleted
-        gone.mkdir()
-        hook("prompt", self.a, gone, env=no_gh(), prompt="go on")
-        gone.rmdir()
+        if kind == "deleted nested worktree":  # where Claude Code puts a worktree: inside the main checkout
+            gone = self.work / ".claude" / "worktrees" / "w1"
+            subprocess.run(["git", "-C", str(self.work), "worktree", "add", "-q", "-b", "w1", str(gone)], check=True)
+        else:  # "saved folder deleted"
+            gone = self.work / "gone"
+            gone.mkdir()
+        hook("prompt", self.a, gone, env=no_gh(), prompt="go on")  # it worked there, which is then deleted
+        shutil.rmtree(gone)
         return Path(tempfile.mkdtemp(dir=BASE))
 
-    def run_hook(self, name: str, where: Path) -> str:
+    def fire(self, name: str, where: Path) -> str:
+        """Run hook `name` (a message, a turn's end, a compaction) of session A in `where`; what it said."""
         if name == "message":
             return said(hook("prompt", self.a, where, env=no_gh(), prompt="go on"))
         if name == "turn end":
             return said(self.stop(where))
         return said(hook("session-start", self.a, where, env=no_gh(), source="compact"))
 
-    def stop(self, where: Path) -> dict | None:
-        return hook("stop", self.a, where, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"},
-                    stop_hook_active=False)
-
     def test_a_hook_elsewhere_moves_neither_the_watch_nor_the_ask(self):
-        for repos in ("", "a/x"):
-            for kind in self.KINDS:
-                for name in self.HOOKS:
-                    with self.subTest(repos=repos or "none", kind=kind, hook=name):
-                        self.row(repos, kind, name)
-
-    def row(self, repos: str, kind: str, name: str) -> None:
-        self.setUp(repos)
-        if repos:
-            self.remote(self.work, repos)
         at_once = mock.patch.object(watcher, "SETTLE_S", 0)
         at_once.start()
         self.addCleanup(at_once.stop)
+        for repos in ("", "a/x"):
+            for wrote in (True, False):
+                for kind in self.KINDS:
+                    for name in self.HOOKS:
+                        with self.subTest(repos=repos or "none", submitted=wrote, kind=kind, hook=name):
+                            self.row(repos, wrote, kind, name)
+
+    def row(self, repos: str, wrote: bool, kind: str, name: str) -> None:
+        self.setUp(repos)
         self.message()  # not its first: the state line comes back only for work the tracker does not show
-        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
-        self.assertIn("T-1 waits on", said(self.stop(self.work)))  # asked once, before any watch
+        if wrote:
+            self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+            self.assertIn("T-1 waits on", said(self.stop()))  # asked once, before any watch
         where = self.folder(kind, repos)
         branch = git.branch_of(where)
-        checkout = kind in ("ticket-less branch", "default branch", "closed tickets only") or (
-            kind == "another repo" and not repos)  # a tracker that names no repo takes any repo for its work
-        if checkout:
+        checkout = kind in self.CHECKOUTS or kind == "another repo" and not repos  # any repo, when it names none
+        if checkout or kind == "another session's worktree":
             self.stop(where)  # it worked there before: the branch's mark
             commit(where, "work there")
         now = time.time()
         first = watcher.Watcher(model.tracker_at(self.s), self.a, "session sa", mine=True)
         first.claim(now)
-        said_ = self.run_hook(name, where)  # while its watch runs
+        said_ = self.fire(name, where)  # while its watch runs
         self.as_b(*self.t, "decide", "Pick a store", "--refs", "T-1")  # only the session's baseline tells this
         self.assertIn("D-01 open now touches this work", " ".join(first.poll(now + 1)))  # the watch follows T-1
         self.assertFalse(first.ended)
         first.release(now - session.REARM_S - 1)  # it stopped long ago and was not started again
-        self.assertIsNone(self.stop(self.work))  # with no watch running: the same wait, not asked again
+        self.assertIsNone(self.stop())  # with no watch running: the same wait, not asked again
         self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
         w = watcher.Watcher(model.tracker_at(self.s), self.a, "session sa", mine=True)
-        lines = " ".join(w.claim(now + 2))  # started again: what came since, from the session's baseline
+        lines = " ".join(w.claim(now + 2))  # started again: what came since, from the session's cursor
         self.assertIn("T-1 plan review: changes", lines)
         self.assertIn("T-1 move now: you", lines)  # the baseline still holds T-1
         self.assertFalse(w.ended)
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1"])  # nothing a hook did subscribed it
         if not checkout:
             return
         if name == "message":
@@ -4423,7 +4548,7 @@ class Watch(unittest.TestCase):
         session on it) has had its plan submitted for two hours. Its first lines, and its session id."""
         sid, now = f"co{time.monotonic_ns()}", time.time()
         worker = f"wk{time.monotonic_ns()}"
-        session.save_session(worker, tracker=self.s, focus=["W-1"], cwd=BASE,
+        session.save_session(worker, tracker=self.s, focus=["W-1"], tickets=["W-1"], cwd=BASE,
                              activity={"status": "busy", "since": now, "at": now})
         self.addCleanup(session.drop_session, worker)
         self.addCleanup(watcher.set_grant, sid, False)
@@ -4485,10 +4610,13 @@ class Watch(unittest.TestCase):
         w.claim(now)
         run(*self.t, "set", "W-1", "status=in-progress")
         run(*self.t, "decide", "Pick a store", "--blocks", "W-1", "W-2")  # no session on W-1: stuck at once
-        self.assertIn("! stuck D-01: ", "".join(w.poll(now)))
-        run(*self.t, "set", "W-2", "status=in-progress")  # W-2 now waits on that stuck question too: news for W-2
-        w2 = next(x for x in w.poll(now) if " W-2: " in x)
+        lines = w.poll(now)
+        self.assertIn("! stuck D-01: ", "".join(lines))
+        # W-2, not started, waits on that stuck question too: a todo ticket has the move of a decision it waits on
+        w2 = next(x for x in lines if " W-2: " in x)
         self.assertRegex(w2, r"^\d\d:\d\d ! W-2: .*move: human — D-01 open, stuck with coordinator")
+        run(*self.t, "set", "W-2", "status=in-progress")
+        self.assertNotIn("move:", next(x for x in w.poll(now) if " W-2: " in x))  # said once
 
     def test_a_watchs_first_lines_say_a_stuck_item_once(self):
         self.coordinator()
@@ -4604,7 +4732,7 @@ class Watch(unittest.TestCase):
             f = claude / f"{sid}.json"
             f.write_text(json.dumps({"pid": os.getpid(), "sessionId": sid, "name": name, "status": status,
                                      "statusUpdatedAt": since * 1000}))
-            session.save_session(sid, tracker=self.s, cwd=str(self.work))
+            session.save_session(sid, tracker=self.s, cwd=str(self.work), tickets=["W-1"])
             return f
 
         running("api", "busy", now - 10)
@@ -4636,7 +4764,7 @@ class Watch(unittest.TestCase):
         run(*self.t, "set", "W-1", "status=in-progress", cwd=self.work)
         self.assertIn(f"no agent session on {self.s}", run("agents", self.s))
         sid, herdr = f"tr{time.monotonic_ns()}", {"HC_TERMINAL_ID": "t7"}
-        session.save_session(sid, tracker=self.s, cwd=str(self.work))
+        session.save_session(sid, tracker=self.s, cwd=str(self.work), tickets=["W-1"])
         hook("prompt", sid, self.work, herdr, prompt="go on", transcript_path="/t/one.jsonl")
         hook("waiting", sid, self.work, {"HC_TERMINAL_ID": "t9"}, tool_name="Bash", agent_id="sub",
              transcript_path="/t/sub.jsonl")  # a subagent's: not the session's
@@ -4687,7 +4815,7 @@ class Watch(unittest.TestCase):
         now, sid = time.time(), f"asks{time.monotonic_ns()}"
         w = self.watcher()
         w.claim(now)
-        session.save_session(sid, tracker=self.s, cwd=str(self.work),
+        session.save_session(sid, tracker=self.s, cwd=str(self.work), tickets=["W-1"],
                              activity={"status": "waiting", "since": now, "at": now})
         w.poll(now)  # it started; a prompt the user is at is no news
         self.assertEqual(w.poll(now + watcher.ASKING_S - 1), [])
@@ -4957,7 +5085,7 @@ class MineWatch(TwoSessions):
 
     def ended(self, out: str) -> list[str]:
         return [x for x in out.splitlines()
-                if x.endswith("no ticket of this session is under way: the watch has ended")]
+                if x.endswith("no ticket of this session is open: the watch has ended")]
 
     def test_the_watch_ends_when_no_ticket_is_under_way(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")  # on A's branch too, not started
@@ -4965,7 +5093,7 @@ class MineWatch(TwoSessions):
                                                                        "summary=Shipped"))
         lines = out.splitlines()
         self.assertIn("watching your tickets on", lines[0])
-        self.assertEqual(self.texts(lines[1:]), ["T-1 is now done", "no ticket of this session is under way: the "
+        self.assertEqual(self.texts(lines[1:]), ["T-1 is now done", "no ticket of this session is open: the "
                                                  "watch has ended"])
         self.assertFalse(watcher.granted(self.a))
         st = watcher.load_state(self.s, self.a)
@@ -4986,20 +5114,23 @@ class MineWatch(TwoSessions):
         self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
         self.assertEqual(len(self.ended(out)), 1, out)
 
-    def test_a_note_on_a_ticket_that_joined_my_branch_wakes_me(self):
+    def test_a_note_on_a_ticket_i_join_wakes_me(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         w = self.mine()
         w.claim(self.clock)
-        run(*self.t, "set", "T-3", "status=in-progress")
+        run(*self.t, "set", "T-3", "status=in-progress")  # a terminal starts it on A's branch: not A's
+        self.as_b(*self.t, "log", "--ref", "T-3", "before A joined")
+        self.assertEqual(self.look(w), [])
+        self.as_a(*self.t, "set", "T-3", "next=Wire it")  # A's own command on it: it joins
         self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
-        self.assertEqual(self.texts(self.look(w)), ["T-3: the API changed under you"])
+        self.assertIn("T-3: the API changed under you", self.texts(self.look(w)))
 
     def test_a_watch_of_a_session_with_nothing_open_says_so_and_ends(self):
         run(*self.t, "set", "T-1", "status=done", "summary=Shipped")
         out, _ = self.run_watch(self.mine())
         self.assertEqual(self.texts(out.splitlines()), [f"watching your tickets on {self.s}: none open",
                                                         "T-1 is now done",  # a terminal closed it: news to A
-                                                        "no ticket of this session is under way: the watch has ended"])
+                                                        "no ticket of this session is open: the watch has ended"])
 
     def test_my_own_hand_edited_close_is_not_printed_before_its_hook_counts_it(self):
         if not watcher.SETTLE_S:
@@ -5047,7 +5178,29 @@ class MineWatch(TwoSessions):
                 self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
                 self.look(w)
                 self.assertFalse(w.ended)
-                self.assertEqual(session.load_session(self.a)["cwd"], str(self.work))
+                self.assertEqual(session.load_session(self.a)["work"], str(self.work))
+
+    def test_a_humans_answer_in_the_view_wakes_the_session_that_opened_it(self):
+        self.as_a(*self.t, "decide", "Pick a store", "--blocks", "T-1")
+        w = self.mine()
+        w.claim(self.clock)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a, system.VIA_ENV: "view"}):
+            run(*self.t, "decide", "D-01", "--resolve", "Postgres", cwd=self.work)
+        self.assertTrue(any(x.startswith("D-01 settled: ") for x in self.texts(self.look(w))))
+
+    def test_two_tickets_in_two_checkouts_both_wake_me(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        f2 = repo("f2")
+        self.as_a(*self.t, "use", "T-2", cwd=f2)
+        self.as_a(*self.t, "set", "T-2", "status=in-progress", cwd=f2)
+        hook("prompt", self.a, f2, env=no_gh(), prompt="go on")
+        w = self.mine()
+        w.claim(self.clock)
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        self.as_b(*self.t, "log", "--ref", "T-2", "base branch moved")
+        told = self.texts(self.look(w))
+        self.assertIn("T-1 plan review: changes, 1 finding: 1. Split it", told)
+        self.assertIn("T-2: base branch moved", told)
 
     def test_a_watch_that_ends_itself_leaves_the_sessions_other_watches(self):
         other, _ = new_tracker("Elsewhere")
@@ -5072,7 +5225,8 @@ class MineWatch(TwoSessions):
         self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
         self.assertFalse(watcher.granted(self.a))
         self.assertTrue(watcher.load_state(self.s, self.a).get("ended"))
-        self.assertNotIn("seen_seq", session.load_session(self.a))  # the new tracker's baseline: not this watch's
+        # The new tracker's cursor, which its `tracker start` set: the watch did not move it.
+        self.assertEqual(session.load_session(self.a)["seen_seq"], model.last_seq(model.tracker_at(other)))
 
     def test_a_restarted_mine_watch_repeats_no_first_line(self):
         w = self.mine()
@@ -5158,11 +5312,6 @@ class WatchAsk(TwoSessions):
         attended.start()
         self.addCleanup(attended.stop)
         super().setUp()
-
-    def stop(self, cwd: Path | None = None, env: dict | None = None, **extra) -> dict | None:
-        """A's turn ends, as Claude Code sends it: `stop_hook_active` false unless `extra` says otherwise."""
-        return hook("stop", self.a, cwd or self.work, env={**no_gh(), **(env or {})},
-                    **{"stop_hook_active": False, **extra})
 
     def asked(self, out: dict | None, *tickets: str) -> None:
         self.assertEqual(set(out or {}), {"decision", "reason"}, out)
@@ -5259,6 +5408,25 @@ class WatchAsk(TwoSessions):
         self.asked(self.stop(), "T-1")
         self.assertIsNone(self.stop(cwd=Path(tempfile.mkdtemp(dir=BASE))))  # no git: its waits are still T-1's
         self.assertIsNone(self.stop())  # the same wait: asked once
+
+    def test_a_todo_worker_is_asked_and_woken_by_its_plan_review(self):
+        run(*self.t, "new", "SC-1", "--title", "Story")  # as a coordinator's `tracker new` leaves it: todo
+        worker = f"wk{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, worker)
+        self.addCleanup(watcher.set_grant, worker, False)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": worker}):
+            run("start", self.s, "--on", "SC-1", cwd=self.work)
+            run(*self.t, "submit", "SC-1", "--what", "plan", cwd=self.work)  # its plan, before it starts building
+        out = hook("stop", worker, self.work, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"},
+                   stop_hook_active=False)
+        self.assertIn("SC-1 waits on", (out or {}).get("reason", ""))
+        w = watcher.Watcher(model.tracker_at(self.s), worker, "session wk", mine=True)
+        now = time.time()
+        self.assertIn("SC-1 todo · move: ", w.claim(now)[0])
+        self.as_b(*self.t, "review", "SC-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        told = " ".join(w.poll(now + 1) + w.poll(now + 1 + watcher.SETTLE_S))  # once the change settles
+        self.assertIn("SC-1 plan review: changes", told)
+        self.assertIn("SC-1 move now: you", told)
 
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
@@ -5854,8 +6022,8 @@ class Coordinator(unittest.TestCase):
         self.sid = f"co{time.monotonic_ns()}"
         # A worker session on W-1 and W-2, so that a question on them is no one's stuck item (`moves.open_items`)
         worker, now = f"wk{time.monotonic_ns()}", time.time()
-        session.save_session(worker, tracker=self.s, focus=["W-1", "W-2"], cwd=BASE,
-                             activity={"status": "busy", "since": now, "at": now})
+        session.save_session(worker, tracker=self.s, focus=["W-1", "W-2"], tickets=["W-1", "W-2"],
+                             cwd=BASE, activity={"status": "busy", "since": now, "at": now})
         self.addCleanup(session.drop_session, worker)
 
     def tr(self) -> model.Tracker:
@@ -6444,7 +6612,7 @@ class HumanWaits(unittest.TestCase):
         run(*self.t, "set", "T-1", "status=in-progress", cwd=self.work)
         self.sid = f"w{time.monotonic_ns()}"
         self.addCleanup(session.drop_session, self.sid)
-        session.save_session(self.sid, tracker=self.s, cwd=str(self.work))
+        session.save_session(self.sid, tracker=self.s, cwd=str(self.work), tickets=["T-1"])
 
     def waits(self) -> list[dict]:
         return [e for e in model.read_events(model.Tracker(self.root)) if e["kind"] in schema.QUIET_KINDS]

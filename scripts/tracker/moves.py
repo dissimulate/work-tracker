@@ -264,11 +264,18 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
 
 
 def whose_move(tr: Tracker, t: Record, coordinated: bool = False, items: list[Item] = ()) -> Move | None:
-    """The move of a ticket under way (MOVE_RULE); None for any other ticket, and while `sync` has read the review facts
-    of none of its open PRs. `coordinated`: a coordinator watches the tracker; `items`: the open items (`open_items`).
-    `session.move_of` gives both."""
-    if not t.in_flight:
+    """The move of a ticket under way (MOVE_RULE), and while `sync` has read the review facts of none of its open PRs,
+    None. A todo ticket has the move of its own open item, if any (a submission, a review's findings, or the question
+    of a decision it waits on, as `--blocks` makes it): a worker writes its plan before it starts. A todo ticket that
+    only waits on tickets it depends on has none: that is planned work. A closed ticket has none. `coordinated`: a
+    coordinator watches the tracker; `items`: the open items (`open_items`). `session.move_of` gives both."""
+    if t.closed:
         return None
+    if not t.in_flight:
+        waits_on = set(t.list("depends_on"))
+        own = [i.move for i in items if t.id in i.refs and (
+            i.kind in ("submission", "findings") or i.kind == "question" and i.key.split(":", 1)[1] in waits_on)]
+        return min(own, key=lambda mv: (not mv.mine, mv.rank), default=None)
     open_prs = tr.open_prs(t)
     if not open_prs:
         return pr_move(tr, t, {}, coordinated, items)

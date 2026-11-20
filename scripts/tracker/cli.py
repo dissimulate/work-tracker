@@ -10,12 +10,12 @@ import re
 import sys
 from pathlib import Path
 
-from .system import die
+from .system import die, entered_via
 from .store import first_writes, locked, Busy, OtherFormat
 from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
     SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
-from .session import load_session, match_cwd, own_change, session_id, told_tickets, watch, work_dir
+from .session import context_tracker, load_session, own_change, session_id, told_about, watch
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
@@ -369,14 +369,14 @@ def issue_update_items(tr: Tracker) -> set[tuple[str, str]]:
 
 
 def own_changes(run) -> None:
-    """Run a write command, and count what it changed about the session's tickets as seen: the prompt hook reports
-    only what others changed."""
+    """Run a write command, and count what it changed about the session's subscription as seen, so that its news says
+    only what others did. Only a command its agent ran: one entered in the view or at a terminal is someone else's."""
     sid = session_id()
-    m = match_cwd(work_dir(), sid) if sid else None
-    before = watch(m.tracker, told_tickets(load_session(sid), m.tracker)) if m else None
+    tr = context_tracker(sid) if sid and entered_via() == "agent" else None
+    before = watch(tr, told_about(load_session(sid), tr)) if tr else None
     run()
     if before:
-        own_change(sid, m, before)
+        own_change(sid, tr, before)
 
 
 # The positional that an id list can swallow: `log --ref A B "msg"` gives the list "msg" too, as argparse's usage line

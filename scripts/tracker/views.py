@@ -13,7 +13,7 @@ from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, QUIET_KINDS, REA
 from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_events, resolution, sequence, short,
     span, Dep, Record, Start, Tracker)
 from .git import cwd_repo
-from .session import ago, branch_handoff, handoff_line, lag, move_of, Match
+from .session import ago, branch_handoff, handoff_line, lag, move_of, shown_tickets, Match
 from .contract import check, other_format
 
 # ---------------------------------------------------------------- views
@@ -469,11 +469,12 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
 
 
 def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full: bool = False,
-          with_protocol: bool = True) -> str:
+          with_protocol: bool = True, tickets: list[Record] = ()) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
-    and title only. `full` adds the tickets' bodies."""
+    and title only. `full` adds the tickets' bodies. `tickets`: the session's subscription (`session.subscribed`), shown
+    after the checkout's tickets (`session.shown_tickets`)."""
     tr = m.tracker
     if m.tickets:
         how = CHOSEN if m.chosen else HOW[m.how]
@@ -492,7 +493,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
         parts.append(f"The tracker may lag the work: {work.text()}. Bring it up to date from what you know: "
                      f"`step <id> --next \"...\"`, with {STEP_MESSAGE}"
                      + (" (it logs the commits)." if work.commits else "."))
-    focus = m.focus
+    focus = shown_tickets(m, list(tickets))
     if len(m.active) > 1 and not m.chosen:
         parts.append(PICK_ONE)
     rules = instructions(tr)
