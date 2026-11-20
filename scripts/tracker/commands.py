@@ -27,7 +27,7 @@ from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
     context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date, match_cwd,
-    matched, no_tracker, on_branch, record_commits, relink_session, remember, resolve, save_session, session_id,
+    matched, no_tracker, on_branch, record_commits, relink_session, keep_told_next, resolve, save_session, session_id,
     session_tracker, start_subscription, subscribe, trackers_for_repo, unlink_session, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
@@ -1211,7 +1211,7 @@ def cmd_start(args):
     start_subscription(sid, m, [r.id for r in picks])  # on its own tracker it adds, and keeps what it was told
     keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
-    remember(sid, m, cwd)
+    keep_told_next(sid, m, cwd)
     print(brief(m, cwd, note=found))
     tell_updates(m.tracker)
 

@@ -14,11 +14,11 @@ from pathlib import Path
 from .system import env_int, spawn, warn
 from .store import locked, record_cli, OtherFormat
 from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE, SYNC_MIN_INTERVAL_S
-from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Record, Tracker
+from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, declined, get_mark, hand_over, in_repos, keep_folder,
-    keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, remember,
+    keep_word, lag, load_session, match_cwd, move_of, news, own_edit, record_commits, relink_session, keep_told_next,
     ensure_subscription, save_session, session_activity, shown_tickets, start_subscription, subscribed, take_over,
     told_about, watch_running,
     work_dir, Lag, Match)
@@ -143,7 +143,7 @@ def hook_session_start(data: dict) -> None:
     record_version()
     m, found = match_pr(m, cwd)
     record_commits(m, cwd)  # made since the last session, as in the terminal
-    remember(sid, m, cwd)
+    keep_told_next(sid, m, cwd)
     note = "\n\n".join(x for x in (note, found) if x)
     text = brief(m, cwd, note, compact=source == "compact")
     # The brief lists the updates, so no prompt repeats them, and carries the protocol, so a session told its tracker
@@ -225,14 +225,14 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
         record_commits(m, cwd)
     if not ask:
         return False
-    text = watch_ask(data, m.tracker, subscribed(load_session(sid), m.tracker), sid)
+    text = watch_ask(data, m.tracker, sid)
     if text:
         print(json.dumps({"decision": "block", "reason": text}))
     return bool(text)
 
 
-def watch_ask(data: dict, tr: Tracker, tickets: list[Record], sid: str) -> str:
-    """The reminder to a session whose tickets (`tickets`: its subscription) wait on someone else (their move is not
+def watch_ask(data: dict, tr: Tracker, sid: str) -> str:
+    """The reminder to a session whose tickets (its subscription) wait on someone else (their move is not
     its own), with no watch of its own running on the tracker: WATCH_ASK, once per wait (`told_watch`: each ticket and
     whose move it waits on, as last seen), else "". Only where someone can act on it: the host says the hook does not
     hold the session already (`stop_hook_active` false: a host that sends no such key cannot say so, and is never
@@ -246,7 +246,7 @@ def watch_ask(data: dict, tr: Tracker, tickets: list[Record], sid: str) -> str:
         entry = load_session(sid)
         if entry.get("no_watch"):
             return ""
-        waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in tickets
+        waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in subscribed(entry, tr)
                  if (move := move_of(tr, t)) and not move.mine}
         told, keys = entry.get("told_watch") or [], sorted(waits)
         # Saved whether asked or not: a wait that ends and comes back is new again, and one that began while a watch
@@ -404,7 +404,7 @@ def hook_prompt(data: dict) -> None:
     watched = load_state(m.tracker.slug, sid)
     if told and not (watch_running(watched) and not watched.get("mine")):
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
-                     "another session or a PR sync): " + "; ".join(told) + ".")
+                     "another session, a terminal, you in the view or a PR sync): " + "; ".join(told) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say

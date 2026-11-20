@@ -2621,7 +2621,7 @@ class Hooks(unittest.TestCase):
                 path.write_text(re.sub(r"^status: .*", f"status: {status}", path.read_text(), flags=re.M))
                 tool("apply_patch" if "command" in used else "Edit", sid, cwd, tool_input=used)
                 self.assertNotEqual(session.load_session(sid)["seen"], before)
-                self.assertNotIn("by another session or a PR sync", said(hook("prompt", sid, work, prompt="next")))
+                self.assertNotIn("Changed on ", said(hook("prompt", sid, work, prompt="next")))
 
     def test_session_identity(self):
         cases = [({}, ""), ({"CODEX_THREAD_ID": "codex"}, "codex"),
@@ -3066,7 +3066,7 @@ class SessionNews(TwoSessions):
     def test_a_turn_that_ends_in_another_repo_leaves_the_sessions_folder(self):
         self.setUp("a/x")
         other = repo("main")  # a repo the tracker does not name, on a branch: not its work
-        subprocess.run(["git", "-C", str(other), "remote", "add", "origin", "git@github.com:b/y.git"], check=True)
+        remote(other, "b/y")
         hook("stop", self.a, other, env=no_gh(), stop_hook_active=False)
         self.assertEqual(session.load_session(self.a)["work"], str(self.work))  # what `work_dir` gives
         self.assertEqual(session.load_session(self.a)["cwd"], str(other))  # where the session was last seen
@@ -3292,6 +3292,15 @@ class SessionNews(TwoSessions):
             run(*self.t, "decide", "Pick", "--refs", "T-2", cwd=empty)
             run(*self.t, "set", "T-2", "next=Plan it", cwd=empty)  # it subscribes T-2
         self.assertNotIn("D-01", said(hook("prompt", c, empty, env=no_gh(), prompt="go on")))
+
+    def test_an_own_change_counts_past_a_damaged_record_of_what_was_told(self):
+        c, empty = f"ev{time.monotonic_ns()}", repo("nothing")
+        self.addCleanup(session.drop_session, c)
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": c}):
+            run("start", self.s, "--on", "T-2", cwd=empty)
+            session.save_session(c, seen=["hand", "edited"])
+            run(*self.t, "set", "T-2", "next=Plan it", cwd=empty)  # its own change: counted, not a crash
+        self.assertEqual(session.load_session(c)["seen"]["T-2"]["role"], "own")
 
     def test_a_reopened_ticket_is_told_as_news_not_as_new(self):
         self.setUp("a/x")
@@ -5123,7 +5132,7 @@ class Watch(unittest.TestCase):
                 watcher.Watcher(model.Tracker(self.root), sid).claim(time.time())
             run(*self.t, "decide", f"Pick {n}", "--refs", "W-1", "--resolve", "A", "--by", "me")  # another session
             news = said(hook("prompt", sid, self.work, prompt="go on"))
-            (self.assertNotIn if watching else self.assertIn)("by another session or a PR sync", news)
+            (self.assertNotIn if watching else self.assertIn)("Changed on ", news)
 
     def test_codex_watch_grant(self):
         sid, cwd = f"codex{time.monotonic_ns()}", self.work
@@ -5340,8 +5349,7 @@ class MineWatch(TwoSessions):
         w.claim(self.clock)
         other = repo("f3")  # the session works there now, in this turn: no message of the user's has seen it
         self.as_a(*self.t, "submit", "T-3", "--what", "plan", cwd=other)
-        self.assertIsNone(hook("stop", self.a, other, env={**no_gh(), "CLAUDE_CODE_SESSION_ATTENDED": "1"},
-                               stop_hook_active=False))  # its watch runs: nothing to ask
+        self.assertIsNone(self.stop(other))  # its watch runs: nothing to ask
         self.as_b(*self.t, "review", "T-3", "--what", "plan", "--verdict", "changes", "--finding", "Rename it")
         self.assertIn("T-3 plan review: changes, 1 finding: 1. Rename it", self.texts(self.look(w)))
 

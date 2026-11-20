@@ -292,7 +292,7 @@ def build_parser():
                     "before a human's")
     sp.add_argument("--mine", action="store_true", help="in an agent session: only what others changed on this "
                     "session's own tickets (a move that becomes yours, a review, a note, a PR's state); ends by itself "
-                    "when none is under way")
+                    "when none is open")
     sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
                                    "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
                                    "transcript file")

@@ -96,12 +96,6 @@ def work_dir(cwd: str | Path | None = None) -> Path:
     return next((Path(p) for p in (entry.get("work"), entry.get("cwd")) if p and Path(p).is_dir()), cwd)
 
 
-def cwd_field(cwd: str | Path) -> dict:
-    """The session's `cwd` (the last folder a hook of it ran in: `keep_folder`), as a session file field: none for a
-    cwd inside HOME, which is no project."""
-    return {} if inside_home(cwd) else {"cwd": str(cwd)}
-
-
 def session_path(sid: str) -> Path | None:
     return SESSIONS_DIR / f"{sid}.json" if sid and SAFE_NAME.fullmatch(sid) else None
 
@@ -269,16 +263,16 @@ def hand_over(sid: str, cwd: str | Path) -> None:
 
 
 def take_over(sid: str, cwd: str | Path) -> str:
-    """A session that `/clear` started: link the tracker the cleared session in this directory was on, and keep its
-    folder (`cwd_field`), also when the tracker then refuses the brief (`contract.refuse_other_format`). Its slug, or
-    "" when none waits."""
+    """A session that `/clear` started: link the tracker the cleared session in this directory was on, with what it
+    keeps across the clear (CLEAR_KEPT: its focus, its tickets and what it was told). Its slug, or "" when none
+    waits. The session start hook keeps the folder (`keep_folder`)."""
     with locked():
         entries = cleared_entries(time.time())
         got = entries.pop(str(Path(cwd).resolve()), None)
         save_cleared(entries)
     if not got or not tracker_at(got.get("tracker", "")):
         return ""
-    save_session(sid, **{k: got.get(k) for k in CLEAR_KEPT}, **cwd_field(cwd))
+    save_session(sid, **{k: got.get(k) for k in CLEAR_KEPT})
     return got["tracker"]
 
 
@@ -655,8 +649,9 @@ AROUND: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str], float]:
-    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions have under way, those
-    sessions' names by id, and since when the coordinator watches, as read once for this Tracker object (AROUND)."""
+    """Whether a coordinator watches the tracker (`coordinated`), the tickets its live sessions are on
+    (`agent_tickets`), those sessions' names by id, and since when the coordinator watches, as read once for this
+    Tracker object (AROUND)."""
     if tr not in AROUND:
         live, since = live_sessions(tr.slug), coordinator_since(tr)
         AROUND[tr] = (bool(since), {i for x in live for i in agent_tickets(tr, x.sid)},
@@ -838,21 +833,27 @@ def subscribe(tr: Tracker, ids: list[str]) -> None:
             save_session(sid, tickets=[*have, *dict.fromkeys(new)])
 
 
+def told_before(entry: dict) -> tuple[dict, set[str]]:
+    """What a session entry was told of last (`seen`; a damaged one is none), and of which tickets as its own."""
+    seen = entry.get("seen") if isinstance(entry.get("seen"), dict) else {}
+    return seen, {k for k, v in seen.items() if isinstance(v, dict) and v.get("role") == "own"}
+
+
 def told_about(entry: dict, tr: Tracker) -> list[Record]:
     """The tickets a session's news is about: its subscription (`subscribed`), then the ones it was told of before (the
     `own` entries of its `seen`) that have closed since, which are told of once more (their end)."""
     tickets = subscribed(entry, tr)
-    seen = entry.get("seen") if isinstance(entry.get("seen"), dict) else {}
-    before = sorted(k for k, v in seen.items() if isinstance(v, dict) and v.get("role") == "own")
     ids = {t.id for t in tickets}
-    return [*tickets, *(t for t in map(tr.lookup, before) if t and t.kind == "ticket" and t.closed and t.id not in ids)]
+    ended = (t for t in map(tr.lookup, sorted(told_before(entry)[1] - ids)) if t and t.kind == "ticket" and t.closed)
+    return [*tickets, *ended]
 
 
 def keep_folder(sid: str, tr: Tracker, folder: str | Path) -> None:
     """Keep where a hook of the session ran (`folder`, as the hook got it): `cwd`, the last folder outside
     $TRACKER_HOME, by which `tracker agents`, the view and a host with no process file find the session; and `work`,
-    the last one that is a checkout of the tracker's work (a branch, in a repo the tracker names), which `work_dir`
-    gives a command run in the tracker folder. Neither decides the session's tickets (`subscribed`)."""
+    the last one that is a checkout of the tracker's work (a branch, in a repo the tracker names, in any repo when it
+    names none), which `work_dir` gives a command run in the tracker folder. Neither decides the session's tickets
+    (`subscribed`)."""
     if not sid or inside_home(folder):
         return
     fields = {"cwd": str(folder)}
@@ -868,16 +869,15 @@ def news(sid: str, tr: Tracker) -> list[str]:
     cursor (`seen_seq`) on any of its tickets that someone else wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX:
     another session, a terminal, a human in the view (whose commands carry the session's id with `via` view), or
     GitHub. A ticket newly subscribed is told what others wrote on it since the cursor, and its state from now. With
-    no cursor yet (no `start_news`), nothing: it starts from now. The prompt hook and the session's own watch (`tracker
+    no cursor yet, nothing: it starts from now. The prompt hook and the session's own watch (`tracker
     watch --mine`) both call it, so each thing is told once, by whichever comes first."""
     with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
         entry = load_session(sid)
-        seen = entry.get("seen") if isinstance(entry.get("seen"), dict) else {}
+        seen, before = told_before(entry)
         about = told_about(entry, tr)
         base, last = entry.get("seen_seq"), last_seq(tr)
         lines = []
         if type(base) is int:
-            before = {k for k, v in seen.items() if isinstance(v, dict) and v.get("role") == "own"}
             lines = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before]))
             known = [t.id for t in about]
             # An event file shorter than the cursor (restored from a backup) numbers its new events again: what it
@@ -914,7 +914,7 @@ def own_event(e: dict, sid: str) -> bool:
     return bool(sid) and e.get("session") == sid and e.get("via") == "agent"
 
 
-def remember(sid: str, m: Match, cwd: str | Path) -> None:
+def keep_told_next(sid: str, m: Match, cwd: str | Path) -> None:
     """Keep what the session's brief showed of its checkout: the commits past `next` there, so the hooks do not ask
     about them again (`told_next`)."""
     mark = get_mark(m.tracker, cwd, m.branch) if m.branch and m.active else None
@@ -943,7 +943,7 @@ def count_own(sid: str, tr: Tracker, picked) -> None:
         now = watch(tr, told_about(entry, tr))
         if not now:
             return
-        seen = entry.get("seen", {})
+        seen = told_before(entry)[0]
         seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
         save_session(sid, seen=seen)
 
@@ -991,7 +991,7 @@ def attached_tracker(pid: int, cwd: str = "") -> str:
 
 def agent_tickets(tr: Tracker, sid: str) -> list[str]:
     """The tickets a session is on, as a UI, a watch and the stuck rule show them: its subscription (`subscribed`)."""
-    return [t.id for t in subscribed(load_session(sid), tr)]
+    return [t.id for t in session_tickets(sid, tr)]
 
 
 def session_activity(sid: str, status: str, asker: str | None = None, where: dict | None = None, tool: str = "",
@@ -1062,10 +1062,10 @@ def log_waits(sid: str, entry: dict, waits: dict, starting: list[str], ending: l
         if seq:
             logged(slug, "human.wait.end", f"Waited {seconds} s on a human" + (": the tool failed" if failed else ""),
                    kept[0] if kept else [], asker=who, of=seq, seconds=seconds, **error)
+    on = tracker_at(entry["tracker"]) if starting else None
+    refs = agent_tickets(on, sid) if on else []
     for who in starting:
         text = "Waiting on a human" + (f": {tool}" if tool else "")
-        tr = tracker_at(entry["tracker"])
-        refs = agent_tickets(tr, sid) if tr else []
         waits[who] = [logged(entry["tracker"], "human.wait", text, refs, asker=who, why=tool), now, entry["tracker"],
                       refs]
 

@@ -118,7 +118,7 @@ Each hook runs `scripts/hook.sh`, which filters the event in shell first: Python
 | PostToolUseFailure, SubagentStop | Ends that agent's mark and logs that its wait ended (with the tool's error after a failed tool: a refusal or a failure, which the hook cannot tell apart), in a shell check that starts no Python otherwise. The session needs you until each agent that asked goes on. |
 | Stop | Logs the commits no other hook saw. Then, when a ticket of the session (todo ones too, such as one whose plan waits on its review) waits on someone else (its move is not the session's) and no watch of the session runs on the tracker, holds the turn once per wait to ask the agent to start `tracker watch --mine`. Not after you stopped the session's watch (`tracker watch --stop`), in an unattended session, for a subagent, on a tracker that takes no write, or on a host that does not say whether the hook already holds the turn (Claude Code says so). |
 | StopFailure | Marks the session idle after a failed turn. |
-| SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker for the next session in the same directory. |
+| SessionEnd | Logs remaining commits and ends the session's activity in the view. On `/clear`, leaves the session's tracker, its tickets and what it was told for the next session in the same directory. |
 
 ### View
 
@@ -190,7 +190,7 @@ Environment variables. All are optional.
 3. `store`: writing the tracker's files: atomic writes, JSON files, the lock, the guard on each write
 4. `schema`: contract constants and value forms. A new record kind, status, value form or scale is one entry in `KINDS`, `LIFECYCLES`, `FORMS` or `SCALES`: each one's docstring or comment says what else follows from it
 5. `model`: records, the `Tracker`, dependencies, the log (its events, and log.md written from them), body edits
-6. `moves`: whose move a ticket under way waits on
+6. `moves`: whose move a ticket waits on (one under way, or a todo one with an item of its own)
 7. `git`
 8. `session`: the session's tracker, branch matching, commit marks and handoffs, the sessions running now, the watches' state and grants, and whether a coordinator watches (`coordinated`)
 9. `contract`: `check`, `rules`, `migrate`, and no write into another format

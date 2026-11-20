@@ -72,7 +72,8 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
 
 
 def move_lines(tr: Tracker) -> list[str]:
-    """The tickets under way by whose move (`move_of`), yours first: each move once, with its tickets."""
+    """The tickets that have a move (`move_of`: under way, or todo with an item of their own) by whose move, yours
+    first: each move once, with its tickets."""
     moves: dict[str, tuple[tuple, list[str]]] = {}  # text: (order, tickets)
     unread = []
     for t in tr.tickets:
@@ -351,7 +352,7 @@ BRANCH_RULE = ("Change git branches only when the user asks. When the user asks 
 
 
 # A brief goes into every session's context: each fact once, and small. `tracker context <id>` has the rest.
-BRIEF_TICKETS_MAX = 3  # tickets under way shown in full; the rest get one line each
+BRIEF_TICKETS_MAX = 3  # tickets shown in full (`session.shown_tickets`); the rest get one line each
 BRIEF_CARRY_CHARS = 6000  # the dependencies' Carry forward, about 1.5K tokens
 BRIEF_LINE_CHARS = 200  # a Context, link, log or settled-decision line
 BRIEF_LOG = 2  # log lines per ticket
