@@ -309,24 +309,19 @@ def match_cwd(cwd: str | Path, sid: str | None = None, tracker: Tracker | None =
     return Match(own, hits + [r for r in picks if r.id not in ids], branch, how, [r.id for r in picks])
 
 
-def work_match(cwd: str | Path, sid: str) -> tuple[Match | None, Path]:
-    """What a hook of the session works on, and in which folder: its tickets in `cwd` (inside $TRACKER_HOME, in the
-    folder it last worked in: `work_dir`). A checkout of the tracker's work (a git branch, in a repo the tracker names)
-    is the session's work even with no ticket on its branch yet. A folder that is neither, and holds none of its
-    tickets (a folder with no git, another repo), is not: the folder it last worked in still is, when that one holds
-    some of them, so a turn or a message there moves neither its news baseline nor its asks, nor the folder its own
-    watch matches in."""
-    here = work_dir(cwd)
-    m = match_cwd(here, sid)
+def own_tickets(m: Match, here: Path, sid: str) -> tuple[Match, Path]:
+    """The one home of where a session's own tickets are matched: the tickets its news baseline follows, the waits the
+    turn-end hook asks about, and the folder its own watch (`tracker watch --mine`) matches them in, which hooks keep
+    as its `cwd`. A hook in `here` (`m`: its match there) moves them there when `here` holds a ticket the session has
+    under way, or the folder kept before holds none (they closed, or it has no folder yet); otherwise they stay. A
+    message, a turn's end or a compaction anywhere else therefore leaves the session's waits and its watch alone, while
+    what that hook does for its own checkout (the commits, the state line, the brief) uses `m`."""
     saved = load_session(sid).get("cwd") or ""
-    elsewhere = m and not m.tickets and not (m.branch and in_repos(m.tracker, here))
-    # is_dir: `git.worktree` reads the branch from the nearest parent with a .git, so a deleted folder inside a repo
-    # would still match that repo's branch.
-    if elsewhere and saved and Path(saved) != here and Path(saved).is_dir():
-        there = match_cwd(saved, sid)
-        if there.tickets:
-            return there, Path(saved)
-    return m, here
+    if m.active or not saved or Path(saved) == here:
+        return m, here
+    # A folder that is gone still matches the branch of the repo around it (`git.worktree`), so its tickets stay.
+    there = match_cwd(saved, sid, m.tracker)
+    return (there, Path(saved)) if there.active else (m, here)
 
 
 def branch_tickets(own: Tracker, cwd: str | Path, branch: str) -> tuple[list[Record], str]:
