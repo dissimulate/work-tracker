@@ -3000,7 +3000,7 @@ class SessionNews(TwoSessions):
     def test_a_note_on_a_ticket_i_started_myself_is_news(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         self.message()
-        self.as_a(*self.t, "set", "T-3", "status=in-progress")  # its own start: no brief, no new baseline
+        self.as_a(*self.t, "set", "T-3", "status=in-progress")  # its own command subscribes T-3
         self.as_b(*self.t, "log", "--ref", "T-3", "the API changed under you")
         self.assertIn("T-3: the API changed under you", self.message())
 
@@ -3259,15 +3259,7 @@ class SessionNews(TwoSessions):
         self.assertEqual(session.load_session(self.b)["tickets"], [])
 
     def test_a_session_that_names_its_tracker_in_its_environment_subscribes(self):
-        other, _ = new_tracker("Elsewhere")
-        run("--tracker", other, "new", "T-1", "--title", "Same id, another tracker")
-        c = f"env{time.monotonic_ns()}"
-        self.addCleanup(session.drop_session, c)
-        env = {**no_gh(), "TRACKER": self.s}
-
-        def message() -> str:
-            return said(hook("prompt", c, self.work, env=env, prompt="go on"))
-
+        c, message = self.env_session()
         message()  # never ran `tracker start`
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertIn("T-1: base branch moved", message())
@@ -3275,7 +3267,6 @@ class SessionNews(TwoSessions):
             run(*self.t, "set", "T-2", "next=Plan it", cwd=self.work)
         self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(self.s))],
                          ["T-1", "T-2"])
-        self.assertEqual(session.subscribed(session.load_session(c), model.tracker_at(other)), [])  # ids repeat
 
     def env_session(self) -> tuple[str, callable]:
         """A session that names this tracker in its environment (TRACKER) and never ran `tracker start`, and its next
@@ -3312,6 +3303,88 @@ class SessionNews(TwoSessions):
         message(other)  # an older version's file, with no tracker key: its TRACKER now names another
         self.assertEqual([t.id for t in session.subscribed(session.load_session(c), model.tracker_at(other))],
                          ["T-1"])
+
+    def other_tracker(self) -> str:
+        """Another tracker, "Elsewhere", whose T-1 (an id this tracker has too) is on branch other: no checkout of
+        this test holds it."""
+        other, _ = new_tracker("Elsewhere")
+        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
+        return other
+
+    def test_a_session_on_another_tracker_with_no_ticket_there_leaves_this_trackers_cursor_alone(self):
+        other = self.other_tracker()
+        for n in range(8):
+            run("--tracker", other, "log", "--ref", "T-1", f"b note {n}")  # its events outnumber this tracker's
+        c, message = self.env_session()
+        message()
+        message(other)  # its TRACKER names the other tracker, whose tickets this checkout does not hold
+        entry = session.load_session(c)
+        self.assertNotIn("tickets", entry)  # a later hook in a checkout of the other tracker seeds it
+        self.assertEqual(entry["seen_seq"], model.last_seq(model.tracker_at(other)))
+        message()  # back on this tracker: it starts afresh here
+        self.as_b(*self.t, "log", "--ref", "T-1", "a note after")
+        self.assertIn("T-1: a note after", message())
+        message(other)
+        there = repo("other")
+        hook("prompt", c, there, env={**no_gh(), "TRACKER": other}, prompt="go on")
+        self.assertEqual(session.load_session(c)["tickets"], ["T-1"])
+
+    def test_a_session_is_told_nothing_of_another_trackers_ticket_with_its_id(self):
+        other = self.other_tracker()
+        c, message = self.env_session()
+        message()
+        run("--tracker", other, "log", "--ref", "T-1", "b note")
+        run("--tracker", other, "set", "T-1", "status=done", "summary=Shipped")
+        told = message(other)
+        self.assertNotIn("T-1 is now done", told)
+        self.assertNotIn("b note", told)
+
+    def test_a_turn_that_ends_on_another_tracker_keeps_what_was_asked_here(self):
+        c, message = self.env_session()
+        message()
+        self.as_b(*self.t, "decide", "Hold the API", "--blocks", "T-1")
+
+        def stop(slug: str) -> str:
+            env = {**no_gh(), "TRACKER": slug, "CLAUDE_CODE_SESSION_ATTENDED": "1"}
+            return said(hook("stop", c, self.work, env=env, stop_hook_active=False))
+        self.assertIn("T-1 waits on", stop(self.s))
+        self.assertNotIn("waits on", stop(self.other_tracker()))
+        self.assertNotIn("waits on", stop(self.s))  # asked here already
+
+    def test_a_released_file_of_a_session_named_in_its_environment_starts_on_that_tracker(self):
+        c, message = self.env_session()
+        session.save_session(c, seen={"T-1": {"role": "own", "stage": "in-progress"}}, seen_for=["T-1"])  # no tracker
+        hook("prompt", c, Path(tempfile.mkdtemp(dir=BASE)), env={**no_gh(), "TRACKER": self.s}, prompt="go on")
+        entry = session.load_session(c)
+        self.assertEqual((entry.get("tickets_on"), "tickets" in entry), (self.s, False))  # no cursor of no tracker
+        message()
+        self.assertEqual(session.load_session(c)["tickets"], ["T-1"])
+
+    def test_an_update_seed_leaves_out_a_ticket_that_closed(self):
+        self.message()
+        self.as_released(self.a)  # its brief showed T-1
+        self.as_b(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.message()
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-3"])
+
+    def test_a_hook_during_a_start_does_not_seed_its_folder_into_it(self):
+        other = self.other_tracker()
+        run("--tracker", other, "new", "T-2", "--title", "Other two", "--branch", "f1")  # in A's checkout
+        real, during = commands.relink_session, []
+
+        def relink(*args, **kwargs):
+            real(*args, **kwargs)
+            hooked = threading.Thread(target=hooks.session_match, args=({"session_id": self.a, "cwd": str(self.work)},))
+            hooked.start()  # a hook of A, in its checkout, between the link and the subscription
+            hooked.join(1.0)
+            during.append(hooked)
+
+        with mock.patch.object(commands, "relink_session", relink):
+            self.as_a("start", other, cwd=repo("other"))
+        during[0].join()
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1"])
 
     def test_a_session_whose_first_act_is_a_command_also_subscribes_its_checkout(self):
         c, _ = self.env_session()
@@ -5297,6 +5370,19 @@ class MineWatch(TwoSessions):
 
     def texts(self, lines: list[str]) -> list[str]:
         return [x.split(" ", 1)[1] for x in lines]
+
+    def test_a_watch_on_another_tracker_says_nothing_of_its_ticket_with_the_same_id(self):
+        other, _ = new_tracker("Elsewhere")
+        run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
+        c = f"mo{time.monotonic_ns()}"
+        self.addCleanup(session.drop_session, c)
+        self.addCleanup(watcher.set_grant, c, False)
+        hook("prompt", c, self.work, env={**no_gh(), "TRACKER": self.s}, prompt="go on")  # it is on T-1 here
+        run("--tracker", other, "log", "--ref", "T-1", "b note")
+        run("--tracker", other, "set", "T-1", "status=done", "summary=Shipped")
+        with mock.patch.dict(os.environ, {"TRACKER": other}):  # its TRACKER now names the other tracker
+            said_ = watcher.Watcher(model.tracker_at(other), c, "session mo", mine=True).claim(self.clock)
+        self.assertFalse([x for x in said_ if "T-1" in x], said_)
 
     def test_a_note_on_my_ticket_wakes_me(self):
         w = self.mine()

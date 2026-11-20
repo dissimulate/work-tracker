@@ -1211,9 +1211,14 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    relink_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)
-    start_subscription(sid, m, [r.id for r in picks] or None)  # on its own tracker it adds, and keeps what it was told
+    ids = [r.id for r in picks] or None
+    with locked():  # one step: a hook between the link and the subscription would seed its own folder into it
+        relink_session(sid, tracker=tr.slug, focus=ids)
+        linked = match_cwd(cwd, sid)
+        start_subscription(sid, linked, ids)  # on its own tracker it adds, and keeps what it was told
+    m, found = match_pr(linked, cwd)  # outside the lock: it may ask GitHub
+    if m is not linked:  # it tied the branch to a ticket, which the session starts on too
+        start_subscription(sid, m, ids)
     keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
     keep_told_next(sid, m, cwd)
