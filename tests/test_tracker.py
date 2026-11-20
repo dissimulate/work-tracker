@@ -3362,6 +3362,20 @@ class SessionNews(TwoSessions):
         message()
         self.assertEqual(session.load_session(c)["tickets"], ["T-1"])
 
+    def test_a_wait_asked_on_one_tracker_is_asked_on_another_its_environment_moves_to(self):
+        c, message = self.env_session()
+        message()
+        self.as_b(*self.t, "decide", "Hold the API", "--blocks", "T-1")
+        other, there = self.other_tracker(), repo("other")
+        run("--tracker", other, "decide", "Hold that too", "--blocks", "T-1")  # the same wait, by key, there
+
+        def stop(slug: str, cwd: Path) -> str:
+            env = {**no_gh(), "TRACKER": slug, "CLAUDE_CODE_SESSION_ATTENDED": "1"}
+            return said(hook("stop", c, cwd, env=env, stop_hook_active=False))
+        self.assertIn("T-1 waits on", stop(self.s, self.work))
+        hook("prompt", c, there, env={**no_gh(), "TRACKER": other}, prompt="go on")  # it works there now
+        self.assertIn("T-1 waits on", stop(other, there))
+
     def test_a_command_on_another_tracker_leaves_what_it_was_told_here(self):
         other = self.other_tracker()
         run("--tracker", other, "set", "T-1", "status=done", "summary=Shipped")  # the same id, closed there
