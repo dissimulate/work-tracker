@@ -145,7 +145,7 @@ def hook_session_start(data: dict) -> None:
     record_commits(m, cwd)  # made since the last session, as in the terminal
     remember(sid, m, cwd)
     note = "\n\n".join(x for x in (note, found) if x)
-    text = brief(m, cwd, note, compact=source == "compact", tickets=subscribed(load_session(sid), m.tracker))
+    text = brief(m, cwd, note, compact=source == "compact")
     # The brief lists the updates, so no prompt repeats them, and carries the protocol, so a session told its tracker
     # took no write (`tell_refusal`) needs none from `tracker start` now.
     fields = {"told_updates": updates_told(m.tracker), "told_refusal": None}
@@ -411,10 +411,10 @@ def hook_prompt(data: dict) -> None:
     asked = m.tracker.issue_reads()[1]
     if asked and asked != entry.get("told_issues"):  # a UI's Refresh: passed on once
         fields["told_issues"] = asked
-        lines += [x for x in [issue_request(m.tracker, shown_tickets(m, tickets))] if x]
+        lines += [x for x in [issue_request(m.tracker, shown_tickets(m, sid))] if x]
     updates = updates_told(m.tracker)
     if set(updates) - set(entry.get("told_updates") or []):  # a new issue update due: passed on once
-        lines.append(issue_update_request(m.tracker, shown_tickets(m, tickets)))
+        lines.append(issue_update_request(m.tracker, shown_tickets(m, sid)))
     fields["told_updates"] = updates
     idle = not m.active and bool(m.branch) and in_repos(m.tracker, cwd)
     mark = get_mark(m.tracker, cwd, m.branch) if idle else None
@@ -479,7 +479,7 @@ def hook_subagent_start(data: dict) -> None:
     cwd, sid = where(data)
     m = match_cwd(cwd, sid)
     if m:
-        ids = ", ".join(t.id for t in shown_tickets(m, subscribed(load_session(sid), m.tracker)))
+        ids = ", ".join(t.id for t in shown_tickets(m, sid))
         emit_context("SubagentStart", f"[work-tracker] The session that started you works on tracker {m.tracker.slug}"
                      + (f", ticket {ids}" if ids else "") + ". Read it when you need to (`tracker index` for the "
                      "whole work; `tracker context <id>` and `tracker show <id> --section <name>` for one ticket or "

@@ -6,7 +6,7 @@ import datetime as dt
 import time
 from pathlib import Path
 
-from .system import BIN
+from .system import BIN, session_id
 from .markdown import section, strip_comments
 from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, QUIET_KINDS, README_INSTRUCTIONS, SCALES, STAGES,
     STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
@@ -469,12 +469,12 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
 
 
 def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full: bool = False,
-          with_protocol: bool = True, tickets: list[Record] = ()) -> str:
+          with_protocol: bool = True) -> str:
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
-    and title only. `full` adds the tickets' bodies. `tickets`: the session's subscription (`session.subscribed`), shown
-    after the checkout's tickets (`session.shown_tickets`)."""
+    and title only. `full` adds the tickets' bodies. The tickets are the checkout's, with the session's subscribed
+    tickets that the checkout does not hold (`session.shown_tickets`)."""
     tr = m.tracker
     if m.tickets:
         how = CHOSEN if m.chosen else HOW[m.how]
@@ -493,7 +493,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
         parts.append(f"The tracker may lag the work: {work.text()}. Bring it up to date from what you know: "
                      f"`step <id> --next \"...\"`, with {STEP_MESSAGE}"
                      + (" (it logs the commits)." if work.commits else "."))
-    focus = shown_tickets(m, list(tickets))
+    focus = shown_tickets(m, session_id())
     if len(m.active) > 1 and not m.chosen:
         parts.append(PICK_ONE)
     rules = instructions(tr)

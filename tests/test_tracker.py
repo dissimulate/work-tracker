@@ -3272,6 +3272,22 @@ class SessionNews(TwoSessions):
         self.assertEqual(entry["tickets"], [])
         self.assertEqual(entry["seen_seq"], model.last_seq(model.tracker_at(other)))  # its cursor is the new one's
 
+    def test_the_brief_of_a_branch_with_a_todo_ticket_reads_as_before(self):
+        run(*self.t, "new", "T-4", "--title", "Four", "--branch", "f1")  # todo, on the same branch
+        self.as_a("start", self.s)  # it subscribes T-1 and T-4: its checkout's open tickets
+        self.assertEqual(session.load_session(self.a)["tickets"], ["T-1", "T-4"])
+        brief = hook("session-start", self.a, self.work, env=no_gh(), source="compact")
+        text = brief["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Branch f1: T-1 in-progress; also T-4 todo", text)
+        self.assertIn("T-1 · One", text)
+        self.assertNotIn("T-4 · Four", text)  # its checkout's focus is T-1 alone
+        helper = said(hook("subagent-start", self.a, self.work, env=no_gh(), agent_id="a1", agent_type="Explore"))
+        self.assertIn(", ticket T-1. ", helper)
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # a ticket of another branch: the brief adds it
+        text = hook("session-start", self.a, self.work, env=no_gh(), source="compact")["hookSpecificOutput"]
+        self.assertIn("T-2 · Two", text["additionalContext"])
+        self.assertNotIn("T-4 · Four", text["additionalContext"])
+
     def test_news_on_a_restored_shorter_log_does_not_raise(self):
         self.message()
         file = store.HOME / self.s / schema.EVENTS_FILE

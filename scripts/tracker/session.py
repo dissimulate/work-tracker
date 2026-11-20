@@ -896,10 +896,17 @@ def news(sid: str, tr: Tracker) -> list[str]:
     return lines
 
 
-def shown_tickets(m: Match, tickets: list[Record]) -> list[Record]:
+def shown_tickets(m: Match, sid: str) -> list[Record]:
     """The tickets a brief, a subagent's note and an issue request show a session: its checkout's (`Match.focus`), then
-    the subscribed ones (`tickets`) the checkout lacks, so a session elsewhere still sees what it works on."""
-    return [*m.focus, *(t for t in tickets if t.id not in {f.id for f in m.focus})]
+    its subscribed tickets that this checkout does not hold (`Match.mine`), so a session elsewhere still sees what it
+    works on, and one in its own checkout reads as it always did."""
+    here = {t.id for t in m.mine}
+    return [*m.focus, *(t for t in session_tickets(sid, m.tracker) if t.id not in here)]
+
+
+def session_tickets(sid: str, tr: Tracker) -> list[Record]:
+    """A session's subscription on `tr` (`subscribed`), from its file."""
+    return subscribed(load_session(sid), tr)
 
 
 def own_event(e: dict, sid: str) -> bool:
