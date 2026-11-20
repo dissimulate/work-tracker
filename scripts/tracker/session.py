@@ -816,13 +816,19 @@ def ensure_subscription(sid: str, m: Match) -> None:
         start_subscription(sid, m)
 
 
+def agent_sid() -> str:
+    """The id of the session whose agent ran this command, else "": a command entered in the view (which carries
+    the session's id) or at a terminal is no agent's."""
+    return session_id() if entered_via() == "agent" else ""
+
+
 def subscribe(tr: Tracker, ids: list[str]) -> None:
     """Add tickets to the subscription of the session that ran a command on them on purpose (the commands that call
     this), on its tracker (`context_tracker`). Not for a command entered in the view, which carries the session's id,
     or at a terminal, nor for a command on another tracker."""
-    sid = session_id()
-    own = context_tracker(sid)
-    if entered_via() != "agent" or not own or own.slug != tr.slug:
+    sid = agent_sid()
+    own = context_tracker(sid) if sid else None
+    if not own or own.slug != tr.slug:
         return
     with locked():
         ensure_subscription(sid, match_cwd(work_dir(), sid, tr))

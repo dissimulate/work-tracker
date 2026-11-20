@@ -10,12 +10,12 @@ import re
 import sys
 from pathlib import Path
 
-from .system import die, entered_via
+from .system import die
 from .store import first_writes, locked, Busy, OtherFormat
 from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
     SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
-from .session import context_tracker, load_session, own_change, session_id, told_about, watch
+from .session import agent_sid, context_tracker, load_session, own_change, told_about, watch
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
@@ -371,8 +371,8 @@ def issue_update_items(tr: Tracker) -> set[tuple[str, str]]:
 def own_changes(run) -> None:
     """Run a write command, and count what it changed about the session's subscription as seen, so that its news says
     only what others did. Only a command its agent ran: one entered in the view or at a terminal is someone else's."""
-    sid = session_id()
-    tr = context_tracker(sid) if sid and entered_via() == "agent" else None
+    sid = agent_sid()
+    tr = context_tracker(sid) if sid else None
     before = watch(tr, told_about(load_session(sid), tr)) if tr else None
     run()
     if before:
