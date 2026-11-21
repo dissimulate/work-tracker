@@ -147,7 +147,8 @@ KEYS = {
         "title": ("set", "short name of the decision"),
         "status": ("decide", "open until `decide --resolve` closes it; the answer is ## Resolution"),
         "refs": ("decide", "tickets it touches but does not block; a block is the ticket's depends_on"),
-        "owner": ("set", "who must decide"),
+        "owner": ("decide", "who must decide: a person's name, a ticket id (the session on it), or coordinator; none: "
+                            "the coordinator when one is watching, else a human"),
         "due": ("set", DUE),
         "created_at": ("auto", "when it was opened"),
         "updated_at": ("auto", UPDATED),
@@ -170,19 +171,68 @@ KEYS = {
         "owner": ("set", "who owns the work"),
         "created_at": ("auto", "when the tracker was made"),
         "labels": ("set", "this tracker's own link labels, added to the defaults"),
+        "issues": ("set", "required: every open ticket has an Issue link, and `check` reports one with none as an "
+                          "error; optional or empty: a warning, only while some ticket has an Issue link"),
         "issue_updates": ("set", "on: the model writes each linked ticket's status, its summary once closed and the "
                                  "decisions settled on it to the ticket's issue, with the issue tracker's tool "
                                  "(`tracker issue` says what is due); off or empty: the tracker never asks"),
         "schema": ("auto", "the tracker's format version; an older tracker migrates itself"),
     },
 }
-SCHEMA = 5  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+SCHEMA = 6  # the tracker format this code writes; README `schema` names a tracker's (none: older than 1)
+# The kinds of event (`model.append_event`), each with what it means and its own fields. The list is versioned by
+# SCHEMA: a new kind is a format change, as an older version would not know it.
+EVENTS_FILE = "events.jsonl"
+EVENTS = {
+    "note": "a note `tracker log` adds",
+    "step": "a step's message (`tracker step`)",
+    "status": "a ticket's or the work's new status (`status`)",
+    "ticket.added": "a ticket added",
+    "wait.added": "a ticket now waits on records (`on`, their ids); several tickets on one: `refs` names them",
+    "wait.removed": "a ticket no longer waits on records (`on`)",
+    "body.changed": "a record's section changed, with why (`heading`)",
+    "evidence.attached": "a file kept in evidence/ or added to (`file`)",
+    "decision.opened": "a decision opened (`decision`, its id)",
+    "decision.updated": "a decision's notes, choices or recommendation changed (`decision`)",
+    "decision.decided": "a decision settled (`decision`; `decided`: human, source or unattributed; `by`, the human "
+                        "named; `source`, where the answer was; `cited`: whether a human's word is cited; `word`: the "
+                        "cited message's `fingerprint`, `at` and `excerpt`, as the session kept it)",
+    "action.added": "an action for the user added (`action`, its id)",
+    "action.updated": "an action renamed, its due day or its notes changed (`action`)",
+    "action.closed": "an action done or dropped (`action`, `status`)",
+    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`)",
+    "pr.opened": "a PR a session on the tracker opened (`gh pr create`), once (`pr`); `check` warns while no ticket "
+                 "claims it",
+    "pr.review": "a review of a PR that approved it or requested changes, as `sync` read it, once each (`pr`; "
+                 "`review`: the forge's id for it; `by`; `result`: approved or changes; `submitted_at`: the forge's "
+                 "time for it; `bot`: whether a bot wrote it)",
+    "branch.set": "the branch a ticket is built on (`branch`)",
+    "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
+    "paused": "a handoff left on a branch (`branch`)",
+    "submission": "a ticket's plan or built code handed to its reviewer (`what`: one of SUBMIT_WHAT)",
+    "review": "a review of a ticket's plan or built code (`what`; `verdict`: one of VERDICTS; `findings`: the changes "
+              "it asks for, each `{n, text}` numbered from 1; `of`: the seq of the submission it answers, 0 for none)",
+    "finding.fixed": "findings of a review marked fixed (`what`; `of`: the review's seq; `findings`: their numbers)",
+    "human.wait": "an agent of a session began to wait on a human for a permission or an answer (`asker`: \"\" for the "
+                  "session itself, else its subagent's id; `why`: the tool it asked about, else \"\")",
+    "human.wait.end": "that wait ended (`asker`; `of`: the wait's seq; `seconds`: how long it lasted; `failed`: the "
+                      "tool's error, when it failed: a refused permission, or a tool that failed once allowed)",
+    "migrated": "the tracker brought to a newer format (`schema`)",
+    "legacy": "a log.md line from before the event file: no time, session, via or version (`day`; `decision` when it "
+              "opened or settled one)",
+}
+# Kinds that a log shown to a person or an agent leaves out unless asked for by kind: a wait on a human starts and ends
+# at every permission prompt. No log.md line either.
+QUIET_KINDS = ("human.wait", "human.wait.end")
+SUBMIT_WHAT = ("plan", "code")  # what `tracker submit` hands to a reviewer: a ticket's plan, or its built code
+VERDICTS = ("pass", "changes")  # a review's verdict: `changes` lists the changes it asks for as findings
 # Keys an older format named otherwise, old: new; `migrate` renames them (`contract.renamed_keys`)
 RENAMED_KEYS = {"ticket": {"updated": "updated_at", "issue_created": "issue_created_at"},
                 "decision": {"opened": "created_at", "updated": "updated_at"},
                 "action": {"opened": "created_at", "updated": "updated_at"},
                 "tracker": {"created": "created_at"}}
 ISSUE_UPDATES = ("on", "off")  # README `issue_updates`: whether the model writes the tracker's changes to issues
+ISSUES = ("optional", "required")  # README `issues`: whether each open ticket must have an Issue link (`check`)
 # `tracker issue`'s flags: the ticket key each records from the ticket's issue
 ISSUE_FIELDS = {**{key: key for key in SCALES}, "due": "due", "created": "issue_created_at"}
 OWNER_HINT = {"new": "fixed at `tracker new`", "decide": "use `tracker decide`", "wait": "use `tracker wait`",
@@ -202,8 +252,8 @@ STATE_RULES = {
                "session; the brief shows it first; the next `step` clears it",
     "use": "`tracker use` on a shared branch such as main: the tickets one worktree works on",
     "pr_match": "a branch's PR, asked for once in a while to find its ticket",
-    "prs": "per open PR (`owner/name#n`), what `sync` last read of its reviews, checks and merge state, in the "
-           "tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
+    "prs": "per open PR (`owner/name#n`), what `sync` last read of its title, reviews, checks and merge state, in "
+           "the tracker's words (PR_FACTS); each sync replaces them. A ticket's move is computed from them",
     "issues": "`read`: per ticket, when `tracker issue` last recorded its issue's fields; `requested`: when the "
               "UI's Refresh asked for them again. A ticket with an Issue link is to read when open and never read "
               "or read before the request; when closed, only when never read and it has a "
@@ -234,7 +284,7 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_KEYS = {"due"}
 LIST_KEYS = {"depends_on", "refs", "labels", "prs"}
 LIST_OR_ONE = {"repo"}  # one value, or a list when the work spans repos
-CHOICES = {"issue_updates": ISSUE_UPDATES}  # a key that holds one of a few words
+CHOICES = {"issue_updates": ISSUE_UPDATES, "issues": ISSUES}  # a key that holds one of a few words
 
 
 class Form:
@@ -432,6 +482,11 @@ STALE_TICKET_DAYS = 7
 SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
+# How long an open item may wait for its reply, in seconds, before it is stuck (`moves.open_items`): a submission for
+# its review, a question for its answer, a wait on a human for its end. These values are still open (the spec "the
+# tracker as the channel", open question 2). The watch's "asks for a permission or an answer" line uses the wait's.
+DEADLINE_S = {"submission": env_int("TRACKER_DEADLINE_SUBMISSION", 1800),
+              "question": env_int("TRACKER_DEADLINE_QUESTION", 1800), "wait": 30}
 
 
 def dated(text: str) -> str:
@@ -472,8 +527,26 @@ README_KEYS = ["title", "repo", "status", "owner", "created_at"]  # required fro
 SCOPE_PARTS = ["In", "Out"]  # ### subsections of ## Scope
 OPEN_DECISIONS_WARN = 12  # more open than this and the list is carrying ticket-level questions
 
-RESOLVE = '`tracker decide D-<n> --resolve "..." --by <who>`'  # a decision answered
-DECIDED = '`tracker decide "<title>" --resolve "..." --by <who>`'  # a choice made on the spot, in one command
+def resolution_who(text: str | None) -> str | None:
+    """A name or source as a resolution line's `(<who>)` holds it, on one line; None when it holds ": " or ")", which
+    would end the `(<who>)` early (`model.answer` reads the answer from the first ": "). "" for none."""
+    who = " ".join((text or "").split())
+    return None if ": " in who or ")" in who else who
+
+
+# A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
+COORDINATOR = "coordinator"
+# A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
+# The human's message a resolution rests on: optional, as only a message this session kept can be cited
+CITE = '[--cite "<a few words from the start of what they said in this session>"]'
+RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` instead, when the '
+           'spec, a settled decision or the code already answered it)')
+DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
+# A session keeps the human's last WORDS_KEPT messages and answers, each as a fingerprint and its first
+# WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. These
+# values are first guesses (the spec "the tracker as the channel", open question 3).
+WORDS_KEPT = 5
+WORD_EXCERPT_MAX = 200
 DECISION_BAR = (
     "A decision is a direction choice: it changes the Goal or Scope, a ticket's plan, order or split, a contract "
     "between tickets, a product, design or architecture rule, or it needs someone else's sign-off. Record it with "
@@ -482,6 +555,9 @@ DECISION_BAR = (
     "with "
     f"{RESOLVE} when it is answered, including an answer given in chat (a choice made on the spot is one command: "
     f"{DECIDED}). "
+    "A decision a human will answer asks one thing in plain words, lists one option per choice with what it costs, "
+    "recommends one, and keeps detail for agents in its notes; a question that picking one option cannot settle is "
+    "split. "
     "A choice inside one ticket's build (implementation detail, review fix, naming, styling) is not a decision: "
     "it goes in that ticket's Plan, `next` or PR.")
 # A decision's ## Options holds only its choices, one line each, so a UI can offer each one as an answer; what is said

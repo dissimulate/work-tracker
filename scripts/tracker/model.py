@@ -4,6 +4,7 @@ schema's, the text format itself markdown's, the writing of files store's."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -11,13 +12,13 @@ from functools import cached_property
 from pathlib import Path
 
 from . import store
-from .system import die
+from .system import die, entered_via, plugin_version, session_id
 from .markdown import (BULLET, bullets, frontmatter_problems, link_ident, parse_links, parse_meta, render_frontmatter,
     section, section_span, split_frontmatter, strip_comments, Link)
 from .store import HOME, append, atomic_write, read_json, write_json
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR, PR_MATCH_TTL_S, PR_STAGE,
-    PR_STATES, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names, parse_day, show_value, stage_of, today,
-    utc_now, utc_seconds, Stage)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE_DIR, ISSUE, KEYS, KINDS, OPEN_PR,
+    PR_MATCH_TTL_S, PR_STAGE, PR_STATES, QUIET_KINDS, SCALES, STATE_KEEP_DAYS, STATUSES, csv, id_kind, kind_names,
+    parse_day, show_value, stage_of, utc_now, utc_seconds, Stage)
 
 
 def level(t: Record, key: str) -> int | None:
@@ -90,9 +91,11 @@ def link_url(link: Link) -> str:
     return (m[1] if m.lastindex else m[0]) if m else link.text
 
 
-def link_title(link: Link) -> str:
-    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`."""
-    return re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+def link_title(link: Link, note: bool = True) -> str:
+    """A link line's title and note, without its URL: `[title](url) — why` gives `title — why`; with no `note`,
+    `title`."""
+    text = re.sub(r"\[([^\]]+)\]\([^)\s]+\)", r"\1", link.text)
+    return text if note else text.split(" — ")[0]
 
 
 def link_lines(items: list[Link], root: Path | None = None, titles: bool = False, width: int = 0,
@@ -101,7 +104,7 @@ def link_lines(items: list[Link], root: Path | None = None, titles: bool = False
     keeps the label, title and why, without the URL. `width` (a brief) cuts each line to that many characters and
     leaves out the nested detail lines."""
     if titles:
-        return [f"  {x.label}: {link_title(x).split(' — ')[0]}" for x in items]
+        return [f"  {x.label}: {link_title(x, note=False)}" for x in items]
     if not urls:
         return [f"  {cut(f'{x.label}: {link_title(x)}', width)}" for x in items]
     out = []
@@ -592,7 +595,7 @@ class Tracker:
 
     def data_files(self) -> list[Path]:
         """Every file that holds the tracker's facts: a change to one is a change a UI and the watcher show."""
-        return [self.root / "README.md", self.root / "log.md", self.root / ".state.json",
+        return [self.root / "README.md", self.root / "log.md", self.root / EVENTS_FILE, self.root / ".state.json",
                 *(p for kind in KINDS.values() for p in sorted((self.root / kind.folder).glob("*.md")))]
 
 
@@ -789,6 +792,12 @@ def pr_key(repo: str, pr) -> str:
     return f"{repo.lower()}#{pr}"
 
 
+def pr_name(tr: Tracker, repo: str, pr) -> str:
+    """A PR as a log line names it: `#n` in a tracker of one repo, else `owner/name#n` as the tracker spells it."""
+    ours = next((r for r in tr.repos if r.lower() == repo.lower()), None)
+    return f"#{pr}" if ours and len(tr.repos) == 1 else f"{ours or repo}#{pr}"
+
+
 def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
     """A line naming the unfinished tickets in `blocked` that nothing blocks now."""
     free = [t.id for t in tr.tickets if t.id in blocked and not tr.blockers(t) and not t.closed]
@@ -797,40 +806,136 @@ def unblocked(tr: Tracker, blocked: set[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------- the log
-# log.md holds one line per change, `- <day> [<ids>] <text>`: append_log writes it and LOG_LINE reads it back. Most
-# texts are for people. Those that code reads back have a LogForm in LOG, which both writes them and reads them, so a
-# change of words cannot part the two: `context` and the brief leave out the lines of a decision they show, and
-# the watcher counts the commits and marks a new action as one for the user.
-
-LOG_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2})(?: \[([^\]]*)\])? ")  # group 1 its day, group 2 its ids
-
-
-def append_log(tr: Tracker, msg: str, refs: list[str]) -> str:
-    line = f"- {today()}" + (f" [{' '.join(refs)}]" if refs else "") + f" {' '.join(msg.split())}"
-    append(tr.root / "log.md", line + "\n")
-    return line
+# The event file (EVENTS_FILE) is the log's one home: one event per change. log.md holds each event's line,
+# `- <day> [<ids>] <text>`, for people; append_event writes both. The views read the events by their fields, so a
+# hand edit of log.md changes nothing they show: `context` and the brief leave out the lines of a decision they show,
+# and the watcher counts the commits and marks a new action as one for the user. Only `tracker find` reads log.md, as
+# text, and `contract.legacy_events` carries an older format's lines over.
 
 
-@dataclass(frozen=True)
-class LogForm:
-    """A log text that code reads back: `text` writes it from `template`, `read` matches its start, and group 1 of
-    the match is what the reader needs. A writer may add more after it."""
-    template: str
-    pattern: re.Pattern
+def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> dict:
+    """Record a change as the next event of the tracker's event file (EVENTS_FILE), then as its line in log.md (none
+    for a QUIET_KINDS one), and return it; `data` holds the kind's own fields. The repo is the first ticket's in
+    `refs`, else the tracker's only one, else "". The caller holds `store.locked()`: the number is one past the
+    file's last, so two writers at once would share it. ValueError for a kind not in EVENTS, or `data` that names an
+    event's own field."""
+    if kind not in EVENTS:
+        raise ValueError(f"no event kind {kind!r} (EVENTS)")
+    ticket = next((r for r in map(tr.lookup, refs) if r and r.kind == "ticket"), None)
+    repo = tr.repo_of(ticket) if ticket else tr.repos[0] if len(tr.repos) == 1 else ""
+    e = {"seq": last_seq(tr) + 1, "at": utc_now(), "kind": kind, "session": session_id(), "via": entered_via(),
+         "version": plugin_version(), "repo": repo, "refs": list(refs), "text": " ".join(text.split())}
+    if clash := sorted(e.keys() & data.keys()):
+        raise ValueError(f"an event's own fields cannot be data: {', '.join(clash)}")
+    e.update(data)
+    path = tr.root / EVENTS_FILE
+    # A writer killed part way leaves a last line with no newline: the new event starts a line of its own.
+    append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
+    # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (only `tracker
+    # find` reads it back); regenerate it from the events on each write if drift is ever seen.
+    if kind not in QUIET_KINDS:
+        append(tr.root / "log.md", log_line(e) + "\n")
+    return e
 
-    def text(self, **fields) -> str:
-        return self.template.format(**fields)
 
-    def read(self, text: str) -> re.Match | None:
-        return self.pattern.match(text)
+def event_of(line: bytes) -> dict | None:
+    """A line of the event file as its event; None for a line that is none, such as a half-written last line: `check`
+    reports it and every reader skips it. An event is a JSON object with the fields every reader reads: an int `seq`,
+    a `kind` of EVENTS, a list of `refs`, a `text`, and its time (`at`) or, for a legacy event, its `day`."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(e, dict):
+        return None
+    timed = isinstance(e["day"], str) if "day" in e else utc_seconds(e.get("at")) is not None
+    whole = isinstance(e.get("seq"), int) and e.get("kind") in EVENTS and isinstance(e.get("refs"), list)
+    return e if whole and timed and isinstance(e.get("text"), str) else None
 
 
-DECISION_ID = rf"{KINDS['decision'].prefix}-\d+"
-LOG = {
-    "opened": LogForm("Opened {id} {title}", re.compile(rf"Opened ({DECISION_ID})\b")),
-    "decided": LogForm("Decided {id} {title}{who}: {answer}", re.compile(rf"Decided ({DECISION_ID})\b")),
-    "action": LogForm("Action for the user: {title}", re.compile(r"Action for the user: (.*)")),
-    "commits": LogForm("Commits on {branch}: {commits}", re.compile(r"Commits on \S+: (.*)")),
+def event_lines(tr: Tracker) -> list[dict | None]:
+    """Each line of the event file, as its event or None (`event_of`)."""
+    try:
+        return [event_of(line) for line in (tr.root / EVENTS_FILE).read_bytes().splitlines()]
+    except FileNotFoundError:
+        return []
+
+
+# Per tracker folder: the event file's size and modified time when `event_lines` last read it, and what it read.
+EVENTS_READ: dict[Path, tuple[tuple[int, int], list[dict | None]]] = {}
+
+
+def cached_event_lines(tr: Tracker) -> list[dict | None]:
+    """`event_lines`, read again only when the file's size or modified time changed: one read per process however
+    many views and tickets ask, also in a watch that runs on. The list is shared: do not change it.
+    ponytail: the whole event file is read when it changes; keep a tail index if a tracker's log outgrows that."""
+    try:
+        st = (tr.root / EVENTS_FILE).stat()
+    except FileNotFoundError:
+        return []
+    key = (st.st_size, st.st_mtime_ns)
+    hit = EVENTS_READ.get(tr.root)
+    if not hit or hit[0] != key:
+        hit = EVENTS_READ[tr.root] = (key, event_lines(tr))
+    return hit[1]
+
+
+def read_events(tr: Tracker, after: int = 0) -> list[dict]:
+    """The events numbered past `after`, oldest first; a line that is no event is left out."""
+    return [e for e in cached_event_lines(tr) if e and e["seq"] > after]
+
+
+def last_seq(tr: Tracker) -> int:
+    """The number of the last whole event; 0 for none. Read back from the end of the file, as the file only grows."""
+    try:
+        f = open(tr.root / EVENTS_FILE, "rb")
+    except FileNotFoundError:
+        return 0
+    with f:
+        size, block = f.seek(0, 2), 4096
+        while True:
+            start = max(0, size - block)
+            f.seek(start)
+            lines = f.read().split(b"\n")
+            # The last piece has no newline after it, so it is not whole; the first may start mid-line.
+            for line in reversed(lines[1 if start else 0:-1]):
+                if e := event_of(line):
+                    return e["seq"]
+            if not start:
+                return 0
+            block *= 4
+
+
+def ends_open(path: Path) -> bool:
+    """The file's last line has no newline."""
+    try:
+        with open(path, "rb") as f:
+            if not f.seek(0, 2):
+                return False
+            f.seek(-1, 2)
+            return f.read(1) != b"\n"
+    except FileNotFoundError:
+        return False
+
+
+def event_day(e: dict) -> str:
+    """An event's day: a legacy event's own, else the local day of its time."""
+    return e["day"] if "day" in e else dt.date.fromtimestamp(utc_seconds(e["at"])).isoformat()
+
+
+def log_line(e: dict) -> str:
+    """An event as its line in log.md, `- <day> [<refs>] <text>`; a legacy line that had no day is its text, the line
+    as it was."""
+    if e.get("day") == "":
+        return e["text"]
+    return f"- {event_day(e)}" + (f" [{' '.join(e['refs'])}]" if e["refs"] else "") + f" {e['text']}"
+
+
+LOG = {  # log texts to fill in with str.format; a writer may add more after one
+    "opened": "Opened {id} {title}",
+    "decided": "Decided {id} {title}{who}: {answer}",
+    "action": "Action for the user: {title}",
+    "commits": "Commits on {branch}: {commits}",
 }
 COMMITS_LOGGED_MAX = 8  # the commits a log line names; the rest as a count
 
@@ -839,33 +944,22 @@ def commits_text(branch: str, commits: list[tuple[str, str]]) -> str:
     """`Commits on <branch>: <sha> <subject>; ...; and 3 more`."""
     shown = "; ".join(f"{sha} {subject}" for sha, subject in commits[:COMMITS_LOGGED_MAX])
     more = f"; and {len(commits) - COMMITS_LOGGED_MAX} more" if len(commits) > COMMITS_LOGGED_MAX else ""
-    return LOG["commits"].text(branch=branch, commits=shown + more)
-
-
-def commits_logged(text: str) -> int:
-    """How many commits a log text that commits_text wrote names; 0 for any other text."""
-    m = LOG["commits"].read(text)
-    if not m:
-        return 0
-    items = m[1].split("; ")
-    more = re.fullmatch(r"and (\d+) more", items[-1])
-    return len(items) - 1 + int(more[1]) if more else len(items)
-
-
-def logged_decision(text: str) -> str | None:
-    """The decision a log text opened or settled; None for any other text."""
-    m = LOG["opened"].read(text) or LOG["decided"].read(text)
-    return m[1] if m else None
+    return LOG["commits"].format(branch=branch, commits=shown + more)
 
 
 PR_EVENT = {"merged": "merged", "open": "open for review", "draft": "open as a draft", "closed": "closed unmerged"}
+REVIEW_EVENT = {"approved": "approved", "changes": "changes requested"}  # a review's result, as its log line says it
 
 
-def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None) -> list[str]:
+def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None,
+              reviews: dict[str, list[dict]]) -> list[str]:
     """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PRs (each with `number`;
-    `state`: one of PR_EVENT; `merged_at`, UTC), each PR's new state a log line; and the open PRs' PR_FACTS by pr_key
-    (None: the forge did not answer, so the last ones stay). Returns the change lines."""
+    `state`: one of PR_EVENT; `title`; `merged_at`, UTC), each PR's new state an event; the open PRs' PR_FACTS by
+    pr_key (None: the forge did not answer, so the last ones stay); and by pr_key each PR's reviews, oldest first
+    (each with the forge's `id`, `by`, `result`: one of REVIEW_EVENT, `submitted_at`, `bot`), an event for each one
+    the log does not hold yet: the log, not this machine's state, says which it holds. Returns the change lines."""
     changes, events = [], {}
+    named: dict[str, tuple[str, list[str]]] = {}  # per PR read, its name in a log line and its tickets
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     for t in tr.tickets:
         if t.id not in found:
@@ -884,11 +978,19 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
         if "prs" in updates:
             changes.append(f"{t.id}: PRs " + ", ".join(written))
         for x in now:
+            key = pr_key(repo, x["number"])
+            named.setdefault(key, (pr_name(tr, repo, x["number"]), []))[1].append(t.id)
             if old.get(str(x["number"])) != x["state"]:
-                name = f"{repo}#{x['number']}" if len(tr.repos) > 1 else f"#{x['number']}"
-                events.setdefault((name, x["state"]), []).append(t.id)
-    for (name, pr_state), ids in events.items():
-        append_log(tr, f"PR {name} {PR_EVENT[pr_state]}", ids)
+                events.setdefault((key, x["state"]), (named[key][0], x.get("title", ""), []))[2].append(t.id)
+    for (pr, pr_state), (name, title, ids) in events.items():
+        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state, title=title)
+    logged = {(e.get("pr"), e.get("review")) for e in read_events(tr) if e["kind"] == "pr.review"}
+    for pr, (name, ids) in named.items():
+        for r in reviews.get(pr, []):
+            if (pr, r["id"]) not in logged:
+                append_event(tr, "pr.review", f"PR {name} review by {r['by']}: {REVIEW_EVENT[r['result']]}", ids,
+                             pr=pr, review=r["id"], by=r["by"], result=r["result"], submitted_at=r["submitted_at"],
+                             bot=r["bot"])
     changes += unblocked(tr, blocked)
     state = tr.state()
     state["last_sync"] = time.time()
@@ -910,8 +1012,9 @@ def close_action(tr: Tracker, a: Record, status: str, notes: list[str] | None = 
         die(f"{a.id} is {a.get('status')} already")
     a.change(a.status_update(status))
     append_notes(a, notes or [])
-    append_log(tr, f"{a.id} {status}: {a.get('title')}" + (f" → {short('; '.join(notes))}" if notes else ""),
-               [a.id, *a.list("refs")])
+    append_event(tr, "action.closed", f"{a.id} {status}: {a.get('title')}"
+                 + (f" → {short('; '.join(notes))}" if notes else ""), [a.id, *a.list("refs")], action=a.id,
+                 status=status)
     return f"{a.id} {status}"
 
 
@@ -928,7 +1031,8 @@ def set_branch(tr: Tracker, t: Record, branch: str, note: str = "") -> None:
     """Record the branch a ticket is built on, where sync finds its PR and every worktree finds the ticket; log it,
     with `note` (how the branch was found)."""
     t.change({"branch": branch})
-    append_log(tr, f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id])
+    append_event(tr, "branch.set", f"{t.id} is built on branch {branch}" + (f" ({note})" if note else ""), [t.id],
+                 branch=branch)
 
 
 def short(text: str, n: int = 90) -> str:

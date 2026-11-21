@@ -6,16 +6,15 @@ import datetime as dt
 import time
 from pathlib import Path
 
-from .system import BIN
+from .system import BIN, session_id
 from .markdown import section, strip_comments
-from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, README_INSTRUCTIONS, SCALES, STAGES, STALE_ACTION_DAYS,
-    STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
-from .model import (LOG_LINE, SPANS, cut, due_date, link_lines, logged_decision, resolution, sequence, short, span, Dep,
-    Record, Start, Tracker)
-from .moves import whose_move
+from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, QUIET_KINDS, README_INSTRUCTIONS, SCALES, STAGES,
+    STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
+from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_events, resolution, sequence, short,
+    span, Dep, Record, Start, Tracker)
 from .git import cwd_repo
-from .session import ago, branch_handoff, handoff_line, lag, Match
-from .contract import check
+from .session import ago, branch_handoff, handoff_line, lag, move_of, shown_tickets, Match
+from .contract import check, other_format
 
 # ---------------------------------------------------------------- views
 
@@ -73,11 +72,12 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
 
 
 def move_lines(tr: Tracker) -> list[str]:
-    """The tickets under way by whose move (`whose_move`), yours first: each move once, with its tickets."""
+    """The tickets that have a move (`move_of`: under way, or todo with an item of their own) by whose move, yours
+    first: each move once, with its tickets."""
     moves: dict[str, tuple[tuple, list[str]]] = {}  # text: (order, tickets)
     unread = []
     for t in tr.tickets:
-        move = whose_move(tr, t)
+        move = move_of(tr, t)
         if move:
             moves.setdefault(move.text(), ((not move.mine, move.rank, move.text()), []))[1].append(t.id)
         elif t.in_flight:
@@ -114,7 +114,7 @@ def start_text(tr: Tracker, s: Start) -> str:
     if s.base:
         b = s.base
         where = f"stack on {b.get('branch')}" if b.get("branch") else f"stack on {b.id}'s work (no branch recorded)"
-        move = whose_move(tr, b)
+        move = move_of(tr, b)
         facts = [f"{b.id} {b.stage}" + (f", {b.pr_refs}" if b.prs else ""), *([move.text()] if move else [])]
         return f"{where} ({'; '.join(facts)})"
     if s.apart:
@@ -189,16 +189,18 @@ CONTEXT_LOG = 3  # log lines `context` shows by default
 
 
 HISTORY_LAST = 30  # log lines `history` shows by default
+SHOWN_DECISION_KINDS = ("decision.opened", "decision.decided", "legacy")  # what a view of the decision says already
 
 
-def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset()) -> list[str]:
+def history_lines(tr: Tracker, refs: list[str], since: str, last: int, shown: set[str] = frozenset(),
+                  kinds: list[str] = ()) -> list[str]:
     """The log's last `last` lines (0: all), oldest first: those whose refs name any of `refs`, dated `since` or
-    later. A line that opened or settled a decision in `shown` is left out: the view shows that decision."""
-    path = tr.root / "log.md"
-    lines = [ln[2:] for ln in (path.read_text().splitlines() if path.exists() else [])
-             if (m := LOG_LINE.match(ln)) and m[1] >= since
-             and (not refs or set(refs) & set((m[2] or "").split()))
-             and logged_decision(ln[m.end():]) not in shown]
+    later, of `kinds` when given, else of any kind but QUIET_KINDS. A line that opened or settled a decision in
+    `shown` is left out: the view shows that decision. A legacy line that had no day is left out too."""
+    lines = [log_line(e)[2:] for e in read_events(tr)
+             if (e["kind"] in kinds if kinds else e["kind"] not in QUIET_KINDS)
+             and (day := event_day(e)) and day >= since and (not refs or set(refs) & set(e["refs"]))
+             and not (e.get("decision") in shown and e["kind"] in SHOWN_DECISION_KINDS)]
     return lines[-last:] if last > 0 else lines
 
 
@@ -219,7 +221,7 @@ def ticket_lines(tr: Tracker, rec: Record, handoff: bool = True, width: int = 0)
     k = "summary" if closed else "next"
     if rec.get(k):
         out.append(f"{k}: {rec.get(k)}")
-    move = whose_move(tr, rec)
+    move = move_of(tr, rec)
     if move:
         out.append(f"move: {move.text(' — ')}")
     if handoff and not closed and (h := branch_handoff(tr, tr.repo_of(rec), str(rec.get("branch")))):
@@ -321,6 +323,11 @@ def protocol(slug: str) -> str:
         "line shows what the PR waits on",
         "- a ticket ends: `step <id> \"...\" --done \"<what it delivered>\"`; you stop mid-work (a pause, a "
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
+        "- a ticket's plan is ready: `submit <id> --what plan`; its code is built: `submit <id> --what code`; then "
+        "wait for the review. Fix or answer each finding (`history --ref <id>` lists them), mark it "
+        "`review <id> --what <plan|code> --fixed <n>`, and submit again. Reviewing: "
+        "`review <id> --what <plan|code> --verdict pass`, or `--verdict changes` with a `--finding \"...\"` per "
+        "change. Tell another session something with `log \"...\" --ref <id>` only when no command records it",
         "- as they happen: a direction choice `decide`, each choice an `--option`; an order or blocker `wait`; a "
         "result file `attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a "
         "sign-off): ask them, then `act \"<what, with whom>\" --refs <ids>`",
@@ -334,10 +341,11 @@ def protocol(slug: str) -> str:
 
 HOW = {"branch": "", "use": " (chosen with `tracker use`)",
        "name": " (matched by the id in the branch name; if wrong, `tracker use <id>`)"}
-CHOSEN = " (this session's choice, from `tracker start --on`; `tracker start <slug>` clears it)"
+CHOSEN = (" (this session's choice, from `tracker start --on`, which the brief shows; news still comes on the "
+          "tickets it joined before; `tracker start <slug>` clears the choice)")
 PICK_ONE = ("More than one ticket is under way here. When this session's work is one of them, "
-            "`tracker start --on <id>` puts the session on it alone: the brief, the hooks, and `step` and `set` "
-            "without an id then use it.")
+            "`tracker start --on <id>` narrows the brief, the hooks' checks of this checkout, and `step` and `set` "
+            "without an id to it; news still comes on the tickets this session already joined.")
 BRANCH_RULE = ("Change git branches only when the user asks. When the user asks for a branch for a ticket, run "
                "`tracker context <id>` first, start the branch from the one its `start:` line names (else the "
                "default branch), and name it for the work, led by the ticket's Issue id when it has one; "
@@ -345,7 +353,7 @@ BRANCH_RULE = ("Change git branches only when the user asks. When the user asks 
 
 
 # A brief goes into every session's context: each fact once, and small. `tracker context <id>` has the rest.
-BRIEF_TICKETS_MAX = 3  # tickets under way shown in full; the rest get one line each
+BRIEF_TICKETS_MAX = 3  # tickets shown in full (`session.shown_tickets`); the rest get one line each
 BRIEF_CARRY_CHARS = 6000  # the dependencies' Carry forward, about 1.5K tokens
 BRIEF_LINE_CHARS = 200  # a Context, link, log or settled-decision line
 BRIEF_LOG = 2  # log lines per ticket
@@ -454,7 +462,8 @@ def check_lines(tr: Tracker, tickets: list[Record]) -> str:
     and the README in full. The rest wait for `check`, and each write prints the problems it adds."""
     errors, warnings = check(tr)
     ids = {t.id for t in tickets} | {"README.md"}
-    mine = [w for w in warnings if w.split(":", 1)[0] in ids]
+    said = f"README.md: {other_format(tr.root)}"  # the callers of a brief print this sentence after it
+    mine = [w for w in warnings if w.split(":", 1)[0] in ids and w != said]
     if not errors and not mine:
         return ""
     return "\n".join([f"Tracker check: {len(errors)} error(s) — run `check` and fix them." if errors
@@ -466,7 +475,8 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
-    and title only. `full` adds the tickets' bodies."""
+    and title only. `full` adds the tickets' bodies. The tickets are the checkout's, with the session's subscribed
+    tickets that the checkout does not hold (`session.shown_tickets`)."""
     tr = m.tracker
     if m.tickets:
         how = CHOSEN if m.chosen else HOW[m.how]
@@ -485,7 +495,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
         parts.append(f"The tracker may lag the work: {work.text()}. Bring it up to date from what you know: "
                      f"`step <id> --next \"...\"`, with {STEP_MESSAGE}"
                      + (" (it logs the commits)." if work.commits else "."))
-    focus = m.focus
+    focus = shown_tickets(m, session_id())
     if len(m.active) > 1 and not m.chosen:
         parts.append(PICK_ONE)
     rules = instructions(tr)
@@ -505,7 +515,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
                                    + (["", t.body.strip()] if full else [])))
         if rest:
             parts.append("\n".join(["Also under way (`tracker context <id>` for each):",
-                                    *(f"  {t.id} {t.stage}" + (f" ({mv.text()})" if (mv := whose_move(tr, t)) else "")
+                                    *(f"  {t.id} {t.stage}" + (f" ({mv.text()})" if (mv := move_of(tr, t)) else "")
                                       + f": {short(t.get('next') or t.get('title'), 120)}" for t in rest)]))
         shared = carry_lines(tr, shown, limit=BRIEF_CARRY_CHARS) + decision_lines(tr, shown, BRIEF_LINE_CHARS)
         if shared:
