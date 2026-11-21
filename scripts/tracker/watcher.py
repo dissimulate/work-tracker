@@ -1,7 +1,8 @@
 """`tracker watch`: a watch reports each change to a tracker, one line per ticket, agent or check: the new log lines,
 the facts no log line holds (`snapshot`), the agent sessions on the tracker, and GitHub (`sync`). It runs in a terminal,
 or in an agent session that the user, or a skill or instruction from them, told to watch; one per session and
-tracker."""
+tracker. A session's watch of its own tickets (`--mine`), which the turn-end hook asks for, prints only the session's
+news (`session.news`)."""
 
 from __future__ import annotations
 
@@ -19,8 +20,9 @@ from .git import forget
 from .schema import COORDINATOR, DEADLINE_S, LIVE_SYNC_S, QUIET_KINDS, STATE_KEEP_DAYS
 from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
-from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, coordinated, grant_path,
-    granted, is_time, items_of, state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
+from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, context_tracker, coordinated,
+    grant_path, granted, is_time, items_of, load_session, move_of, news, save_session, session_path, subscribed,
+    state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -52,13 +54,17 @@ def agent_session() -> tuple[bool, str]:
 
 
 def set_grant(sid: str, on: bool) -> None:
-    """Give a session the watch, or end it. Grants older than STATE_KEEP_DAYS go."""
+    """Give a session the watch, which also forgets the user's stop (`stop_watch`), or end it. Grants older than
+    STATE_KEEP_DAYS go."""
     path = grant_path(sid)
     if not path:
         return
     GRANTS.mkdir(parents=True, exist_ok=True)
     if on:
         path.write_text(str(int(time.time())))
+        with locked():
+            if load_session(sid).get("no_watch"):
+                save_session(sid, no_watch=None)
     else:
         path.unlink(missing_ok=True)
     for old in GRANTS.iterdir():
@@ -67,6 +73,17 @@ def set_grant(sid: str, on: bool) -> None:
                 old.unlink()
         except OSError:
             pass
+
+
+def stop_watch(sid: str) -> None:
+    """The user's stop (`tracker watch --stop`, /work-tracker:watch stop): end the grant, and keep in the session's
+    file, when it has one, that the user stopped it (`no_watch`), until a watch starts again: the turn-end hook then
+    asks for none."""
+    set_grant(sid, False)
+    path = session_path(sid)
+    with locked():
+        if path and path.exists():
+            save_session(sid, no_watch=True)
 
 
 def session_name(sid: str) -> str:
@@ -104,9 +121,20 @@ def needs_you(fact: dict) -> bool:
     return bool(fact.get("human")) or bool(fact.get("mine")) and fact.get("rank", 99) <= MOVE_URGENT
 
 
-def waits(x: Live, now: float) -> bool:
-    """An agent that waits on the user: it has asked for a while, or been idle for long."""
-    return x.status != "busy" and bool(x.since) and now - x.since >= (ASKING_S if x.status == "waiting" else IDLE_S)
+def waits(x: Live, now: float, watched: set[str]) -> bool:
+    """An agent that waits on the user: it has asked for a while, or been idle for long and is not of `watched`."""
+    if x.status == "busy" or not x.since:
+        return False
+    if x.status == "waiting":
+        return now - x.since >= ASKING_S
+    return x.sid not in watched and now - x.since >= IDLE_S
+
+
+def watching(slug: str, live: list[Live]) -> set[str]:
+    """Of the live sessions, those whose own watch of the tracker runs: one that waits on it is woken by it, so it is
+    neither idle and waiting on the user (`waits`) nor stuck while busy (a host that waits inside a turn), though one
+    that asks the user still is."""
+    return {x.sid for x in live if watch_running(load_state(slug, x.sid))}
 
 
 def ticket_events(old: dict, new: dict) -> list[Event]:
@@ -186,7 +214,7 @@ def agents_lines(tr: Tracker, now: float) -> list[str]:
     program that reaches an agent knows it by (Claude Code's session name, Herdr's terminal); its transcript."""
     out = []
     for x in live_sessions(tr.slug):
-        on = agent_tickets(tr, x.cwd, x.sid)
+        on = agent_tickets(tr, x.sid)
         facts = [f"on {', '.join(on)}" if on else "", f"branch {x.branch}" if x.branch else "", x.cwd,
                  f"claude {x.claude}" if x.claude else "", f"herdr {x.terminal}" if x.terminal else "",
                  f"transcript {x.transcript}" if x.transcript else ""]
@@ -211,12 +239,14 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     clock = time.strftime("%H:%M", time.localtime(now))
     facts = snapshot(tr)["tickets"]
     flight = [t for t in tr.tickets if t.in_flight]
-    on = {x.sid: agent_tickets(tr, x.cwd, x.sid) for x in live}
+    on = {x.sid: agent_tickets(tr, x.sid) for x in live}
     opened = [d.id for d in tr.open_decisions()]
     acts = [a.id for a in tr.open_actions()]
+    watched = watching(tr.slug, live)
 
     def agent(x: Live) -> str:
-        return f"agent {agent_state(x, now)}"
+        idle = x.status not in ("busy", "waiting")
+        return f"agent {x.name} watching" if idle and x.sid in watched else f"agent {agent_state(x, now)}"
 
     def line(urgent: bool, text: str) -> str:
         return short(f"{clock} {'! ' * urgent}{text}", LINE_MAX)
@@ -230,9 +260,9 @@ def summary(tr: Tracker, live: list[Live], now: float) -> list[str]:
     for t in flight:
         agents = [x for x in live if t.id in on[x.sid]]
         move = [f"move: {facts[t.id]['move']}"] if facts[t.id].get("move") else []
-        out.append(line(needs_you(facts[t.id]) or any(waits(x, now) for x in agents),
+        out.append(line(needs_you(facts[t.id]) or any(waits(x, now, watched) for x in agents),
                         " · ".join([f"{t.id} {t.stage}", *move, *map(agent, agents)])))
-    out += [line(waits(x, now), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
+    out += [line(waits(x, now, watched), f"{agent(x)} on no ticket") for x in live if not on[x.sid]]
     ready = [t.id for t, _ in tr.startable()]
     return out + ([line(False, f"can start: {', '.join(ready)}")] if ready else [])
 
@@ -308,12 +338,15 @@ class Watcher:
     `only` keeps the events of those EVENT_KINDS (and with URGENT, any urgent one); `hold` keeps those that need no one
     until the oldest is that many seconds old, so that they come as one batch. What it reported and holds lives in
     WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the terminal, misses nothing and
-    repeats nothing."""
+    repeats nothing. `mine`: a session's watch of its own tickets, which prints its news alone (`session.news`, which
+    the prompt hook shares, so each thing is told once) and ends by itself when none of them is open."""
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal", only: frozenset[str] = frozenset(),
-                 hold: float = 0, role: str = ""):
+                 hold: float = 0, role: str = "", mine: bool = False):
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
+        self.mine = mine
+        self.ended = False  # a `mine` look found the session off this tracker, or with no open ticket: it ends
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -327,10 +360,10 @@ class Watcher:
         write_json(state_path(self.slug, self.sid), {**self.st, "at": now})
 
     def with_role(self, st: dict) -> dict:
-        """The state with this run's role, and none when it was given none: a role is held only while the watch that
-        was given it runs."""
-        st = {k: v for k, v in st.items() if k != "role"}
-        return {**st, "role": self.role} if self.role else st
+        """The state with this run's role and whether it is `mine`, and neither when it was given neither: each holds
+        only while the watch that was given it runs."""
+        st = {k: v for k, v in st.items() if k not in ("role", "mine")}
+        return {**st, **({"role": self.role} if self.role else {}), **({"mine": True} if self.mine else {})}
 
     def claim(self, now: float) -> list[str]:
         """Take this session's (or the terminal's) watch of the tracker. Soon after its last run stopped: what
@@ -343,7 +376,9 @@ class Watcher:
                 die(f"{self.slug} is watched already, by {st.get('who')} (pid {pid}): one watch per session and "
                     "tracker", REFUSED)
             at = st.get("at")  # a damaged one is of no watch to catch up from
-            again = type(at) in (int, float) and now - at < CATCH_UP_S and "snapshot" in st
+            # A restart of the same kind of watch: a `mine` one keeps no snapshot.
+            again = type(at) in (int, float) and now - at < CATCH_UP_S and (
+                st.get("mine") is True if self.mine else "snapshot" in st)
             # Since when this watch has watched: a session's that ran on until now, in the same role, keeps its start.
             # Saved before the first lines, whose moves read it for a coordinator (`session.coordinator_since`).
             kept = again and self.sid and watch_running(st) and str(st.get("role") or "") == self.role
@@ -351,7 +386,12 @@ class Watcher:
             (WATCH_DIR / self.slug).mkdir(parents=True, exist_ok=True)
             set_grant(self.sid, True)  # a session's watch holds it; a watch refused above gives none
             write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid(), "started": started}))
-        if again:
+        if self.mine:
+            # A restart (`--once`, the host tool's timeout) says only what is new: the same first line each time would
+            # wake the session for nothing.
+            self.st = {}  # its first look (`force`) takes the files' signature
+            lines = ([] if again else [self.first_line(now)]) + self.news_lines(self.batch(now, force=True), now)
+        elif again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
                 st["seq"] = last_seq(self.tracker())
             st.pop("offset", None)
@@ -366,6 +406,7 @@ class Watcher:
         self.st.update(pid=os.getpid(), sid=self.sid, who=self.who, started=started)
         self.st = self.with_role(self.st)
         self.st.pop("ended", None)
+        self.st.pop("over", None)
         self.save(now)
         return lines
 
@@ -373,11 +414,23 @@ class Watcher:
         self.st.update(pid=0, ended=now)
         self.save(now)
 
+    def first_line(self, now: float) -> str:
+        """A new `mine` watch's first line: the session's subscription, each ticket with its stage and move."""
+        tr = self.tracker()
+        tickets = [f"{t.id} {t.stage}" + (f" · move: {move.text(' — ')}" if (move := move_of(tr, t)) else "")
+                   for t in subscribed(load_session(self.sid), tr)]
+        return short(f"{time.strftime('%H:%M', time.localtime(now))} watching your tickets on {self.slug}: "
+                     + ("; ".join(tickets) or "none open"), LINE_MAX)
+
+    def news_lines(self, events: list[Event], now: float) -> list[str]:
+        """A `mine` watch's lines: the session's news as it is, with the time: no merging by key, no `!`, no holding."""
+        return [short(f"{time.strftime('%H:%M', time.localtime(now))} {e.text}", LINE_MAX) for e in events]
+
     def poll(self, now: float) -> list[str]:
         forget()  # git as it is now: this process runs on
         events = self.batch(now)
-        lines = self.report(events, now)
-        if events or lines:
+        lines = self.news_lines(events, now) if self.mine else self.report(events, now)
+        if events or lines or self.ended:
             self.save(now)
         return lines
 
@@ -404,7 +457,10 @@ class Watcher:
         sig = files_hash(tr.data_files())
         if sig != self.sig and not self.changed:
             self.changed = now
-        if force or self.changed and now - self.changed >= SETTLE_S:
+        settled = force or bool(self.changed) and now - self.changed >= SETTLE_S
+        if self.mine:
+            return self.mine_batch(tr, sig, settled)
+        if settled:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
             # An event file shorter than the watch has seen (restored from a backup) numbers its new events again.
@@ -423,6 +479,24 @@ class Watcher:
             if named & set(a["on"]):
                 self.st.setdefault("activity", {})[sid] = now
         return events
+
+    def mine_batch(self, tr: Tracker, sig: str, settled: bool) -> list[Event]:
+        """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle. A sync that
+        fails is not said: a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is
+        on another tracker or none, or has no open subscribed ticket, with the news of a ticket that closed before
+        the end."""
+        if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
+            self.ended = True
+            return []  # its cursor is another tracker's now: it is not this watch's to move
+        # A change waits to settle, the end too: a hand edit is written before its hook counts it as the session's
+        # own (`own_edit`).
+        # ponytail: the wait runs from the first change seen, so an own hand edit just before an earlier change settles
+        # can still be told back once; restart the wait on each new signature if that is ever seen.
+        if not settled:
+            return []
+        self.sig, self.changed = sig, 0.0
+        self.ended = not subscribed(load_session(self.sid), tr)
+        return [Event("log", "", False, x) for x in news(self.sid, tr)]
 
     def github(self, now: float) -> list[Event]:
         """Start a SyncJob at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and once it ends, say once when
@@ -455,12 +529,14 @@ class Watcher:
 
     def agents(self, tr: Tracker, now: float) -> list[Event]:
         """The agent sessions on the tracker: each that starts, ends its turn or ends; each that waits on the user
-        (`waits`), or is busy so long with nothing recorded for its tickets (once per spell); two on one ticket."""
+        (`waits`), or is busy so long with nothing recorded for its tickets (once per spell), but for one that waits on
+        its own watch (`watching`); two on one ticket."""
         old, told, activity = self.st.get("agents", {}), self.st.setdefault("told", {}), \
             self.st.setdefault("activity", {})
-        agents, out = {}, []
-        for x in self.others():
-            on = agent_tickets(tr, x.cwd, x.sid)
+        agents, out, live = {}, [], self.others()
+        watched = watching(self.slug, live)
+        for x in live:
+            on = agent_tickets(tr, x.sid)
             agents[x.sid] = {"name": x.name, "on": on, "status": x.status, "since": x.since}
             key, where = f"agent {x.name}", f" on {', '.join(on)}" if on else ""
             was = old.get(x.sid)
@@ -476,11 +552,11 @@ class Watcher:
             quiet = now - max(x.since, activity.get(x.sid, 0))
             if told.get(spell) == x.since:
                 continue
-            if waits(x, now):
+            if waits(x, now, watched):
                 told[spell] = x.since
                 out.append(Event("agent", key, True, f"asks for a permission or an answer{where}"
                                  if x.status == "waiting" else f"idle {mins} min{where}: waits on you"))
-            elif x.status == "busy" and on and quiet >= BUSY_S:
+            elif x.status == "busy" and on and quiet >= BUSY_S and x.sid not in watched:
                 told[spell] = x.since
                 out.append(Event("agent", key, False, f"busy {mins} min; nothing recorded for {', '.join(on)} in "
                                                       f"{int(quiet // 60)} min"))
@@ -525,13 +601,14 @@ class Watcher:
         return out
 
     def run(self, once: bool) -> None:
-        """A session's watch stops when the user ends it (/work-tracker:watch stop)."""
+        """A session's watch stops when the user ends it (/work-tracker:watch stop); a `mine` one also ends by itself
+        (`ended`), with exit 0."""
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         lines = self.claim(time.time())
         try:
             if not once and not self.sid:  # for a person; a session's first lines say what it watches
                 print(f"watching {self.slug} (Ctrl-C stops); `!` marks what needs a human", flush=True)
-            while not (once and lines):
+            while not (once and lines) and not self.ended:
                 if lines:
                     print("\n".join(lines), flush=True)
                 time.sleep(POLL_S)
@@ -540,7 +617,17 @@ class Watcher:
                           flush=True)
                     sys.exit(REFUSED)
                 lines = self.poll(time.time())
-            print("\n".join(lines))
+            if lines:
+                print("\n".join(lines))
+            if self.ended:  # a `mine` watch with nothing left to watch: an end, not a refusal
+                print(f"{time.strftime('%H:%M')} no ticket of this session is open: the watch has ended",
+                      flush=True)
+                self.st["over"] = True  # it does not start again (`watch_running`)
+                # The grant is the session's: another watch of the session goes on with it.
+                own = state_path(self.slug, self.sid)
+                if not any(watch_running(read_json(f)) for f in WATCH_DIR.glob(f"*/{self.sid}.json") if f != own):
+                    set_grant(self.sid, False)
+                return
             if self.sid:
                 print("Next: the same `tracker watch` command again, in the background.", flush=True)
         except KeyboardInterrupt:

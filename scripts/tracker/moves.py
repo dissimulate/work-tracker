@@ -1,4 +1,4 @@
-"""Whose move a ticket under way waits on: this side (the user and the AI) or the people or thing named. Computed from
+"""Whose move a ticket waits on: this side (the user and the AI) or the people or thing named. Computed from
 the review facts `sync` reads, the ticket's blockers and the items still open in the log (`open_items`), with the
 clock (MOVE_RULE); nothing writes it, nor whether an item is stuck."""
 
@@ -31,7 +31,8 @@ PR_FACTS = {
 }
 YOU = "you"
 MOVE_RULE = (
-    "A ticket under way has a move: whose turn it waits on, computed, never written. In order: merge conflicts, "
+    "A ticket under way has a move: whose turn it waits on, computed, never written; so does a todo ticket with a "
+    "submission, findings or a question it waits on of its own. In order: merge conflicts, "
     "failing checks or requested changes not re-requested are yours; a requested review is the reviewer's; a "
     "submitted plan or built code is its reviewer's (the coordinator's, else a human's) until reviewed; findings of "
     "a review not yet fixed are yours; an open decision it waits on is its owner's: a human by name, the session on "
@@ -186,9 +187,9 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
                live: dict[str, str], coordinator_since: float = 0) -> list[Item]:
     """The items open at `now`, stuck first, then the oldest first, from one pass over `events` (the log, oldest
     first). `coordinated`: a coordinator watches the tracker, since `coordinator_since`; `on`: the tickets the live
-    sessions have under way; `live`: the sessions running now, each with its name. A submission is open until a
-    review answers it, a review's findings until each is marked fixed or the next submission comes, both while the
-    ticket is open; a question while its decision is open; a wait until its end, while its session runs.
+    sessions are on (their subscriptions); `live`: the sessions running now, each with its name. A submission is open
+    until a review answers it, a review's findings until each is marked fixed or the next submission comes, both while
+    the ticket is open; a question while its decision is open; a wait until its end, while its session runs.
     Stuck: a wait past its deadline; a submission or a question whose move is not a human's past its deadline, or at
     once when it concerns a ticket under way that no live session is on, and its move is then a human's. One whose
     move is a human's already is simply theirs; findings never are; a ticket not yet started makes nothing stuck. A
@@ -264,11 +265,18 @@ def open_items(tr: Tracker, events: list[dict], now: float, coordinated: bool, o
 
 
 def whose_move(tr: Tracker, t: Record, coordinated: bool = False, items: list[Item] = ()) -> Move | None:
-    """The move of a ticket under way (MOVE_RULE); None for any other ticket, and while `sync` has read the review facts
-    of none of its open PRs. `coordinated`: a coordinator watches the tracker; `items`: the open items (`open_items`).
-    `session.move_of` gives both."""
-    if not t.in_flight:
+    """The move of a ticket under way (MOVE_RULE), and while `sync` has read the review facts of none of its open PRs,
+    None. A todo ticket has the move of its own open item, if any (a submission, a review's findings, or the question
+    of a decision it waits on, as `--blocks` makes it): a worker writes its plan before it starts. A todo ticket that
+    only waits on tickets it depends on has none: that is planned work. A closed ticket has none. `coordinated`: a
+    coordinator watches the tracker; `items`: the open items (`open_items`). `session.move_of` gives both."""
+    if t.closed:
         return None
+    if not t.in_flight:
+        waits_on = set(t.list("depends_on"))
+        own = [i.move for i in items if t.id in i.refs and (
+            i.kind in ("submission", "findings") or i.key in {question_key(d) for d in waits_on})]
+        return min(own, key=lambda mv: (not mv.mine, mv.rank), default=None)
     open_prs = tr.open_prs(t)
     if not open_prs:
         return pr_move(tr, t, {}, coordinated, items)

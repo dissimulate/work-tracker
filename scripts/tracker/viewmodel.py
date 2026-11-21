@@ -12,7 +12,7 @@ from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, 
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
     log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
 from .moves import HANDOFF_KINDS, PR_NUMBER, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
-from .session import ago, around, items_of, live_by_tracker, live_sessions, match_cwd, move_of, Live
+from .session import ago, around, items_of, live_by_tracker, live_sessions, load_session, move_of, subscribed, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -253,10 +253,10 @@ def now_view(tr: Tracker) -> dict:
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
     moves = {t.id: move_of(tr, t) for t in tr.tickets if t.in_flight}
 
-    # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket they have under way; a
-    # session with none gets its own entry.
-    live = [(x, match_cwd(x.cwd, x.sid, tr)) for x in live_sessions(tr.slug)]
-    agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
+    # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket under way they subscribe
+    # to (`subscribed`); a session with none gets its own entry, with its open subscribed tickets.
+    live = [(x, subscribed(load_session(x.sid), tr)) for x in live_sessions(tr.slug)]
+    agents = {i: [x for x, mine in live if i in (r.id for r in mine)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:
         return [{"status": x.status, "word": agent_word(x), "cwd": x.cwd} for x in sessions]
@@ -278,9 +278,9 @@ def now_view(tr: Tracker) -> dict:
     for key, h in handoffs.items():
         items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""),
                       "agents": []})
-    for x, m in live:
-        if not m.active:
-            on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in m.focus]
+    for x, mine in live:
+        if not any(t.in_flight for t in mine):
+            on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in mine]
             items.append({"key": f"agent-{x.sid}", "kind": "agent", "on": on, "agents": agent_views([x])})
     idle = None
     if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":

@@ -6,14 +6,14 @@ import datetime as dt
 import time
 from pathlib import Path
 
-from .system import BIN
+from .system import BIN, session_id
 from .markdown import section, strip_comments
 from .schema import (FACTS, ISOLATION_RULE, KINDS, OPEN_STAGES, QUIET_KINDS, README_INSTRUCTIONS, SCALES, STAGES,
     STALE_ACTION_DAYS, STEP_MESSAGE, TEXT_FACTS, TEXT_MAX, days_since, show_value, stage_of, utc_seconds)
 from .model import (SPANS, cut, due_date, event_day, link_lines, log_line, read_events, resolution, sequence, short,
     span, Dep, Record, Start, Tracker)
 from .git import cwd_repo
-from .session import ago, branch_handoff, handoff_line, lag, move_of, Match
+from .session import ago, branch_handoff, handoff_line, lag, move_of, shown_tickets, Match
 from .contract import check, other_format
 
 # ---------------------------------------------------------------- views
@@ -72,7 +72,8 @@ def action_lines(tr: Tracker, width: int = 0) -> list[str]:
 
 
 def move_lines(tr: Tracker) -> list[str]:
-    """The tickets under way by whose move (`move_of`), yours first: each move once, with its tickets."""
+    """The tickets that have a move (`move_of`: under way, or todo with an item of their own) by whose move, yours
+    first: each move once, with its tickets."""
     moves: dict[str, tuple[tuple, list[str]]] = {}  # text: (order, tickets)
     unread = []
     for t in tr.tickets:
@@ -340,10 +341,11 @@ def protocol(slug: str) -> str:
 
 HOW = {"branch": "", "use": " (chosen with `tracker use`)",
        "name": " (matched by the id in the branch name; if wrong, `tracker use <id>`)"}
-CHOSEN = " (this session's choice, from `tracker start --on`; `tracker start <slug>` clears it)"
+CHOSEN = (" (this session's choice, from `tracker start --on`, which the brief shows; news still comes on the "
+          "tickets it joined before; `tracker start <slug>` clears the choice)")
 PICK_ONE = ("More than one ticket is under way here. When this session's work is one of them, "
-            "`tracker start --on <id>` puts the session on it alone: the brief, the hooks, and `step` and `set` "
-            "without an id then use it.")
+            "`tracker start --on <id>` narrows the brief, the hooks' checks of this checkout, and `step` and `set` "
+            "without an id to it; news still comes on the tickets this session already joined.")
 BRANCH_RULE = ("Change git branches only when the user asks. When the user asks for a branch for a ticket, run "
                "`tracker context <id>` first, start the branch from the one its `start:` line names (else the "
                "default branch), and name it for the work, led by the ticket's Issue id when it has one; "
@@ -351,7 +353,7 @@ BRANCH_RULE = ("Change git branches only when the user asks. When the user asks 
 
 
 # A brief goes into every session's context: each fact once, and small. `tracker context <id>` has the rest.
-BRIEF_TICKETS_MAX = 3  # tickets under way shown in full; the rest get one line each
+BRIEF_TICKETS_MAX = 3  # tickets shown in full (`session.shown_tickets`); the rest get one line each
 BRIEF_CARRY_CHARS = 6000  # the dependencies' Carry forward, about 1.5K tokens
 BRIEF_LINE_CHARS = 200  # a Context, link, log or settled-decision line
 BRIEF_LOG = 2  # log lines per ticket
@@ -473,7 +475,8 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
     """What a session needs to work, most urgent first: where it is, the handoff, work the tracker may not show yet,
     then the tickets under way (the branch's other tickets in one line) with what they build on and the decisions
     that touch them, or, with none, what can start. `compact` (after a compaction) gives each Context line its label
-    and title only. `full` adds the tickets' bodies."""
+    and title only. `full` adds the tickets' bodies. The tickets are the checkout's, with the session's subscribed
+    tickets that the checkout does not hold (`session.shown_tickets`)."""
     tr = m.tracker
     if m.tickets:
         how = CHOSEN if m.chosen else HOW[m.how]
@@ -492,7 +495,7 @@ def brief(m: Match, cwd: str | Path, note: str = "", compact: bool = False, full
         parts.append(f"The tracker may lag the work: {work.text()}. Bring it up to date from what you know: "
                      f"`step <id> --next \"...\"`, with {STEP_MESSAGE}"
                      + (" (it logs the commits)." if work.commits else "."))
-    focus = m.focus
+    focus = shown_tickets(m, session_id())
     if len(m.active) > 1 and not m.chosen:
         parts.append(PICK_ONE)
     rules = instructions(tr)

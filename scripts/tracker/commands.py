@@ -26,15 +26,15 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
 from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
-    in_repos, items_of, kept_words, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch,
-    record_commits, remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, unlink_session,
-    work_dir)
+    context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date, match_cwd,
+    matched, no_tracker, on_branch, record_commits, relink_session, keep_told_next, resolve, save_session, session_id,
+    session_tracker, start_subscription, subscribe, trackers_for_repo, unlink_session, work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
 from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, grant_path,
-                      session_name, set_grant, Watcher)
+                      session_name, stop_watch, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
@@ -236,6 +236,8 @@ def cmd_set(args):
     if moved:
         append_event(tr, "status", status_line(rec), [] if rec.kind == "tracker" else [rec.id],
                      status=str(rec.get("status")))
+    if rec.kind == "ticket" and ("next" in updates or "status" in updates and not to.closed):
+        subscribe(tr, [rec.id])  # its work: also a status it already had, which writes nothing
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if starts:
@@ -1017,6 +1019,7 @@ def cmd_submit(args):
     tr, t = open_ticket(args)
     note = f": {args.note}" if args.note else ""
     append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
+    subscribe(tr, [t.id])
     print(f"submitted {t.id}'s {args.what}")
 
 
@@ -1054,6 +1057,7 @@ def cmd_review(args):
         listed = numbered("finding", fixed)
         append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
                      of=review["seq"], findings=fixed)
+        subscribe(tr, [t.id])
         print(f"marked {listed} of {t.id}'s {name} fixed")
         return
     findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
@@ -1103,6 +1107,7 @@ def cmd_step(args):
         done.append("logged")
     if args.done:
         append_event(tr, "status", status_line(t), [t.id], status=str(t.get("status")))
+    subscribe(tr, [t.id])
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
@@ -1156,7 +1161,13 @@ def cmd_start(args):
     the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
-        unlink_session(sid)
+        with locked():  # one step: a hook between the unlink and the empty subscription would seed it
+            unlink_session(sid)
+            named = match_cwd(cwd, sid) if sid else None  # TRACKER names a tracker: its hooks still run there
+            if named:
+                start_subscription(sid, named, [])  # on none of its tickets, which no hook seeds again
+                print(f"this session is on no ticket of {named.tracker.slug} now (TRACKER names it)")
+                return
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
         return
     if args.decline:
@@ -1201,29 +1212,36 @@ def cmd_start(args):
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
     refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    words = load_session(sid).get("words")  # the words a session kept go with it to the tracker it moves to
-    unlink_session(sid)  # a new start: nothing seen yet
-    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None, words=words)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)
+    ids = [r.id for r in picks] or None
+    with locked():  # one step: a hook between the link and the subscription would seed its own folder into it
+        relink_session(sid, tracker=tr.slug, focus=ids)
+        linked = match_cwd(cwd, sid)
+        start_subscription(sid, linked, ids)  # on its own tracker it adds, and keeps what it was told
+    m, found = match_pr(linked, cwd)  # outside the lock: it may ask GitHub
+    if m is not linked:  # it tied the branch to a ticket, which the session starts on too
+        start_subscription(sid, m, ids)
+    keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
-    remember(sid, m, cwd)
+    keep_told_next(sid, m, cwd)
     print(brief(m, cwd, note=found))
     tell_updates(m.tracker)
 
 
 def cmd_watch(args):
     """A watch, in a terminal or in an agent session, which it gives the grant (the hooks and the UIs know a watching
-    session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
-    skill say so."""
+    session by it); `--stop` ends the session's watches. The model runs it only when told to, or, for its own tickets
+    (`--mine`), when the turn-end hook asks: its help and the watch skill say so."""
     inside, sid = agent_session()
     if args.role and not inside:
         die(f"--as {args.role}: a session takes the role, not a terminal")
+    if args.mine and not inside:
+        die("--mine watches an agent session's own tickets: a terminal has none")
     if inside and not grant_path(sid):
         die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
     if args.stop:
         if not inside:
             die("a terminal's watch ends with Ctrl-C")
-        set_grant(sid, False)
+        stop_watch(sid)
         print("The watch has ended: a `tracker watch` of this session still running stops within seconds.")
         return
     only = frozenset(k.strip() for k in (args.only or "").split(",") if k.strip())
@@ -1231,9 +1249,17 @@ def cmd_watch(args):
         die(f"--only takes {', '.join([*EVENT_KINDS, URGENT])}")
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
+    if args.mine and (args.role or only or args.hold):
+        die("--mine takes no --as, --only or --hold: it prints each change to this session's tickets at once")
+    own = context_tracker(sid) if args.mine else None
+    if args.mine and not own:  # before a tracker is named: a list of them would offer one it then refuses
+        die("--mine watches this session's tickets, and it is on no tracker: `tracker start <name>` puts it on one")
     tr = named_tracker(args, "watch")
+    if args.mine and own.slug != tr.slug:
+        die(f"--mine watches this session's tickets on its own tracker: {own.slug}, which `tracker watch --mine` with "
+            "no name watches")
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
-            args.hold, args.role or "").run(args.once)
+            args.hold, args.role or "", args.mine).run(args.once)
 
 
 def cmd_agents(args):
@@ -1305,6 +1331,7 @@ def cmd_use(args):
     recs = [first, *(tr.find(i) for i in ids[1:])]
     if any(r.kind != "ticket" for r in recs):
         die("`use` takes ticket ids")
+    subscribe(tr, [r.id for r in recs])
     if branch not in default_branches(cwd):
         # Recorded on each ticket (set_branch); the branch keeps its other tickets.
         for t in recs:

@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -244,6 +245,7 @@ else:
         fcntl.flock(f, fcntl.LOCK_UN)
 
 _depth = 0  # how deep this process holds the lock: a second flock on another open file would block against the first
+_threads = threading.RLock()  # the threads of one process take turns (a watch's sync), as `_depth` is the process's
 
 
 @contextmanager
@@ -251,23 +253,24 @@ def locked():
     """One writer at a time, across every session and worktree: held around each read-modify-write of tracker
     files. Reentrant."""
     global _depth
-    if _depth:
-        _depth += 1
-        try:
-            yield
-        finally:
-            _depth -= 1
-        return
-    HOME.mkdir(parents=True, exist_ok=True)
-    with open(HOME / ".lock", "a") as f:
-        deadline = time.monotonic() + LOCK_TIMEOUT_S
-        while not try_lock(f):
-            if time.monotonic() > deadline:
-                raise Busy(f"another tracker command has held the lock for {LOCK_TIMEOUT_S}s; try again")
-            time.sleep(0.05)
-        _depth = 1
-        try:
-            yield
-        finally:
-            _depth = 0
-            unlock(f)
+    with _threads:
+        if _depth:
+            _depth += 1
+            try:
+                yield
+            finally:
+                _depth -= 1
+            return
+        HOME.mkdir(parents=True, exist_ok=True)
+        with open(HOME / ".lock", "a") as f:
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            while not try_lock(f):
+                if time.monotonic() > deadline:
+                    raise Busy(f"another tracker command has held the lock for {LOCK_TIMEOUT_S}s; try again")
+                time.sleep(0.05)
+            _depth = 1
+            try:
+                yield
+            finally:
+                _depth = 0
+                unlock(f)
