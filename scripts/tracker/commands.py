@@ -169,6 +169,8 @@ def cmd_decisions(args):
 
 
 def cmd_find(args):
+    """Each line of the tracker's files that holds the text, ignoring case. A byte that is not UTF-8 (a hand edit in
+    another encoding) reads as U+FFFD: one such file stops no search."""
     trackers = all_trackers() if args.all else [resolve(args)]
     pat = re.compile(re.escape(args.text), re.I)
     hits = 0
@@ -177,7 +179,7 @@ def cmd_find(args):
         for p in files:
             if not p.exists():
                 continue
-            for n, line in enumerate(p.read_text().splitlines(), 1):
+            for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if pat.search(line):
                     where = p.relative_to(HOME if args.all else tr.root)
                     print(f"{where}:{n}: {line.strip()[:160]}")

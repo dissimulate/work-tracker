@@ -1500,6 +1500,17 @@ class Upgrade(unittest.TestCase):
         self.assertEqual(legacy["text"], "caf\ufffd in Latin-1")  # the bytes it cannot read, marked
         self.assertTrue((root / "log.md").read_bytes().startswith(b"# Log\n\n- 2026-01-02 [T-1] caf\xe9"))
 
+    def test_find_reads_a_log_md_that_is_not_utf8(self):
+        bad, bt = new_tracker("Latin")
+        good, gt = new_tracker("Plain")
+        run(*gt, "log", "cafe au lait")
+        with open(store.HOME / bad / "log.md", "ab") as f:
+            f.write(b"- 2026-01-02 caf\xe9 by hand\n")
+        found = run("find", "caf", "--all")
+        self.assertIn(f"{good}/log.md:", found)
+        self.assertIn("caf\ufffd by hand", found)  # the byte it cannot read, marked
+        self.assertIn("caf\ufffd by hand", run(*bt, "find", "caf"))
+
     def test_migration_runs_once(self):
         s, t, root = self.format_5_log()
         run(*t, "index")
