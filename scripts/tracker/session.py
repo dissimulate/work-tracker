@@ -937,11 +937,20 @@ def keep_folder(sid: str, tr: Tracker, folder: str | Path) -> None:
 @dataclass
 class News:
     """What `news` found to tell a session, and the state that counts it as told, which `told` saves."""
-    lines: list[str]
-    about: list[str]  # the records the lines are about, in their order
+    said: list[tuple[str, str]]  # each line, with the record it is about
+    slug: str  # the tracker
     seen: dict  # `watch` of the session's subscription now
     seq: int  # the event file's last seq now
     read: tuple  # the session's `seen` and `seen_seq` as `news` read them
+
+    @property
+    def lines(self) -> list[str]:
+        return [line for _, line in self.said]
+
+    @property
+    def about(self) -> list[str]:
+        """The records the lines are about, in their order."""
+        return list(dict.fromkeys(key for key, _ in self.said))
 
 
 def news(sid: str, tr: Tracker) -> News:
@@ -976,19 +985,18 @@ def news(sid: str, tr: Tracker) -> News:
             for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
                 said.append((key, text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}"))
-        return News([line for _, line in said], list(dict.fromkeys(key for key, _ in said)),
-                    watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
+        return News(said, tr.slug, watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
 
 
-def told(sid: str, tr: Tracker, found: News) -> None:
-    """Count what `news` found as told, once its lines are out: a hook or a watch cut short before them tells them
-    next time. Nothing is saved when another caller saved the session's `seen` or cursor since `news` read them (the
-    other of the prompt hook and the watch, or `count_own`): what it saved is kept, and a line told twice beats one
+def told(sid: str, found: News) -> None:
+    """Count what `news` found as told, once its lines are out: a hook or a watch cut short before them tells them next
+    time. Nothing is saved when another caller saved the session's `seen` or cursor since `news` read them (the other of
+    the prompt hook and the watch, `count_own` or `saw`): what it saved is kept, and a line told twice beats one
     lost."""
     with locked():
-        state = state_on(load_session(sid), tr.slug)
+        state = state_on(load_session(sid), found.slug)
         if (state["seen"], state["seen_seq"]) == found.read:
-            save_state(sid, tr.slug, seen=found.seen, seen_seq=found.seq)
+            save_state(sid, found.slug, seen=found.seen, seen_seq=found.seq)
 
 
 def shown_tickets(m: Match, sid: str) -> list[Record]:

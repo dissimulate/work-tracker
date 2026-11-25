@@ -438,7 +438,7 @@ def hook_prompt(data: dict) -> None:
         save_session(sid, **fields)
     if lines:
         emit_context("UserPromptSubmit", "\n".join(lines))
-    told(sid, m.tracker, found)  # after the output: a hook cut short before it leaves the news to the next message
+    told(sid, found)  # after the output: a hook cut short before it leaves the news to the next message
 
 
 # An option that only says go or stop. A question whose options are all such asks for approval, not for a direction.

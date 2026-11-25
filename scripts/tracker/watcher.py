@@ -402,7 +402,7 @@ class Watcher:
         if self.mine:
             # A restart (`--once`, the host tool's timeout) says only what is new: the same first line each time would
             # wake the session for nothing, and so would a sync failure it told already.
-            self.st = {k: st[k] for k in ("sync_failed",) if again and k in st}  # its first look takes the signature
+            self.st = {"sync_failed": st["sync_failed"]} if again and "sync_failed" in st else {}
             lines = ([] if again else [self.first_line(now)]) + self.news_lines(self.batch(now, force=True), now)
         elif again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
@@ -516,17 +516,13 @@ class Watcher:
             return []
         self.sig, self.changed = sig, 0.0
         self.ended = "" if subscribed(load_session(self.sid), tr) else MINE_DONE
-        found = news(self.sid, tr)
-        if found.lines:
-            self.untold = found
-        else:
-            told(self.sid, tr, found)
-        return [Event("log", "", False, x) for x in found.lines]
+        self.untold = news(self.sid, tr)
+        return [Event("log", "", False, x) for x in self.untold.lines]
 
     def printed(self) -> None:
         """The lines so far are printed: the news they hold counts as told (`session.told`)."""
         if self.untold:
-            told(self.sid, self.tracker(), self.untold)
+            told(self.sid, self.untold)
             self.untold = None
 
     def github(self, now: float) -> list[Event]:
@@ -536,8 +532,8 @@ class Watcher:
             return []
         # A `mine` watch says only a failure of GitHub's: the session can do nothing about a sync that could not run
         # here, and the next one tries again.
-        told = self.job and not (self.mine and self.job.raised)
-        out = self.sync_told(self.job.changes, now) if told else []
+        say = self.job and not (self.mine and self.job.raised)
+        out = self.sync_told(self.job.changes, now) if say else []
         self.job = None
         if self.tracker().repos and now - self.synced >= LIVE_SYNC_S:
             self.synced = now
@@ -645,7 +641,7 @@ class Watcher:
             while not (once and lines) and not self.ended:
                 if lines:
                     print("\n".join(lines), flush=True)
-                    self.printed()
+                self.printed()  # also a look with nothing to say: its count of what was told
                 time.sleep(POLL_S)
                 if self.sid and not granted(self.sid):
                     print("The watch has ended (`tracker watch --stop`): do not start it again unless told to.",
@@ -654,7 +650,7 @@ class Watcher:
                 lines = self.poll(time.time())
             if lines:
                 print("\n".join(lines), flush=True)  # flushed before its news counts as told
-                self.printed()
+            self.printed()
             if self.ended:  # a `mine` watch with nothing left to watch here: an end, not a refusal
                 print(f"{time.strftime('%H:%M')} {self.ended}", flush=True)
                 self.st["over"] = True  # it does not start again (`watch_running`)
