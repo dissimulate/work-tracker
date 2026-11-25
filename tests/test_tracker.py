@@ -3290,16 +3290,19 @@ class SessionNews(TwoSessions):
                     tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
                 self.assertIn("T-1 move now: you", self.message())  # the review made it A's: not A's own doing
 
-    def test_a_ticket_i_closed_that_someone_reopens_tells_its_move_again(self):
-        for between in (False, True):
-            with self.subTest(message_between=between):
-                self.setUp()
-                self.message()
-                self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")  # its own close: its move goes
-                if between:
-                    self.assertNotIn("Changed on", self.message())
-                run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
-                self.assertIn("T-1 move now: you", self.message())
+    def test_a_ticket_i_closed_that_someone_reopens_before_my_next_message_tells_its_move(self):
+        self.message()
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")  # its own close: its move goes
+        run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
+        self.assertIn("T-1 move now: you", self.message())
+
+    def test_a_note_on_a_ticket_i_closed_and_was_told_of_is_no_news(self):
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-2 too, which stays open
+        self.message()
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
+        self.message()  # T-1 is no longer its own
+        self.as_b(*self.t, "log", "--ref", "T-1", "postmortem note")
+        self.assertNotIn("postmortem note", self.message())
 
     def hand_edit_next(self, ident: str) -> None:
         """A hand edit of `next` in a ticket file, and its hook."""

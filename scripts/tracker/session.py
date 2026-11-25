@@ -917,7 +917,8 @@ def told_before(state: dict) -> tuple[dict, set[str]]:
 
 def told_about(entry: dict, tr: Tracker) -> list[Record]:
     """The tickets a session's news is about: its subscription (`subscribed`), then the ones it was told of before (the
-    `own` entries of its `seen`) that have closed since, which are told of once more (their end)."""
+    `own` entries of its `seen`) that have closed since, which are told of once more (their end). `told` then keeps
+    only the subscription in `seen`, so a closed ticket is no news after that, nor its opening again."""
     tickets = subscribed(entry, tr)
     ids = {t.id for t in tickets}
     told = told_before(state_on(entry, tr.slug))[1]
@@ -944,7 +945,7 @@ class News:
     """What `news` found to tell a session, and the state that counts it as told, which `told` saves."""
     said: list[tuple[str, str]]  # each line, with the record it is about
     slug: str  # the tracker
-    seen: dict  # `watch` of the session's subscription now
+    seen: dict  # `watch` of the session's subscription now: a ticket whose end this tells drops out
     seq: int  # the event file's last seq now
     read: tuple  # the session's `seen` and `seen_seq` as `news` read them
 
@@ -992,9 +993,7 @@ def news(sid: str, tr: Tracker) -> News:
             for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
                 said.append((key, text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}"))
-        # Of `told_about`, not the subscription alone: a ticket that closed keeps what the session was told of it, so
-        # one that opens again tells its move.
-        return News(said, tr.slug, watch(tr, about), last, (state["seen"], base))
+        return News(said, tr.slug, watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
 
 
 def told(sid: str, found: News) -> None:
