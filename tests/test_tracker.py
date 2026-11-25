@@ -2993,15 +2993,16 @@ class SessionNews(TwoSessions):
         return out.getvalue()
 
     def test_what_a_post_bash_sync_read_stays_news_when_the_hook_is_cut_short(self):
-        for merged, said_ in ((False, ["PR #11 open for review", "T-1 move now: you"]),
-                              (True, ["PR #11 merged", "T-1 is now done"])):
-            with self.subTest(merged=merged):
+        cases = [(merged, at) for merged in (False, True) for at in ("record_commits", "emit_context")]
+        for merged, at in cases:
+            said_ = ["PR #11 merged", "T-1 is now done"] if merged else ["PR #11 open for review", "T-1 move now: you"]
+            with self.subTest(merged=merged, at=at):
                 self.setUp("a/x")
                 self.message()
                 commit(self.work, "x")
-                # It syncs for the push, then logs the commit, and is cut short there (its timeout, a git error).
-                with mock.patch.object(hooks, "record_commits", side_effect=SystemExit(1)), \
-                        self.assertRaises(SystemExit):
+                # It syncs for the push, then logs the commit, and is cut short there (its timeout, a git error), or
+                # as its output goes out.
+                with mock.patch.object(hooks, at, side_effect=SystemExit(1)), self.assertRaises(SystemExit):
                     self.assertEqual(self.push(review=False, merged=merged, command="git commit -am x && git push"),
                                      "")
                 told = self.message()
@@ -3117,8 +3118,8 @@ class SessionNews(TwoSessions):
         self.message()
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         data = {"session_id": self.a, "cwd": str(self.work), "prompt": "go on"}
-        # The hook is killed after it read the news and before its output: in its git or lock waits, say.
-        with mock.patch.object(hooks, "next_request", side_effect=SystemExit(1)), \
+        # The hook is killed as its output goes out, the last step before it counts the news as told.
+        with mock.patch.object(hooks, "emit_context", side_effect=SystemExit(1)), \
                 mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), self.assertRaises(SystemExit):
             hooks.hook_prompt(data)
         self.assertIn("T-1: base branch moved", self.message())
