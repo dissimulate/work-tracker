@@ -482,8 +482,8 @@ class Watcher:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
             # An event file shorter than the watch has seen (restored from a backup) numbers its new events again.
-            # ponytail: what it holds at this look counts as seen, one written since the restore too; keep a hash of
-            # the last event seen to tell a restore apart if that is ever missed.
+            # What it holds at this look counts as seen, also an event written since the restore: the seq alone
+            # cannot tell the two apart.
             self.st["seq"] = min(self.st["seq"], last_seq(tr))
             logged = read_events(tr, self.st["seq"])
             if logged:
@@ -507,8 +507,8 @@ class Watcher:
             return []  # its cursor is another tracker's now: it is not this watch's to move
         # A change waits to settle, the end too: a hand edit is written before its hook counts it as the session's
         # own (`own_edit`).
-        # ponytail: the wait runs from the first change seen, so an own hand edit just before an earlier change settles
-        # can still be told back once; restart the wait on each new signature if that is ever seen.
+        # The wait runs from the first change seen, so an own hand edit made just before an earlier change settles can
+        # still be told back once.
         if not settled:
             return []
         self.sig, self.changed = sig, 0.0

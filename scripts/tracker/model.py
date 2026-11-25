@@ -831,8 +831,8 @@ def append_event(tr: Tracker, kind: str, text: str, refs: list[str], **data) -> 
     path = tr.root / EVENTS_FILE
     # A writer killed part way leaves a last line with no newline: the new event starts a line of its own.
     append(path, ("\n" if ends_open(path) else "") + json.dumps(e, ensure_ascii=False) + "\n")
-    # ponytail: the line is appended, not log.md regenerated, so a hand edit of log.md stays in it (only `tracker
-    # find` reads it back); regenerate it from the events on each write if drift is ever seen.
+    # The line is appended, not log.md written again from the events, so a hand edit of log.md stays in it; only
+    # `tracker find` reads log.md back.
     if kind not in QUIET_KINDS:
         append(tr.root / "log.md", log_line(e) + "\n")
     return e
@@ -867,8 +867,8 @@ EVENTS_READ: dict[Path, tuple[tuple[int, int], list[dict | None]]] = {}
 
 def cached_event_lines(tr: Tracker) -> list[dict | None]:
     """`event_lines`, read again only when the file's size or modified time changed: one read per process however
-    many views and tickets ask, also in a watch that runs on. The list is shared: do not change it.
-    ponytail: the whole event file is read when it changes; keep a tail index if a tracker's log outgrows that."""
+    many views and tickets ask, also in a watch that runs on. The list is shared: do not change it. A change reads the
+    whole file again, so the cost of a change grows with the log."""
     try:
         st = (tr.root / EVENTS_FILE).stat()
     except FileNotFoundError:

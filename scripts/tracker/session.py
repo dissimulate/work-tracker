@@ -657,7 +657,7 @@ def coordinated(tr: Tracker) -> bool:
 def coordinator_since(tr: Tracker) -> float:
     """Since when a coordinator has watched the tracker (`coordinated`), as its running watch's start (epoch s); 0
     with none."""
-    # ponytail: it reads the watch folder on each call; cache per command if a view of a large tracker shows it.
+    # It reads the watch folder at each call; a view asks through `around`, once per Tracker object.
     starts = [st.get("started") for st in map(read_json, (WATCH_DIR / tr.slug).glob("*.json"))
               if st.get("role") == COORDINATOR and watch_running(st)]
     # A start that is no time (a damaged state) counts as long ago: no view stops for it (`watch_running`)
