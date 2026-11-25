@@ -1050,36 +1050,53 @@ def count_own(sid: str, tr: Tracker, picked) -> None:
 @dataclass
 class Shown:
     """What a sync for the session's own command read (`own_sync`), and what counts as seen once its lines are out."""
-    lines: list[str]  # the sync's change lines, then what it changed of the session's tickets (`changes_since`)
-    seen: dict  # those entries of `watch`, as they are now
-    events: list[int]  # the seqs of the PR states it wrote under the session's id
+    slug: str  # the tracker
+    lines: list[str]  # the sync's change lines, then what the session was not told yet of what it changed
+    seen: dict  # the entries of the session's `watch` that the sync changed, as `lines` tell them
+    events: list[int]  # the seqs of the PR state events this sync wrote, which its change lines say
 
 
 def own_sync(sid: str, tr: Tracker, run) -> Shown:
-    """Run `run`, a sync whose lines the session's agent will see, and give those lines with what it changed of the
-    session's tickets: a move a review or a PR's new state made, a ticket that ended. Nothing counts as seen until the
-    caller has passed them on and calls `saw`. The PR states are those written under the session's id since the sync
-    began: its own, or a background one's of the same session meanwhile, whose effect these lines show too."""
-    before, first = watch(tr, told_about(load_session(sid), tr)), last_seq(tr)
-    lines = run()
+    """Run `run(states)`, a sync whose lines the agent of the session `sid` ("" for none) will see, which adds to
+    `states` the PR state events it writes. Gives its lines, then, for each entry of the session's `watch` that the
+    sync changed, what the session was not told yet (`changes_since` from what it was told of it, else from before the
+    sync): a move, a ticket's end. Nothing counts as seen until the caller has passed them on and calls `saw`, and
+    then only those entries and events: a concurrent sync's, even under this session's id, stay news."""
+    states: list[int] = []
+    before = own_watch(sid, tr)
+    lines = run(states)
+    if not sid:
+        return Shown(tr.slug, lines, {}, [])
     tr = Tracker(tr.root)
-    now = watch(tr, told_about(load_session(sid), tr))
-    events = [e["seq"] for e in read_events(tr, first) if e["kind"] == "pr.state" and own_event(e, sid)]
-    return Shown(lines + [line for _, line in changes_since(tr, before, now)],
-                 {k: v for k, v in now.items() if before.get(k) != v}, events)
+    entry = load_session(sid)
+    now = watch(tr, told_about(entry, tr))
+    changed = {k: v for k, v in now.items() if before.get(k) != v}
+    told = state_on(entry, tr.slug)["seen"] or {}
+    said = changes_since(tr, {k: told.get(k, before.get(k)) for k in changed}, changed)
+    return Shown(tr.slug, lines + [line for _, line in said], changed, states)
 
 
-def saw(sid: str, tr: Tracker, shown: Shown) -> None:
+def saw(sid: str, shown: Shown) -> None:
     """Count what `own_sync` found as seen, once its lines are out, so that `news` does not repeat it: a hook or a
     command cut short before them leaves it all news."""
-    if not (shown.seen or shown.events):
+    count_seen(sid, shown.slug, shown.seen, shown.events)
+
+
+def count_seen(sid: str, slug: str, entries: dict, events: list[int] = ()) -> None:
+    """What the session's own action showed it or did: merge `entries` (of `watch`) into its `seen` on `slug`, and
+    `events` into its `seen_events`, but those its cursor already covers."""
+    if not (entries or events):
         return
     with locked():
-        state = state_on(load_session(sid), tr.slug)
-        seen = {**(state["seen"] or {}), **shown.seen}
-        cursor = state["seen_seq"] or 0  # what the cursor covers needs no mark
-        events = sorted(x for x in {*(state["seen_events"] or []), *shown.events} if x > cursor)
-        save_state(sid, tr.slug, seen=seen, seen_events=events or None)
+        state = state_on(load_session(sid), slug)
+        cursor = state["seen_seq"] or 0
+        shown = sorted(x for x in {*(state["seen_events"] or []), *events} if x > cursor)
+        save_state(sid, slug, seen={**(state["seen"] or {}), **entries}, seen_events=shown or None)
+
+
+def own_watch(sid: str, tr: Tracker) -> dict[str, dict]:
+    """`watch` of what the session's news is about (`told_about`), now; {} for no session."""
+    return watch(tr, told_about(load_session(sid), tr)) if sid else {}
 
 
 # ---------------------------------------------------------------- live sessions

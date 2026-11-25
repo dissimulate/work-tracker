@@ -3052,6 +3052,37 @@ class SessionNews(TwoSessions):
         self.assertIn("PR #11 open for review", told)
         self.assertIn("T-1 move now: you", told)
 
+    def test_a_pr_state_another_sync_of_mine_wrote_meanwhile_stays_news(self):
+        self.setUp("a/x")
+        run(*self.t, "set", "T-2", "branch=f2")
+        run(*self.t, "set", "T-2", "status=in-progress")
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-1 and T-2
+        prs = [pull(11, branch="f1")]
+        with mock.patch.object(github, "gh", answers(prs)), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
+            github.sync(model.tracker_at(self.s), every=0)
+        self.message()
+        prs.append(pull(12, branch="f2", requested=["rev"]))  # its move is the reviewer's: no line says it
+        real = github.sync
+
+        def racing(tr, **kw):
+            real(tr, every=0)  # A's other sync (its watch's, a background one) writes T-2's PR #12 first
+            return real(tr, **kw)  # the hook's own then finds nothing new
+
+        out = io.StringIO()
+        with mock.patch.object(github, "gh", answers(prs)), mock.patch.object(hooks, "sync", racing), \
+                mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
+            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+        self.assertNotIn("PR #12", out.getvalue())
+        self.assertIn("PR #12 open for review", self.message())
+
+    def test_a_post_bash_sync_tells_what_its_ticket_was_not_told_yet(self):
+        self.setUp("a/x")
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.message()
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        shown = self.push(review=False)  # its PR changes T-1's stage; the findings already made the move A's
+        self.assertIn("T-1 move now: you", shown + self.message())
+
     def test_what_my_subagents_sync_read_is_news(self):
         self.setUp("a/x")
         self.message()

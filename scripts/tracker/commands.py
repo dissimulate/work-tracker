@@ -959,13 +959,9 @@ def cmd_sync(args):
     those read is news."""
     tr = resolve(args)
     sid = "" if args.live else agent_sid()
-    if not sid:
-        changes = sync(tr, every=LIVE_SYNC_S if args.live else 0)
-        print("\n".join(changes) if changes else "no changes")
-        return
-    shown = own_sync(sid, tr, lambda: sync(tr, every=0))
+    shown = own_sync(sid, tr, lambda states: sync(tr, every=LIVE_SYNC_S if args.live else 0, states=states))
     print("\n".join(shown.lines) if shown.lines else "no changes", flush=True)
-    saw(sid, tr, shown)  # after the output
+    saw(sid, shown)  # after the output
 
 
 def cmd_issue(args):

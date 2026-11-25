@@ -285,7 +285,7 @@ def hook_post_bash(data: dict) -> None:
         if subagent:  # it is told nothing: what the sync reads is the session's news
             sync(m.tracker, every=0)
         else:
-            shown = own_sync(sid, m.tracker, lambda: sync(m.tracker, every=0))
+            shown = own_sync(sid, m.tracker, lambda states: sync(m.tracker, every=0, states=states))
             if shown.lines:
                 out.append("[work-tracker] Synced PR state: " + "; ".join(shown.lines))
     if commit:
@@ -295,7 +295,7 @@ def hook_post_bash(data: dict) -> None:
     if out:
         emit_context("PostToolUse", "\n".join(out))
     if shown:
-        saw(sid, m.tracker, shown)  # after the output: a hook cut short before it leaves the sync's changes news
+        saw(sid, shown)  # after the output: a hook cut short before it leaves the sync's changes news
 
 
 PR_CREATE = re.compile(r"\bgh\s+pr\s+(create|new)\b")  # `new` is gh's own alias of `create`
