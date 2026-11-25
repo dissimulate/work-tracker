@@ -3056,7 +3056,12 @@ class SessionNews(TwoSessions):
         self.message()
         self.as_b(*self.t, "decide", "Pick a store", "--owner", "T-1", "--blocks", "T-1")
         self.assertIn("T-1 move now: T-1's session", self.message())
-        self.as_b(*self.t, "decide", "Pick a cache", "--owner", "T-2", "--blocks", "T-1")  # todo T-2: no session's
+
+    def test_a_decision_its_todo_ticket_owns_is_no_session_s(self):
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-1 and todo T-2
+        self.message()
+        self.as_b(*self.t, "decide", "Pick a cache", "--owner", "T-2", "--blocks", "T-1")
+        self.assertEqual(move_of_ticket(self.s, "T-1").text(), "human: D-01 open")  # no session works a todo one
         self.assertNotIn("T-1 move now", self.message())
 
     def test_a_decision_a_ticket_it_just_joined_owns_is_its_move(self):
