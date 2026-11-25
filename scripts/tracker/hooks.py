@@ -376,7 +376,7 @@ def sync_later(tr: Tracker, entry: dict, fields: dict) -> None:
         return
     fields["sync_asked"] = int(now)
     try:
-        spawn("--tracker", tr.slug, "sync", "--live")  # its lines are no one's: what it reads is news
+        spawn("--tracker", tr.slug, "sync", "--quiet")  # it prints to no one: what it reads is news
     except OSError:  # the hook's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
         pass
 

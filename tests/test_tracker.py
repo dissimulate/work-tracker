@@ -755,7 +755,7 @@ class Moves(unittest.TestCase):
             hooks.sync_later(model.tracker_at(s), {}, fields)
             hooks.sync_later(model.tracker_at(s), fields, {})  # asked already: not again within the interval
             hooks.sync_later(model.tracker_at(local), {}, {})  # no repo: nothing to ask
-        spawn.assert_called_once_with("--tracker", s, "sync", "--live")
+        spawn.assert_called_once_with("--tracker", s, "sync", "--quiet")
 
     def test_session_start_does_not_wait_for_github(self):
         (s, _), sid, work = new_tracker("Starts fast", "a/x"), f"sid{time.monotonic_ns()}", repo("feat/F-1")
@@ -767,7 +767,7 @@ class Moves(unittest.TestCase):
             hooks.hook_session_start(data)
             hooks.hook_session_start(data)  # asked already: not again within the interval
         gh.assert_not_called()
-        spawn.assert_called_once_with("--tracker", s, "sync", "--live")  # the next message reports what it changes
+        spawn.assert_called_once_with("--tracker", s, "sync", "--quiet")  # the next message reports what it changes
         self.assertIn("Starts fast", out.getvalue())
 
 
@@ -2987,7 +2987,8 @@ class SessionNews(TwoSessions):
         self.setUp("a/x")
         self.message()
         with self.reviewed():
-            self.as_a(*self.t, "sync", "--live")  # A's own sync, as its hooks' background sync runs it
+            model.tracker_at(self.s).save_state({"last_sync": time.time()})  # one ran just now: it runs all the same
+            self.assertEqual(self.as_a(*self.t, "sync", "--quiet"), "")  # A's, as its hooks' background sync runs it
         told = self.message()
         self.assertIn("PR #11 open for review", told)
         self.assertIn("PR #11 review by rev: changes requested", told)
@@ -3513,7 +3514,7 @@ class SessionNews(TwoSessions):
         with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
             handled(hooks.hook_prompt, {"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
-        spawn.assert_called_once_with("--tracker", self.s, "sync", "--live")
+        spawn.assert_called_once_with("--tracker", self.s, "sync", "--quiet")
 
     def as_released(self, sid: str, base: bool = False) -> None:
         """Rewrite a session file as the released plugin (upstream 9d5cd64) wrote it, or, with `base`, as

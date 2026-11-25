@@ -954,13 +954,14 @@ def cmd_check(args):
 
 
 def cmd_sync(args):
-    """A sync whose lines are its agent's to read also says what it changed of the session's tickets, which then count
-    as seen (`own_sync`). A `--live` one's are no one's, and one at a terminal or in the view is no session's: what
-    those read is news."""
+    """A sync whose lines its agent reads also says what it changed of the session's tickets, which then count as seen
+    (`own_sync`). A `--live` one is a UI's, a `--quiet` one prints nothing, and one at a terminal is no session's:
+    what those read is news."""
     tr = resolve(args)
-    sid = "" if args.live else agent_sid()
+    sid = "" if args.live or args.quiet else agent_sid()
     shown = own_sync(sid, tr, lambda states: sync(tr, every=LIVE_SYNC_S if args.live else 0, states=states))
-    print("\n".join(shown.lines) if shown.lines else "no changes", flush=True)
+    if not args.quiet:
+        print("\n".join(shown.lines) if shown.lines else "no changes", flush=True)
     saw(sid, shown)  # after the output
 
 
