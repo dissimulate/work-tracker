@@ -3292,6 +3292,25 @@ class SessionNews(TwoSessions):
         run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
         self.assertIn("T-1 move now: you", self.message())
 
+    def hand_edit_next(self, ident: str) -> None:
+        """A hand edit of `next` in a ticket file, and its hook."""
+        path = store.HOME / self.s / f"tickets/{ident}.md"
+        path.write_text(re.sub(r"^next:.*", "next: Split the parser", path.read_text(), flags=re.M))
+        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+
+    def test_a_hand_edit_counts_only_its_own_record_as_seen(self):
+        for edited in ("T-1", "T-2"):
+            with self.subTest(edited):
+                self.setUp()
+                self.message()
+                self.as_b(*self.t, "decide", "Pick a store", "--refs", "T-1")
+                self.hand_edit_next(edited)
+                self.assertIn("D-01 open now touches this work", self.message())
+        self.message()
+        self.as_b(*self.t, "decide", "D-01", "--resolve", "Postgres", "--source", "the spec")
+        self.hand_edit_next("T-1")
+        self.assertIn("D-01 settled: ", self.message())
+
     def test_my_own_writes_after_my_tickets_changed_are_no_news(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         run(*self.t, "set", "T-3", "status=in-progress")

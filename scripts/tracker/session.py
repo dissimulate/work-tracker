@@ -1047,13 +1047,13 @@ FILE_FACTS = ("role", "stage", "next", "carry", "status", "answer")
 
 
 def own_edit(sid: str, tr: Tracker, ident: str) -> None:
-    """A tracker file this session edited by hand: count the facts its record's file holds (FILE_FACTS) as seen, and
-    whatever it newly makes the session watch; a move that changed with it stays news, as the edit cannot be told
-    apart from what others did."""
+    """A tracker file this session edited by hand: count the facts its record's file holds (FILE_FACTS) as seen, or
+    the whole record when the session was not told of it yet. Every other record stays news, as does a move that
+    changed with the edit: neither can be told apart from what others did."""
     def merge(key: str, told: dict | None, now: dict) -> dict | None:
-        if told is None:
-            return now
-        return {**told, **{f: now[f] for f in FILE_FACTS if f in now}} if key == ident else None
+        if key != ident:
+            return None
+        return now if told is None else {**told, **{f: now[f] for f in FILE_FACTS if f in now}}
     count_own(sid, tr, merge)
 
 
