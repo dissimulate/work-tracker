@@ -1972,6 +1972,21 @@ class NewerFormat(unittest.TestCase):
 class Events(unittest.TestCase):
     """The event file: each change the tool writes, as one typed event per line."""
 
+    def test_a_write_from_another_process_waits_for_the_lock_and_takes_the_next_seq(self):
+        tr = model.tracker_at(self.s)
+        with store.locked():  # this process writes; another one's write must wait for it
+            other = subprocess.Popen([str(ROOT / "bin/tracker"), "--tracker", self.s, "log", "from the other one"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.addCleanup(other.wait, 30)
+            mine = model.append_event(tr, "note", "from this one", [])
+            time.sleep(1)  # time for the other process to start and reach the lock
+            self.assertIsNone(other.poll())
+            self.assertEqual(model.last_seq(tr), mine["seq"])  # it wrote nothing while the lock was held
+        self.assertEqual(other.wait(30), 0)
+        events = model.read_events(tr)
+        self.assertEqual([e["text"] for e in events[-2:]], ["from this one", "from the other one"])
+        self.assertEqual([e["seq"] for e in events], list(range(1, len(events) + 1)))
+
     def setUp(self):
         self.s, self.t = new_tracker("Events")
         self.tr = model.tracker_at(self.s)
