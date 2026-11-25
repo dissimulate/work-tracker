@@ -19,8 +19,8 @@ from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, declined, ensure_subscription, get_mark, hand_over,
     in_repos, keep_folder, keep_told_next, keep_word, lag, load_session, match_cwd, move_of, news, own_edit,
-    record_commits, relink_session, save_session, save_state, session_activity, shown_tickets, state_on, subscribed,
-    take_over, told, told_about, watch_running, work_dir, Lag, Match)
+    record_commits, relink_session, save_session, save_state, session_activity, session_owns, shown_tickets, state_on,
+    subscribed, take_over, told, told_about, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -230,11 +230,11 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
 
 
 def watch_ask(data: dict, tr: Tracker, sid: str) -> str:
-    """The reminder to a session whose tickets (its subscription) wait on someone else (their move is not
-    its own), with no watch of its own running on the tracker: WATCH_ASK, once per wait (`told_watch`: each ticket and
-    whose move it waits on, as last seen), else "". Only where someone can act on it: the host says the hook does not
-    hold the session already (`stop_hook_active` false: a host that sends no such key cannot say so, and is never
-    asked), not a subagent's stop, a session a person attends, a tracker in this code's format (no `refusal_told`
+    """The reminder to a session whose tickets (its subscription) wait on someone else (their move is not its own:
+    `session_owns`), with no watch of its own running on the tracker: WATCH_ASK, once per wait (`told_watch`: each
+    ticket and whose move it waits on, as last seen), else "". Only where someone can act on it: the host says the hook
+    does not hold the session already (`stop_hook_active` false: a host that sends no such key cannot say so, and is
+    never asked), not a subagent's stop, a session a person attends, a tracker in this code's format (no `refusal_told`
     covers Stop), and not after the user stopped the session's watch (`no_watch`). A stop where it is not free to ask
     uses up nothing."""
     if data.get("stop_hook_active") is not False or data.get("agent_id") \
@@ -244,8 +244,10 @@ def watch_ask(data: dict, tr: Tracker, sid: str) -> str:
         entry = load_session(sid)
         if entry.get("no_watch"):
             return ""
-        waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in subscribed(entry, tr)
-                 if (move := move_of(tr, t)) and not move.mine}
+        tickets = subscribed(entry, tr)
+        ids = {t.id for t in tickets}
+        waits = {f"{t.id}:{move.who}": f"{t.id} waits on {move.text()}" for t in tickets
+                 if (move := move_of(tr, t)) and not session_owns(move, ids)}
         told, keys = state_on(entry, tr.slug)["told_watch"] or [], sorted(waits)
         # Saved whether asked or not: a wait that ends and comes back is new again, and one that began while a watch
         # ran is not asked for once that watch stops.

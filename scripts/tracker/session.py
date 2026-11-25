@@ -703,33 +703,42 @@ def move_of(tr: Tracker, t: Record) -> Move | None:
     return None if t.closed else whose_move(tr, t, around(tr)[0], items_of(tr))
 
 
-def ticket_facts(tr: Tracker, t: Record) -> dict:
+def session_owns(move: Move, tickets: set[str]) -> bool:
+    """A move is the session's own: this side's (`Move.mine`), or an open decision's that the session on one of its
+    `tickets` answers (`Move.ticket`)."""
+    return move.mine or move.ticket in tickets
+
+
+def ticket_facts(tr: Tracker, t: Record, own: set[str] = frozenset()) -> dict:
     """What a change report compares of a ticket: its stage, `next`, Carry forward (a hash) and move (its text, its
-    rank in MOVE_RULE, whether it is this side's and whether it is a human's). The prompt hook (`watch`) and `tracker
-    watch` (`snapshot`) both read it."""
+    rank in MOVE_RULE, whether it is this side's, also as the session on one of the tickets `own` (`session_owns`),
+    and whether it is a human's). The prompt hook (`watch`) and `tracker watch` (`snapshot`) both read it."""
     move = move_of(tr, t)
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
-            **({"move": move.text(" — "), "rank": move.rank, "mine": move.mine, "human": move.human,
+            **({"move": move.text(" — "), "rank": move.rank, "mine": session_owns(move, own), "human": move.human,
                 "stuck_from": move.stuck_from.text(" — ") if move.stuck_from else ""} if move else {})}
 
 
-def watch(tr: Tracker, tickets: list[Record]) -> dict[str, dict]:
-    """What a session saw: its own tickets and their dependencies (`ticket_facts`), and the decisions that touch them
-    (status and answer), each with its role."""
+def watch(tr: Tracker, tickets: list[Record], own: set[str] | None = None) -> dict[str, dict]:
+    """What a session saw: its own tickets and their dependencies (`ticket_facts`, whose moves are its own also as the
+    session on a ticket of `own`, default `tickets`), and the decisions that touch them (status and answer), each with
+    its role."""
+    own = {t.id for t in tickets} if own is None else own
     seen = {}
     for t in tickets:
-        seen[t.id] = {"role": "own", **ticket_facts(tr, t)}
+        seen[t.id] = {"role": "own", **ticket_facts(tr, t, own)}
         for d in tr.deps(t):
             if d.kind == "ticket" and d.ident not in seen:
-                seen[d.ident] = {"role": "dep", **ticket_facts(tr, d.rec)}
+                seen[d.ident] = {"role": "dep", **ticket_facts(tr, d.rec, own)}
         for d in tr.decisions_for(t):
             seen[d.id] = {"role": "decision", "status": d.get("status", "open"), "answer": resolution(d)}
     return seen
 
 
 def own_move(facts: dict) -> str:
-    """A ticket's move when it is this side's; a move that goes to a reviewer asks nothing of the session."""
+    """A ticket's move when it is the session's own (`session_owns`); a move that goes to a reviewer asks nothing of
+    the session."""
     return facts.get("move", "") if facts.get("mine") else ""
 
 
@@ -936,8 +945,8 @@ def news(sid: str, tr: Tracker) -> News:
         base, last = state["seen_seq"], last_seq(tr)
         lines = []
         if base is not None:
-            lines = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before]))
             known = [t.id for t in about]
+            lines = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before], set(known)))
             # An event file shorter than the cursor (restored from a backup) numbers its new events again: what it
             # holds now counts as told, as the watch does.
             fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))

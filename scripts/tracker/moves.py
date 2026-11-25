@@ -52,6 +52,7 @@ class Move:
     quiet: bool = False  # your own work going on as planned, where nothing has stopped to wait for you
     human: bool = False  # the move is a human's to make: an open action, or a decision a human must answer
     stuck_from: Move | None = None  # the move it had until its open item turned stuck (`open_items`); None: not stuck
+    ticket: str = ""  # an open decision's move that the session on this ticket answers (`decision_move`)
 
     @property
     def mine(self) -> bool:
@@ -140,7 +141,7 @@ def decision_move(tr: Tracker, d: Record, coordinated: bool) -> Move:
     (`session.coordinated`), else a human's."""
     (kind, name), what = owner_kind(tr, d), f"{d.id} open"
     if kind == "ticket":
-        return Move(f"{name}'s session", what, 5)
+        return Move(f"{name}'s session", what, 5, ticket=name)
     if kind == "coordinator" and coordinated:
         return Move(COORDINATOR, what, 5)
     return Move(name or "human", what, 5, human=True)

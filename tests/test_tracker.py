@@ -2234,6 +2234,11 @@ class Events(unittest.TestCase):
         self.assertTrue(e["text"].endswith("and 3 more"), e["text"])
 
 
+def move_of_ticket(s: str, ident: str) -> moves.Move | None:
+    tr = model.tracker_at(s)
+    return session.move_of(tr, tr.lookup(ident))
+
+
 def hook(event: str, sid: str, cwd: Path, env: dict | None = None, **extra) -> dict | None:
     """Run scripts/hook.sh for one event; its JSON output, or None when it adds nothing."""
     data = json.dumps({"session_id": sid, "cwd": str(cwd), "hook_event_name": event, **extra})
@@ -2934,6 +2939,24 @@ class SessionNews(TwoSessions):
         told = self.message()
         self.assertIn("PR #11 review by rev: changes requested", told)
         self.assertIn("T-1 move now: you", told)  # the review made it A's
+
+    def test_a_decision_its_own_ticket_owns_is_its_move(self):
+        self.as_a("start", self.s, "--on", "T-1")
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-2 too
+        self.message()
+        self.as_b(*self.t, "decide", "Pick a store", "--owner", "T-1", "--blocks", "T-1")
+        self.assertIn("T-1 move now: T-1's session", self.message())
+        self.as_b(*self.t, "decide", "Pick a cache", "--owner", "T-2", "--blocks", "T-1")  # todo T-2: no session's
+        self.assertNotIn("T-1 move now", self.message())
+
+    def test_a_decision_a_ticket_it_just_joined_owns_is_its_move(self):
+        run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f3")
+        run(*self.t, "set", "T-3", "status=in-progress")
+        self.message()
+        self.as_a("start", self.s, "--on", "T-3")  # joined: told of from the next message on
+        hook("stop", self.a, self.work, env=no_gh())  # live again after the start: T-3 is not stuck with no one on it
+        self.as_b(*self.t, "decide", "Pick a store", "--owner", "T-3", "--blocks", "T-1")
+        self.assertIn("T-1 move now: T-3's session", self.message())
 
     def test_a_settled_decision_is_said_once(self):
         self.as_b(*self.t, "decide", "Pick a store", "--blocks", "T-1")
@@ -5840,6 +5863,16 @@ class WatchAsk(TwoSessions):
         self.assertIsNone(self.stop())
 
     def test_a_session_whose_move_is_its_own_is_not_asked(self):
+        self.assertIsNone(self.stop())
+
+    def test_a_session_is_not_asked_to_wait_on_a_decision_its_own_ticket_owns(self):
+        self.message()  # a live session: its tickets are not stuck with no one on them
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-1 and T-2
+        run(*self.t, "set", "T-2", "status=in-progress")
+        self.as_a(*self.t, "decide", "Pick a store", "--owner", "T-2", "--blocks", "T-1")
+        self.assertEqual(move_of_ticket(self.s, "T-1").text(), "T-2's session: D-01 open")
+        self.assertIsNone(self.stop())
+        self.as_b("start", self.s, "--on", "T-2")  # B is on T-2 too: the move is B's as well, and still A's
         self.assertIsNone(self.stop())
 
     def test_a_session_that_watches_is_not_asked(self):
