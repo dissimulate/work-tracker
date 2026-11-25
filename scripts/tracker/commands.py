@@ -952,7 +952,7 @@ def cmd_check(args):
 
 def cmd_sync(args):
     tr = resolve(args)
-    changes = sync(tr, every=LIVE_SYNC_S if args.live else 0)
+    changes = sync(tr, every=LIVE_SYNC_S if args.live else 0, unseen=args.unseen)
     print("\n".join(changes) if changes else "no changes")
 
 

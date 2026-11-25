@@ -753,7 +753,7 @@ class Moves(unittest.TestCase):
             hooks.sync_later(model.tracker_at(s), {}, fields)
             hooks.sync_later(model.tracker_at(s), fields, {})  # asked already: not again within the interval
             hooks.sync_later(model.tracker_at(local), {}, {})  # no repo: nothing to ask
-        spawn.assert_called_once_with("--tracker", s, "sync")
+        spawn.assert_called_once_with("--tracker", s, "sync", "--unseen")
 
     def test_session_start_does_not_wait_for_github(self):
         (s, _), sid, work = new_tracker("Starts fast", "a/x"), f"sid{time.monotonic_ns()}", repo("feat/F-1")
@@ -765,7 +765,7 @@ class Moves(unittest.TestCase):
             hooks.hook_session_start(data)
             hooks.hook_session_start(data)  # asked already: not again within the interval
         gh.assert_not_called()
-        spawn.assert_called_once_with("--tracker", s, "sync")  # the next message reports what it changes
+        spawn.assert_called_once_with("--tracker", s, "sync", "--unseen")  # the next message reports what it changes
         self.assertIn("Starts fast", out.getvalue())
 
 
@@ -2932,13 +2932,53 @@ class SessionNews(TwoSessions):
     def test_a_pr_review_is_news_whoever_synced(self):
         self.setUp("a/x")
         self.message()
-        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")]
-        with mock.patch.object(github, "gh", answers([pull(11, branch="f1", decision="CHANGES_REQUESTED",
-                                                           rounds=rounds)])):
-            self.as_a(*self.t, "sync")  # A's own sync, as its hooks' background sync runs it
+        with self.reviewed():
+            self.as_a(*self.t, "sync", "--unseen")  # A's own sync, as its hooks' background sync runs it
         told = self.message()
+        self.assertIn("PR #11 open for review", told)
         self.assertIn("PR #11 review by rev: changes requested", told)
         self.assertIn("T-1 move now: you", told)  # the review made it A's
+
+    def reviewed(self, review: bool = True):
+        """GitHub as it answers for PR #11, of branch f1: rev requested changes on it, or, with no `review`, none."""
+        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")] if review else []
+        return mock.patch.object(github, "gh", answers([pull(11, branch="f1", rounds=rounds,
+                                                            decision="CHANGES_REQUESTED" if review else None)]))
+
+    def push(self, review: bool = True, **extra) -> str:
+        """A's `git push` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
+        process (`reviewed`): what the hook tells the agent."""
+        out = io.StringIO()
+        with self.reviewed(review), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+                contextlib.redirect_stdout(out):
+            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work),
+                                  "tool_input": {"command": "git push"}, **extra})
+        return out.getvalue()
+
+    def test_what_my_own_sync_showed_me_is_no_news_and_a_review_is(self):
+        for how in ("hook", "command"):
+            with self.subTest(how):
+                self.setUp("a/x")
+                self.message()
+                if how == "hook":
+                    shown = self.push()
+                    self.assertIn("Synced PR state: T-1: PRs 11:open; T-1 move now: you", shown)  # told at once
+                else:
+                    with self.reviewed():
+                        self.assertIn("T-1: PRs 11:open", self.as_a(*self.t, "sync"))
+                told = self.message()
+                self.assertNotIn("PR #11 open for review", told)  # its own sync showed it the PR
+                self.assertIn("PR #11 review by rev: changes requested", told)  # a reviewer's: no sync line shows it
+                (self.assertNotIn if how == "hook" else self.assertIn)("move now", told)
+
+    def test_what_my_subagents_sync_read_is_news(self):
+        self.setUp("a/x")
+        self.message()
+        self.assertEqual(self.push(agent_id="sub"), "")  # the hook tells a subagent nothing
+        told = self.message()
+        self.assertIn("PR #11 open for review", told)
+        self.assertIn("PR #11 review by rev: changes requested", told)
+        self.assertIn("T-1 move now: you", told)
 
     def test_a_decision_its_own_ticket_owns_is_its_move(self):
         self.as_a("start", self.s, "--on", "T-1")
@@ -3248,7 +3288,7 @@ class SessionNews(TwoSessions):
         with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
             hooks.hook_prompt({"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
-        spawn.assert_called_once_with("--tracker", self.s, "sync")
+        spawn.assert_called_once_with("--tracker", self.s, "sync", "--unseen")
 
     def as_released(self, sid: str, base: bool = False) -> None:
         """Rewrite a session file as the released plugin (upstream 9d5cd64) wrote it, or, with `base`, as
@@ -5545,8 +5585,19 @@ class MineWatch(TwoSessions):
             told = self.texts(first[1:] + self.look(w))
         mine = [e for e in model.read_events(model.tracker_at(self.s)) if e["kind"] == "pr.review"]
         self.assertEqual([e["session"] for e in mine], [self.a])  # the watch's own sync read it
+        self.assertIn("T-1: PR #11 open for review", told)  # no agent saw that sync's lines
         self.assertIn("T-1: PR #11 review by rev: changes requested", told)
         self.assertTrue(any(x.startswith("T-1 move now: you") for x in told), told)
+
+    def test_the_pr_my_own_push_synced_does_not_wake_me(self):
+        self.setUp("a/x")
+        w = self.mine()
+        self.claim(w)
+        self.assertIn("Synced PR state", SessionNews.push(self, review=False))
+        self.assertEqual(self.look(w), [])
+
+    def reviewed(self, review: bool = True):
+        return SessionNews.reviewed(self, review)
 
     def test_my_own_step_prints_nothing(self):
         w = self.mine()

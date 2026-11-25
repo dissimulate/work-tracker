@@ -199,11 +199,11 @@ def skipped(changes: list[str]) -> bool:
     return bool(changes) and changes[0].startswith(SKIPPED)
 
 
-def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S) -> list[str]:
+def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S, unseen: bool = False) -> list[str]:
     """Pull PR state from GitHub, unless the last sync is under `every` seconds old (0: always): each ticket's PRs into
     its frontmatter (`prs`, `merged_at`), the open PRs' PR_FACTS into .state.json `prs`, and each PR's reviews into the
-    log (`model.apply_prs`). Returns change lines. GitHub is asked first, in one call (`gh_prs`) and without the lock;
-    the tracker is then reloaded and written under it."""
+    log (`model.apply_prs`; `unseen`: no agent sees the change lines). Returns change lines. GitHub is asked first, in
+    one call (`gh_prs`) and without the lock; the tracker is then reloaded and written under it."""
     if not tr.repos:
         return []
     if every and time.time() - tr.state().get("last_sync", 0) < every:
@@ -232,7 +232,7 @@ def sync(tr: Tracker, every: float = SYNC_MIN_INTERVAL_S) -> list[str]:
                           for p in prs if pr_state(p) in OPEN_PR})
             reviews.update({pr_key(repo, p["number"]): pr_reviews(p) for p in prs})  # a merged PR's last ones too
     with locked():
-        return apply_prs(Tracker(tr.root), found, facts, reviews)
+        return apply_prs(Tracker(tr.root), found, facts, reviews, unseen)
 
 
 def match_pr(m: Match, cwd: str | Path) -> tuple[Match, str]:

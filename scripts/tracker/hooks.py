@@ -17,10 +17,10 @@ from .schema import CITE, DECIDED, ISOLATION_RULE, RESOLVE, SCHEMA, STEP_MESSAGE
 from .model import append_event, pr_key, pr_name, read_events, set_branch, short, Tracker
 from .moves import PR_PAGE
 from .git import cwd_repo, default_branches
-from .session import (behind, branch_matches, context_tracker, declined, ensure_subscription, get_mark, hand_over,
-    in_repos, keep_folder, keep_told_next, keep_word, lag, load_session, match_cwd, move_of, news, own_edit,
-    record_commits, relink_session, save_session, save_state, session_activity, session_owns, shown_tickets, state_on,
-    subscribed, take_over, told, told_about, watch_running, work_dir, Lag, Match)
+from .session import (behind, branch_matches, changes_since, context_tracker, declined, ensure_subscription, get_mark,
+    hand_over, in_repos, keep_folder, keep_told_next, keep_word, lag, load_session, match_cwd, move_of, news,
+    own_change, own_edit, record_commits, relink_session, save_session, save_state, session_activity, session_owns,
+    shown_tickets, state_on, subscribed, take_over, told, told_about, watch, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -263,10 +263,11 @@ COMMIT_TRIGGER = re.compile(r"\bgit\b[^|;&\n]*\bcommit\b")
 
 def hook_post_bash(data: dict) -> None:
     """After a `gh pr` command that changes a PR (PR_COMMAND) or a push: record the branch on its ticket
-    (`adopt_branch`) and sync PR state; after `gh pr create`, also log the PR it opened (`log_opened`). After a commit:
-    log it, and when it is the first since `next` last changed, ask whether a step ended, while the work is fresh. A
-    subagent's commit (its tool calls fire these hooks too) is logged, but the subagent is asked nothing: the session
-    records the step, asked at its next message."""
+    (`adopt_branch`) and sync PR state (`synced`); after `gh pr create`, also log the PR it opened (`log_opened`). After
+    a commit: log it, and when it is the first since `next` last changed, ask whether a step ended, while the work is
+    fresh. A subagent's commit or push (its tool calls fire these hooks too) is logged and synced, but the subagent is
+    asked and told nothing: the session records the step, asked at its next message, and hears what the sync read as
+    news."""
     subagent = bool(data.get("agent_id"))
     command = (data.get("tool_input") or {}).get("command", "")
     pr, commit = PR_TRIGGER.search(command), COMMIT_TRIGGER.search(command)
@@ -281,8 +282,9 @@ def hook_post_bash(data: dict) -> None:
         adopt_branch(m, cwd)
         if PR_CREATE.search(command):  # before the sync, which can fail or run out of time: nothing sees it again
             log_opened(m.tracker, data.get("tool_response"))
-        changes = sync(m.tracker, every=0)
-        if changes and not subagent:
+        if subagent:  # it is told nothing: what the sync reads is the session's news
+            sync(m.tracker, every=0, unseen=True)
+        elif changes := synced(m.tracker, sid):
             out.append("[work-tracker] Synced PR state: " + "; ".join(changes))
     if commit:
         record_commits(m, cwd)
@@ -293,6 +295,18 @@ def hook_post_bash(data: dict) -> None:
 
 
 PR_CREATE = re.compile(r"\bgh\s+pr\s+(create|new)\b")  # `new` is gh's own alias of `create`
+
+
+def synced(tr: Tracker, sid: str) -> list[str]:
+    """Sync PR state for the session's own command, and give its change lines with what it changed of the session's
+    tickets (`changes_since`: a move a review or a new PR state made, say), which then count as seen: the hook tells
+    them now, so no news repeats them."""
+    before = watch(tr, told_about(load_session(sid), tr))
+    changes = sync(tr, every=0)
+    now = Tracker(tr.root)
+    changes += changes_since(now, before, watch(now, told_about(load_session(sid), now)))
+    own_change(sid, now, before)
+    return changes
 
 
 def log_opened(tr: Tracker, response) -> None:
@@ -348,15 +362,15 @@ def state_line(m: Match, work: Lag) -> str:
 
 def sync_later(tr: Tracker, entry: dict, fields: dict) -> None:
     """Pull GitHub in the background once the last sync is older than SYNC_MIN_INTERVAL_S (at most that often per
-    session, by `fields`' sync_asked): a later message reports what it changed (`news`), such as a review
-    that makes a move yours. The hook does not wait for it."""
+    session, by `fields`' sync_asked): a later message reports what it changed (`news`; no agent sees the sync's lines:
+    `--unseen`), such as a review that makes a move yours. The hook does not wait for it."""
     now = time.time()
     last = max(tr.state().get("last_sync", 0), entry.get("sync_asked", 0))
     if not tr.repos or now - last < SYNC_MIN_INTERVAL_S:
         return
     fields["sync_asked"] = int(now)
     try:
-        spawn("--tracker", tr.slug, "sync")
+        spawn("--tracker", tr.slug, "sync", "--unseen")
     except OSError:  # the hook's own lines still go out; a message after SYNC_MIN_INTERVAL_S tries again
         pass
 

@@ -325,7 +325,7 @@ class SyncJob(threading.Thread):
     def run(self) -> None:
         budget(GH_BUDGET_S)
         try:
-            self.changes = sync(self.tr, every=LIVE_SYNC_S)
+            self.changes = sync(self.tr, every=LIVE_SYNC_S, unseen=True)
         except (Exception, SystemExit) as exc:  # a busy lock, a bad file: try again next time
             self.changes = [f"{SKIPPED}: {exc}"]
         finally:

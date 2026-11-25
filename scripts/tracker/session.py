@@ -809,7 +809,8 @@ def lag(m: Match, cwd: str | Path) -> Lag:
 # the session; a legacy event is the log from before the event file.
 NEWS_LEFT_OUT = ("legacy", "commits", "decision.opened", "decision.decided", "wait.added", "status", *QUIET_KINDS)
 NEWS_MAX = 5  # events a session's news names; the older ones as a count
-GITHUB_KINDS = ("pr.state", "pr.review")  # what `sync` read on GitHub: news, whichever session's sync read it
+# A PR's review is a reviewer's: news whichever session's sync read it, as no sync's change lines show it.
+GITHUB_REVIEWS = ("pr.review",)
 
 
 def subscribed(entry: dict, tr: Tracker) -> list[Record]:
@@ -951,7 +952,7 @@ def news(sid: str, tr: Tracker) -> News:
             # holds now counts as told, as the watch does.
             fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))
                      if e["kind"] not in NEWS_LEFT_OUT and any(i in known for i in e["refs"])
-                     and (e["kind"] in GITHUB_KINDS or not own_event(e, sid))]
+                     and (e["kind"] in GITHUB_REVIEWS or not own_event(e, sid))]
             cut = dict(fresh[:-NEWS_MAX])
             if cut:
                 lines.append(f"(+{len(fresh) - NEWS_MAX} earlier: `tracker history --ref "
@@ -983,8 +984,9 @@ def shown_tickets(m: Match, sid: str) -> list[Record]:
 
 
 def own_event(e: dict, sid: str) -> bool:
-    """An event the session's agent wrote: one entered in the view or at a terminal is someone else's."""
-    return e.get("session") == sid and e.get("via") == "agent"
+    """An event the session's agent wrote, and saw: one entered in the view or at a terminal is someone else's, and
+    one a sync wrote where no agent saw its lines (`unseen`) is news to the session it ran for."""
+    return e.get("session") == sid and e.get("via") == "agent" and not e.get("unseen")
 
 
 def keep_told_next(sid: str, m: Match, cwd: str | Path) -> None:
