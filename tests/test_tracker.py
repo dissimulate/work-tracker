@@ -5713,8 +5713,7 @@ class MineWatch(TwoSessions):
         self.assertEqual(sorted(self.texts(self.look(w))), ["T-1: base branch moved", "T-3 is now done"])
 
     def ended(self, out: str) -> list[str]:
-        return [x for x in out.splitlines()
-                if x.endswith("no ticket of this session is open: the watch has ended")]
+        return [x for x in out.splitlines() if x.endswith(watcher.MINE_DONE)]
 
     def test_the_watch_ends_when_no_subscribed_ticket_is_open(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")  # on A's branch too, not started
@@ -5828,8 +5827,8 @@ class MineWatch(TwoSessions):
     def test_the_watch_ends_when_the_session_moves_to_another_tracker(self):
         other, _ = new_tracker("Elsewhere")
         out, _ = self.run_watch(self.mine(), during=lambda: self.as_a("start", other))
-        self.assertEqual(len(self.ended(out)), 1, out)
-        self.assertEqual(len(out.splitlines()), 2, out)  # its first line, and the end
+        self.assertEqual(self.ended(out), [], out)  # not the line after which no watch starts again
+        self.assertEqual(self.texts(out.splitlines()[1:]), [watcher.MINE_MOVED])  # after its first line
         self.assertFalse(watcher.granted(self.a))
         self.assertTrue(watcher.load_state(self.s, self.a).get("ended"))
         # The new tracker's cursor, which its `tracker start` set: the watch did not move it.

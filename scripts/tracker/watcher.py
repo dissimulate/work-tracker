@@ -43,6 +43,11 @@ LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
 # A `mine` watch's line for a sync that fails: what it no longer brings, and who can fix it
 MINE_SYNC_FAILED = "{}: no PR review, check or merge reaches this session until a sync works again; tell the user"
+# A `mine` watch's last line: no ticket of the session is open, which the watch skill says to start no watch after; or
+# the session is on another tracker, where the turn-end hook asks for a watch of its own when one is needed.
+MINE_DONE = "no ticket of this session is open: the watch has ended"
+MINE_MOVED = ("this session is on another tracker now: this watch stops; start a watch there only when the turn-end "
+              "hook asks")
 REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run the command, or not now (a tracker in use)
 
 # ---------------------------------------------------------------- the grant
@@ -348,7 +353,9 @@ class Watcher:
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.mine = mine
-        self.ended = False  # a `mine` look found the session off this tracker, or with no open ticket: it ends
+        # Why a `mine` look ends the watch: MINE_MOVED (the session is off this tracker) or MINE_DONE (no ticket of it
+        # is open); "": it goes on
+        self.ended = ""
         self.untold: News | None = None  # a `mine` look's news, told once its lines are printed (`printed`)
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
@@ -496,7 +503,7 @@ class Watcher:
         it is printed (`printed`). It marks the end (`ended`) when the session is on another tracker or none, or has
         no open subscribed ticket, with the news of a ticket that closed before the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
-            self.ended = True
+            self.ended = MINE_MOVED
             return []  # its cursor is another tracker's now: it is not this watch's to move
         # A change waits to settle, the end too: a hand edit is written before its hook counts it as the session's
         # own (`own_edit`).
@@ -505,7 +512,7 @@ class Watcher:
         if not settled:
             return []
         self.sig, self.changed = sig, 0.0
-        self.ended = not subscribed(load_session(self.sid), tr)
+        self.ended = "" if subscribed(load_session(self.sid), tr) else MINE_DONE
         found = news(self.sid, tr)
         if found.lines:
             self.untold = found
@@ -642,9 +649,8 @@ class Watcher:
             if lines:
                 print("\n".join(lines), flush=True)  # flushed before its news counts as told
                 self.printed()
-            if self.ended:  # a `mine` watch with nothing left to watch: an end, not a refusal
-                print(f"{time.strftime('%H:%M')} no ticket of this session is open: the watch has ended",
-                      flush=True)
+            if self.ended:  # a `mine` watch with nothing left to watch here: an end, not a refusal
+                print(f"{time.strftime('%H:%M')} {self.ended}", flush=True)
                 self.st["over"] = True  # it does not start again (`watch_running`)
                 # The grant is the session's: another watch of the session goes on with it.
                 own = state_path(self.slug, self.sid)
