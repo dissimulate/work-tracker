@@ -996,7 +996,11 @@ def told(sid: str, found: News) -> None:
     with locked():
         state = state_on(load_session(sid), found.slug)
         if (state["seen"], state["seen_seq"]) == found.read:
-            save_state(sid, found.slug, seen=found.seen, seen_seq=found.seq)
+            # An event file shorter than the cursor (restored from a backup) numbers its events again: the seen
+            # events are of the old numbering. Else those past the new cursor stay, as a sync wrote them since.
+            restored = (found.read[1] or 0) > found.seq
+            past = [] if restored else [x for x in state["seen_events"] or [] if x > found.seq]
+            save_state(sid, found.slug, seen=found.seen, seen_seq=found.seq, seen_events=past or None)
 
 
 def shown_tickets(m: Match, sid: str) -> list[Record]:

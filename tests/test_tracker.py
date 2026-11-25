@@ -3083,6 +3083,54 @@ class SessionNews(TwoSessions):
         shown = self.push(review=False)  # its PR changes T-1's stage; the findings already made the move A's
         self.assertIn("T-1 move now: you", shown + self.message())
 
+    def three_prs(self, merged: bool = False):
+        """GitHub as it answers for three PRs of branch f1, each with a review asked of rev; the third merged, with
+        `merged`. T-1's move is the same either way: #11's review requested."""
+        done = {"state": "MERGED", "merged_at": "2026-09-04T01:00:00Z"}
+        return mock.patch.object(github, "gh", answers([
+            pull(n, branch="f1", requested=["rev"], **(done if merged and n == 13 else {})) for n in (11, 12, 13)]))
+
+    def test_a_pr_state_my_own_sync_showed_with_no_move_change_is_no_news(self):
+        self.setUp("a/x")
+        with self.three_prs():
+            run(*self.t, "sync")
+        self.message()
+        out = io.StringIO()
+        with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+                contextlib.redirect_stdout(out):
+            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+        self.assertIn("T-1: PRs 11:open, 12:open, 13:merged", out.getvalue())
+        self.assertNotIn("move now", out.getvalue())  # nothing of T-1 changed but its PRs
+        self.assertNotIn("PR #13", self.message())
+
+    def test_a_pr_state_seen_while_the_watch_had_news_to_print_stays_seen(self):
+        self.setUp("a/x")
+        with self.three_prs():
+            run(*self.t, "sync")
+        self.message()
+        w = watcher.Watcher(model.tracker_at(self.s), self.a, "session sa", mine=True)
+        w.claim(time.time())  # its first look read the news, none new, and has not printed its first line yet
+        with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+        w.printed()  # its count, from before the push, is saved now
+        self.assertNotIn("PR #13", self.message())
+
+    def test_a_restored_event_file_hides_no_event_it_numbers_again(self):
+        self.setUp("a/x")
+        self.message()
+        with self.reviewed(review=False):
+            self.as_a(*self.t, "sync")  # its own: the PR state it wrote counts as seen
+        path = store.HOME / self.s / schema.EVENTS_FILE
+        lines = path.read_text().splitlines(True)
+        path.write_text("".join(lines[:2]))  # restored from an older backup
+        self.message()
+        for i in range(len(lines)):
+            self.as_b(*self.t, "log", "--ref", "T-1", f"note {i}")  # the same seqs again
+        told = self.message()
+        for i in range(len(lines)):
+            self.assertIn(f"T-1: note {i}", told)
+
     def test_what_my_subagents_sync_read_is_news(self):
         self.setUp("a/x")
         self.message()
