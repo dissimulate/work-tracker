@@ -31,8 +31,10 @@ os.environ["TRACKER_HOME"] = f"{BASE}/home"  # before the import: HOME is read o
 os.environ["CLAUDE_CONFIG_DIR"] = f"{BASE}/claude"  # the running Claude sessions the view reads: not the user's
 os.environ["HERDR_APP_HOME"] = f"{BASE}/herdr"  # `open` and the hooks update an installed mod: not the user's
 # An agent session running the tests must not leak in: its tracker, its id, or that it is one.
+# The deadline settings too: tests count on their defaults.
 for var in ("TRACKER", "TRACKER_SESSION", "CLAUDE_ENV_FILE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
-            "CODEX_THREAD_ID", "PLUGIN_ROOT", "TRACKER_VIA"):
+            "CODEX_THREAD_ID", "PLUGIN_ROOT", "TRACKER_VIA", "TRACKER_DEADLINE_SUBMISSION",
+            "TRACKER_DEADLINE_QUESTION"):
     os.environ.pop(var, None)
 sys.path.insert(0, str(ROOT / "scripts"))
 from tracker import (cli, commands, contract, git, github, hooks, lifecycle, markdown, model, moves,  # noqa: E402
@@ -7450,6 +7452,24 @@ class OpenItems(unittest.TestCase):
             run(*self.t, "new", ident, "--title", ident)
             run(*self.t, "set", ident, f"status={status}", cwd=self.work)
         self.tr = model.tracker_at(self.s)
+
+    def test_the_deadline_settings_take_effect(self):
+        run(*self.t, "submit", "T-2", "--what", "plan")  # todo: stuck only by its deadline
+        path = store.HOME / self.s / schema.EVENTS_FILE
+        events = [json.loads(x) for x in path.read_text().splitlines()]
+        events[-1]["at"] = time.strftime(schema.TIME_FORMAT, time.gmtime(time.time() - 100))  # submitted 100 s ago
+        path.write_text("".join(json.dumps(e) + "\n" for e in events))
+        self.coordinator()  # the review is the coordinator's, not yet a human's
+        self.addCleanup(watcher.set_grant, "qb", False)
+
+        def check(**env) -> str:
+            return subprocess.run([str(ROOT / "bin/tracker"), "--tracker", self.s, "check"], capture_output=True,
+                                  text=True, env={**os.environ, **env}).stdout
+
+        self.assertNotIn("stuck:", check())  # 1800 s by default
+        self.assertIn("stuck: coordinator has not reviewed T-2's plan for 1 min",
+                      check(TRACKER_DEADLINE_SUBMISSION="60"))
+        self.assertNotIn("stuck:", check(TRACKER_DEADLINE_QUESTION="60"))  # the other setting
 
     def items(self, events: list[dict], coordinated: bool = True, on: set | None = None, live: dict | None = None,
               now: float = NOW) -> list[moves.Item]:
