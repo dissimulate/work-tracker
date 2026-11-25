@@ -12,8 +12,8 @@ from pathlib import Path
 
 from .system import die
 from .store import first_writes, locked, Busy, OtherFormat
-from .schema import (BLOCKER, COORDINATOR, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES, STAGES, STATUSES,
-    SUBMIT_WHAT, VERDICTS)
+from .schema import (BLOCKER, COORDINATOR, DEADLINE_S, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES,
+    STAGES, STATUSES, SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
 from .session import agent_sid, context_tracker, load_session, own_change, told_about, watch
 from .contract import upgrade_trackers
@@ -206,8 +206,8 @@ def build_parser():
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
     add("check", cmd_check, "validate the tracker, then list what is stuck (a submission or a question left too long "
-                            "or on a ticket under way that no session is on, a wait on a human past 30 s); exit 1 on "
-                            "errors")
+                            "or on a ticket under way that no session is on, a wait on a human past "
+                            f"{DEADLINE_S['wait']} s); exit 1 on errors")
     sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
                                "base, reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
