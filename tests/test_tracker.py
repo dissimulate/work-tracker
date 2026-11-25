@@ -3153,7 +3153,7 @@ class SessionNews(TwoSessions):
         other = repo("main")  # a repo the tracker does not name, on a branch: not its work
         remote(other, "b/y")
         hook("stop", self.a, other, env=no_gh(), stop_hook_active=False)
-        self.assertEqual(session.load_session(self.a)["work"], str(self.work))  # what `work_dir` gives
+        self.assertEqual(session.load_session(self.a)["work"], str(self.work.resolve()))  # what `work_dir` gives
         self.assertEqual(session.load_session(self.a)["cwd"], str(other))  # where the session was last seen
 
     def test_a_session_on_no_ticket_in_the_tracker_folder_is_nudged_for_its_branch(self):
@@ -3260,7 +3260,7 @@ class SessionNews(TwoSessions):
         gone = subprocess.Popen(["true"])
         gone.wait()
         self.assertEqual(session.attached_tracker(gone.pid, str(plain)), self.s)
-        self.assertEqual(session.load_session(self.a)["work"], str(self.work))  # `work_dir` still gives its checkout
+        self.assertEqual(session.load_session(self.a)["work"], str(self.work.resolve()))  # `work_dir` still gives it
 
     def test_set_in_the_tracker_folder_uses_the_last_checkout(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
