@@ -3004,11 +3004,16 @@ class SessionNews(TwoSessions):
     def push(self, review: bool = True, command: str = "git push", merged: bool = False, **extra) -> str:
         """A's `command` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
         process (`reviewed`): what the hook tells the agent."""
+        with self.reviewed(review, merged):
+            return self.post_bash(command, **extra)
+
+    def post_bash(self, command: str = "git push", **extra) -> str:
+        """The post-bash hook after A's (or, with `agent_id`, its subagent's) `command`, in this process, against
+        GitHub as the caller fakes it: what the hook tells the agent."""
         out = io.StringIO()
-        with self.reviewed(review, merged), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
-                contextlib.redirect_stdout(out):
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
             handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
-                                  "tool_input": {"command": command}, **extra})
+                                           "tool_input": {"command": command}, **extra})
         return out.getvalue()
 
     def test_what_a_post_bash_sync_read_stays_news_when_the_hook_is_cut_short(self):
@@ -3076,12 +3081,8 @@ class SessionNews(TwoSessions):
             real(tr, every=0)  # A's other sync (its watch's, a background one) writes T-2's PR #12 first
             return real(tr, **kw)  # the hook's own then finds nothing new
 
-        out = io.StringIO()
-        with mock.patch.object(github, "gh", answers(prs)), mock.patch.object(hooks, "sync", racing), \
-                mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
-            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
-                                           "tool_input": {"command": "git push"}})
-        self.assertNotIn("PR #12", out.getvalue())
+        with mock.patch.object(github, "gh", answers(prs)), mock.patch.object(hooks, "sync", racing):
+            self.assertNotIn("PR #12", self.post_bash())
         self.assertIn("PR #12 open for review", self.message())
 
     def test_a_post_bash_sync_tells_what_its_ticket_was_not_told_yet(self):
@@ -3104,13 +3105,10 @@ class SessionNews(TwoSessions):
         with self.three_prs():
             run(*self.t, "sync")
         self.message()
-        out = io.StringIO()
-        with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
-                contextlib.redirect_stdout(out):
-            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
-                                           "tool_input": {"command": "git push"}})
-        self.assertIn("T-1: PRs 11:open, 12:open, 13:merged", out.getvalue())
-        self.assertNotIn("move now", out.getvalue())  # nothing of T-1 changed but its PRs
+        with self.three_prs(merged=True):
+            shown = self.post_bash()
+        self.assertIn("T-1: PRs 11:open, 12:open, 13:merged", shown)
+        self.assertNotIn("move now", shown)  # nothing of T-1 changed but its PRs
         self.assertNotIn("PR #13", self.message())
 
     def test_a_pr_state_seen_while_the_watch_had_news_to_print_stays_seen(self):
@@ -3120,10 +3118,8 @@ class SessionNews(TwoSessions):
         self.message()
         w = watcher.Watcher(model.tracker_at(self.s), self.a, "session sa", mine=True)
         w.claim(time.time())  # its first look read the news, none new, and has not printed its first line yet
-        with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
-                contextlib.redirect_stdout(io.StringIO()):
-            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
-                                           "tool_input": {"command": "git push"}})
+        with self.three_prs(merged=True):
+            self.post_bash()
         w.printed()  # its count, from before the push, is saved now
         self.assertNotIn("PR #13", self.message())
 
@@ -5865,6 +5861,9 @@ class MineWatch(TwoSessions):
 
     def reviewed(self, review: bool = True, merged: bool = False):
         return SessionNews.reviewed(self, review, merged)
+
+    def post_bash(self, command: str = "git push", **extra) -> str:
+        return SessionNews.post_bash(self, command, **extra)
 
     def test_a_sync_that_fails_is_said_once_also_across_restarts(self):
         self.setUp("a/x")
