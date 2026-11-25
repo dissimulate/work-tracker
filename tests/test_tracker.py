@@ -7422,6 +7422,19 @@ class OpenItems(unittest.TestCase):
     """What waits for a reply (a submission, open findings, a question, a wait on a human), whose move each is, and
     which are stuck: worked out from the log and the clock (`moves.open_items`), never stored."""
 
+    def test_a_view_works_the_open_items_out_once_and_again_after_a_write(self):
+        s, t = new_tracker("Many")
+        for i in (1, 2, 3):
+            run(*t, "new", f"T-{i}", "--title", f"Part {i}")
+            run(*t, "set", f"T-{i}", "status=in-progress")
+        tr = model.tracker_at(s)
+        with mock.patch.object(session, "open_items", wraps=moves.open_items) as worked:
+            self.assertEqual([session.move_of(tr, x).text() for x in tr.tickets], ["you: no PR yet"] * 3)
+            self.assertEqual(worked.call_count, 1)  # one pass over the log for the whole view
+            run(*t, "submit", "T-1", "--what", "plan")
+            self.assertEqual(session.move_of(tr, tr.lookup("T-1")).text(), "human: plan review")  # the log changed
+            self.assertEqual(worked.call_count, 2)
+
     def setUp(self):
         self.s, self.t = new_tracker("Open")
         self.work = repo("feat/T-1")  # a branch name that says nothing of what is checked

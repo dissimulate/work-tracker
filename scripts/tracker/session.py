@@ -16,8 +16,8 @@ from pathlib import Path
 from .system import alive, descendants, die, entered_via, session_id
 from .store import HOME, locked, read_json, write_json, OtherFormat
 from .schema import COORDINATOR, QUIET_KINDS, STAGES, WORD_EXCERPT_MAX, WORDS_KEPT, stage_of, utc_now
-from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, commits_text, last_seq,
-    load_record, put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
+from .model import (SAFE_NAME, all_trackers, append_event, archived_at, branch_entry, cached_event_lines, commits_text,
+    last_seq, load_record, put_entry, read_events, resolution, short, state_key, tracker_at, Record, Tracker)
 from .moves import open_items, whose_move, Item, Move
 from .git import branch_of, changed_files, cwd_repo, default_branches, git, head_of, worktree_key
 
@@ -673,10 +673,12 @@ def is_time(x) -> bool:
     return type(x) in (int, float) and 0 < x <= time.time() + TIME_SLACK_S  # NaN fails both; `true` is no time
 
 
-# Per Tracker object, which is one read of a tracker: who is around it (`around`). A view asks it for each ticket's
-# move, and reading the live sessions each time made `tracker data` some eight times slower; a command, a hook or a
-# watch's look reads the tracker once, so it reads them once.
+# Per Tracker object, which is one read of a tracker: who is around it (`around`), and its open items (`items_of`). A
+# view asks for each ticket's move, which needs both, and working them out per ticket costs a read of the live
+# sessions and a pass over the log each; a command, a hook or a watch's look reads the tracker once, so it works them
+# out once.
 AROUND: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+ITEMS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str], float]:
@@ -691,10 +693,17 @@ def around(tr: Tracker) -> tuple[bool, set[str], dict[str, str], float]:
 
 
 def items_of(tr: Tracker, now: float | None = None) -> list[Item]:
-    """The tracker's open items at `now` (default: the time now), as `moves.open_items` works them out from the log
-    and who is around (`around`). The log comes from one read per process while the event file does not change
-    (`model.read_events`); the clock applies at each call, so nothing caches a verdict."""
-    return open_items(tr, read_events(tr), time.time() if now is None else now, *around(tr))
+    """The tracker's open items at `now`, as `moves.open_items` works them out from the log and who is around
+    (`around`). With no `now`, at the time of the first such call for this Tracker object while its event file is
+    the one that call read (ITEMS): one view is one instant. The log comes from one read per process while the event
+    file does not change (`model.read_events`)."""
+    if now is not None:
+        return open_items(tr, read_events(tr), now, *around(tr))
+    lines = cached_event_lines(tr)  # the same list while the file does not change
+    hit = ITEMS.get(tr)
+    if not hit or hit[0] is not lines:
+        hit = ITEMS[tr] = (lines, open_items(tr, read_events(tr), time.time(), *around(tr)))
+    return hit[1]
 
 
 def move_of(tr: Tracker, t: Record) -> Move | None:
