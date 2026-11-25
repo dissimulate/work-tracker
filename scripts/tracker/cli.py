@@ -15,7 +15,7 @@ from .store import first_writes, locked, Busy, OtherFormat
 from .schema import (BLOCKER, COORDINATOR, DEADLINE_S, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES,
     STAGES, STATUSES, SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
-from .session import agent_sid, context_tracker, load_session, own_change, told_about, watch
+from .session import agent_sid, context_tracker, own_change, own_watch
 from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
@@ -375,7 +375,7 @@ def own_changes(run) -> None:
     only what others did. Only a command its agent ran: one entered in the view or at a terminal is someone else's."""
     sid = agent_sid()
     tr = context_tracker(sid) if sid else None
-    before = watch(tr, told_about(load_session(sid), tr)) if tr else None
+    before = own_watch(sid, tr) if tr else None
     run()
     if before:
         own_change(sid, tr, before)
