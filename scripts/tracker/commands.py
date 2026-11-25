@@ -350,10 +350,10 @@ SAY_WHO = ('say who decided: --by <name> when a human told you, or --source "<wh
 
 
 def who_settled(by: str | None, source: str | None, cite: str | None = None) -> tuple[str, dict]:
-    """Who settled a decision and how it was entered (R9), from `--by` or `--source` and `entered_via`: the `<who>` of
+    """Who settled a decision and how it was entered, from `--by` or `--source` and `entered_via`: the `<who>` of
     its resolution line and its `decision.decided` event's data. In the view, a human (`by`, else "human"); through an
     agent, the human it names or the source it names, and one of them it must name; at a terminal, unattributed, with
-    what it names kept as said. A human named through an agent is cited (R18) when `cite` quotes a message the
+    what it names kept as said. A human named through an agent is cited when `cite` quotes a message the
     session kept of theirs (`session.cited_word`), which the event then holds. Dies on flags that cannot say it: the
     caller writes nothing before."""
     by, source = resolution_who(by), resolution_who(source)

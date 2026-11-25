@@ -103,7 +103,7 @@ def check(tr: Tracker) -> tuple[list[str], list[str]]:
 
 
 def no_issue(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
-    """Each open ticket with no Issue link (R11): an error when README `issues` is required; else a warning, while some
+    """Each open ticket with no Issue link: an error when README `issues` is required; else a warning, while some
     ticket has one (a tracker that uses no issue tracker is not asked for them). One line per ticket: a write reports
     only the lines it adds (`cli.with_check`)."""
     if tr.meta.get("issues") == "required":
@@ -116,7 +116,7 @@ def no_issue(tr: Tracker, errors: list[str], warnings: list[str]) -> None:
 
 
 def unclaimed(tr: Tracker) -> list[str]:
-    """Each PR a session on the tracker opened (`pr.opened`) that no ticket claims (R11): none names it now, by its
+    """Each PR a session on the tracker opened (`pr.opened`) that no ticket claims: none names it now, by its
     branch's PRs (`prs`) or a `PR:` link, and none ever held it (a `pr.state` event on a ticket: a later PR from the
     branch replaced it, and `sync` dropped it from `prs`)."""
     events = read_events(tr)

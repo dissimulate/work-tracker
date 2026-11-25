@@ -2273,7 +2273,7 @@ def opened_prs(s: str) -> list[dict]:
 
 class PrsOpened(unittest.TestCase):
     """A PR a session on a tracker opens with `gh pr create` is logged (`pr.opened`), and `tracker check` warns of one
-    that no ticket claims (R11)."""
+    that no ticket claims."""
 
     CREATE = {"command": "gh pr create --fill --title 'Parser'"}
     CREATED = {"stdout": "Creating pull request for f1 into main in a/x\n\nhttps://github.com/a/x/pull/12\n",
@@ -2907,7 +2907,7 @@ class TwoSessions(unittest.TestCase):
 
 class SessionNews(TwoSessions):
     """What a session is told at its next message about its tickets: what other sessions, a terminal or GitHub wrote
-    on them since it last looked, once, and never its own writes (R5)."""
+    on them since it last looked, once, and never its own writes."""
 
     def test_a_note_another_session_writes_on_my_ticket_is_in_my_next_message(self):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
@@ -5915,7 +5915,7 @@ class MineWatchAtOnce(MineWatch):
 
 class WatchAsk(TwoSessions):
     """The turn-end hook: a session with a subscribed ticket that waits on someone else, and no watch running, is held
-    back once per wait and asked to start `tracker watch --mine` (R5)."""
+    back once per wait and asked to start `tracker watch --mine`."""
 
     def setUp(self):
         attended = mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ATTENDED": "1"})  # a person uses each session
@@ -6759,7 +6759,7 @@ AGENT, VIEW, TERMINAL = {"TRACKER_SESSION": "s1"}, {"TRACKER_VIA": "view"}, {}
 
 
 class WhoDecided(unittest.TestCase):
-    """A resolution records who decided and how it was entered (R9): a human in the view, a human through an agent, an
+    """A resolution records who decided and how it was entered: a human in the view, a human through an agent, an
     agent from a source it names, or a terminal, which is never taken for a human."""
 
     def setUp(self):
@@ -6875,7 +6875,7 @@ class WhoDecided(unittest.TestCase):
 
 
 class CitedWord(unittest.TestCase):
-    """A resolution entered on a human's word cites the message that word came in (R18): the hooks keep a fingerprint
+    """A resolution entered on a human's word cites the message that word came in: the hooks keep a fingerprint
     and an excerpt of the human's last few messages and answers with the session, and `decide --cite` copies the one
     that holds the quote into the resolution's event."""
 

@@ -484,8 +484,9 @@ SYNC_MIN_INTERVAL_S = 600  # a session's hooks sync at most this often
 LIVE_SYNC_S = env_int("TRACKER_SYNC", 120, least=30)  # while a UI or a watch shows the work live, it syncs this often
 PR_MATCH_TTL_S = 600  # how long a branch's PR, once asked, is not asked again
 # How long an open item may wait for its reply, in seconds, before it is stuck (`moves.open_items`): a submission for
-# its review, a question for its answer, a wait on a human for its end. These values are still open (the spec "the
-# tracker as the channel", open question 2). The watch's "asks for a permission or an answer" line uses the wait's.
+# its review, a question for its answer, a wait on a human for its end. Each is a first value, to tune from use; the
+# submission's and the question's are settings, as how soon a coordinator or a session answers depends on the work.
+# The watch's "asks for a permission or an answer" line uses the wait's.
 DEADLINE_S = {"submission": env_int("TRACKER_DEADLINE_SUBMISSION", 1800),
               "question": env_int("TRACKER_DEADLINE_QUESTION", 1800), "wait": 30}
 
@@ -544,8 +545,8 @@ RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`
            'spec, a settled decision or the code already answered it)')
 DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
 # A session keeps the human's last WORDS_KEPT messages and answers, each as a fingerprint and its first
-# WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. These
-# values are first guesses (the spec "the tracker as the channel", open question 3).
+# WORD_EXCERPT_MAX characters (`session.keep_word`), for `decide --cite` to copy into the resolution it rests on. Both
+# are first values, to tune from use.
 WORDS_KEPT = 5
 WORD_EXCERPT_MAX = 200
 DECISION_BAR = (
