@@ -341,12 +341,13 @@ class SyncJob(threading.Thread):
 
 class Watcher:
     """One tracker's watch. `claim` takes it (one watcher per tracker) and gives the lines to start with; `poll` looks
-    once and gives the lines of what changed; `run` prints them until stopped, or until the first batch (`once`).
-    `only` keeps the events of those EVENT_KINDS (and with URGENT, any urgent one); `hold` keeps those that need no one
-    until the oldest is that many seconds old, so that they come as one batch. What it reported and holds lives in
+    once and gives the lines of what changed; `run` prints them until stopped, or until the first batch (`once`). `only`
+    keeps the events of those EVENT_KINDS (and with URGENT, any urgent one); `hold` keeps those that need no one until
+    the oldest is that many seconds old, so that they come as one batch. What it reported and holds lives in
     WATCH_DIR/<slug>.json, so a restart within CATCH_UP_S, by the same session or the terminal, misses nothing and
     repeats nothing. `mine`: a session's watch of its own tickets, which prints its news alone (`session.news`, which
-    the prompt hook shares, so each thing is told once) and ends by itself when none of them is open."""
+    the prompt hook shares, so each thing is told once, or twice when both read it at once, never lost) and ends by
+    itself when none of them is open."""
 
     def __init__(self, tr: Tracker, sid: str = "", who: str = "terminal", only: frozenset[str] = frozenset(),
                  hold: float = 0, role: str = "", mine: bool = False):

@@ -952,7 +952,7 @@ def news(sid: str, tr: Tracker) -> News:
     subscribed is told what others wrote on it since the cursor, and its state from now. With no cursor yet, nothing:
     it starts from now. Nothing counts as told until the caller has passed the lines on and calls `told`. The prompt
     hook and the session's own watch (`tracker watch --mine`) both call it, so each thing is told once, by whichever
-    comes first."""
+    comes first, or by both when they read it before either saves (`told`)."""
     with locked():  # one read of the session's state and the tracker
         entry = load_session(sid)
         state = state_on(entry, tr.slug)
