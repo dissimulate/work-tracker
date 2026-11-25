@@ -3287,10 +3287,15 @@ class SessionNews(TwoSessions):
                 self.assertIn("T-1 move now: you", self.message())  # the review made it A's: not A's own doing
 
     def test_a_ticket_i_closed_that_someone_reopens_tells_its_move_again(self):
-        self.message()
-        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")  # its own close: its move goes
-        run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
-        self.assertIn("T-1 move now: you", self.message())
+        for between in (False, True):
+            with self.subTest(message_between=between):
+                self.setUp()
+                self.message()
+                self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")  # its own close: its move goes
+                if between:
+                    self.assertNotIn("Changed on", self.message())
+                run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
+                self.assertIn("T-1 move now: you", self.message())
 
     def hand_edit_next(self, ident: str) -> None:
         """A hand edit of `next` in a ticket file, and its hook."""

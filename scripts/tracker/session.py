@@ -985,7 +985,9 @@ def news(sid: str, tr: Tracker) -> News:
             for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
                 said.append((key, text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}"))
-        return News(said, tr.slug, watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
+        # Of `told_about`, not the subscription alone: a ticket that closed keeps what the session was told of it, so
+        # one that opens again tells its move.
+        return News(said, tr.slug, watch(tr, about), last, (state["seen"], base))
 
 
 def told(sid: str, found: News) -> None:
