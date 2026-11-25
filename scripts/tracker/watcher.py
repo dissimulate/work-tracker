@@ -373,10 +373,11 @@ class Watcher:
         write_json(state_path(self.slug, self.sid), {**self.st, "at": now})
 
     def with_role(self, st: dict) -> dict:
-        """The state with this run's role and whether it is `mine`, and neither when it was given neither: each holds
-        only while the watch that was given it runs."""
-        st = {k: v for k, v in st.items() if k not in ("role", "mine")}
-        return {**st, **({"role": self.role} if self.role else {}), **({"mine": True} if self.mine else {})}
+        """The state with this run's role, whether it is `mine` and the kinds it keeps (`only`), and none of them when
+        it was given none: each holds only while the watch that was given it runs."""
+        st = {k: v for k, v in st.items() if k not in ("role", "mine", "only")}
+        return {**st, **({"role": self.role} if self.role else {}), **({"mine": True} if self.mine else {}),
+                **({"only": sorted(self.only)} if self.only else {})}
 
     def claim(self, now: float) -> list[str]:
         """Take this session's (or the terminal's) watch of the tracker. Soon after its last run stopped: what

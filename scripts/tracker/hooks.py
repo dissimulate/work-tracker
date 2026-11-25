@@ -417,10 +417,11 @@ def hook_prompt(data: dict) -> None:
     found = news(sid, m.tracker)
     fields = {"prompts": n + 1}
     lines = []
-    # A session whose full watch of this tracker runs has them from that watch; a watch of its own tickets shares this
-    # baseline, so what it printed is not here, and a watch of another tracker shows none of them.
+    # A session whose full watch of this tracker runs, of every kind, has them from that watch; a watch of its own
+    # tickets shares this baseline, so what it printed is not here; a watch that keeps only some kinds (`--only`) and
+    # a watch of another tracker show none of them.
     watched = load_state(m.tracker.slug, sid)
-    if found.lines and not (watch_running(watched) and not watched.get("mine")):
+    if found.lines and not (watch_running(watched) and not watched.get("mine") and not watched.get("only")):
         lines.append(f"[work-tracker] Changed on {', '.join(found.about)} since the brief or the user's previous "
                      "message: " + "; ".join(found.lines) + ".")
     ask = next_request(m, cwd, sid)

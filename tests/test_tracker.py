@@ -5957,6 +5957,11 @@ class MineWatch(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertNotIn("Changed on", self.message())
 
+    def test_a_full_watch_that_prints_only_some_kinds_leaves_the_news_to_the_message(self):
+        watcher.Watcher(model.tracker_at(self.s), self.a, only=frozenset({"stuck"})).claim(self.clock)
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")  # no line of that watch says it
+        self.assertIn("T-1: base branch moved", self.message())
+
     def test_a_start_on_other_tickets_adds_them_to_the_watch(self):
         w = self.mine()
         self.claim(w)
