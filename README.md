@@ -101,7 +101,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 - Many sessions can share one tracker. `tracker start <slug> --on <id>` puts a session on one ticket of a shared branch.
 - **A session's tickets** are what it is told about and woken for:
   - the tickets it starts on: with `tracker start`, the `--on` tickets, else the open tickets of the branch it starts on. The same at the link a session start makes, and after `/clear`.
-  - each ticket it later runs `tracker use`, `step`, `submit`, `review --fixed`, or `set` with `status=` or `next=` on, wherever it runs it. A command you run at a terminal or in the view adds none, and no hook adds any.
+  - each ticket it later runs `tracker use`, `step`, `submit`, `review --fixed`, or `set` with `status=` or `next=` on, wherever it runs it. A command you run at a terminal or in the view adds none, and a hook adds some only to a session that has none yet (below).
   - a ticket stays the session's until it closes, also when other sessions work on it, and a todo ticket counts. A ticket the session works on without one of those commands is in its brief but not in its news: run `tracker start <slug> --on <id>` or one of those commands on it.
   - a start on the tracker the session is on adds to its tickets and keeps what it was told, and `--on` narrows the brief to the tickets it names. A start on another tracker starts afresh there.
   - any other session with no tickets yet, such as one that names its tracker in `TRACKER`, gets them at its first hook on the branch it runs on. `tracker start --clear` in a `TRACKER` session leaves it on none.
