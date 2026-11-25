@@ -5931,11 +5931,17 @@ class MineWatch(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertIn("T-1: base branch moved", self.message())  # no watch of this tracker tells it
 
+    def test_the_watch_ends_when_the_session_leaves_for_no_tracker(self):
+        out, _ = self.run_watch(self.mine(), during=lambda: self.as_a("start", "--clear"))
+        self.assertEqual(self.ended(out), [], out)
+        self.assertEqual(self.texts(out.splitlines()[1:]), [watcher.MINE_LEFT])
+        self.assertNotIn("another tracker", watcher.MINE_LEFT)
+
     def test_the_watch_ends_when_the_session_moves_to_another_tracker(self):
         other, _ = new_tracker("Elsewhere")
         out, _ = self.run_watch(self.mine(), during=lambda: self.as_a("start", other))
         self.assertEqual(self.ended(out), [], out)  # not the line after which no watch starts again
-        self.assertEqual(self.texts(out.splitlines()[1:]), [watcher.MINE_MOVED])  # after its first line
+        self.assertEqual(self.texts(out.splitlines()[1:]), [watcher.MINE_LEFT])  # after its first line
         self.assertFalse(watcher.granted(self.a))
         self.assertTrue(watcher.load_state(self.s, self.a).get("ended"))
         # The new tracker's cursor, which its `tracker start` set: the watch did not move it.

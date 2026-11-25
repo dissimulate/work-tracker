@@ -46,10 +46,9 @@ GH_BUDGET_S = 20  # all gh calls of one sync
 MINE_SYNC_FAILED = ("tell the user: GitHub sync fails, so no PR review, check or merge reaches this session until it "
                     "works again ({})")
 # A `mine` watch's last line: no ticket of the session is open, which the watch skill says to start no watch after; or
-# the session is on another tracker, where the turn-end hook asks for a watch of its own when one is needed.
+# the session left the tracker, for another one or none, where the turn-end hook asks for a watch when one is needed.
 MINE_DONE = "no ticket of this session is open: the watch has ended"
-MINE_MOVED = ("this session is on another tracker now: this watch stops; start a watch there only when the turn-end "
-              "hook asks")
+MINE_LEFT = "this session left this tracker: this watch stops; start a watch only when the turn-end hook asks"
 REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run the command, or not now (a tracker in use)
 
 # ---------------------------------------------------------------- the grant
@@ -357,7 +356,7 @@ class Watcher:
         self.root, self.slug, self.sid, self.who, self.only, self.hold = tr.root, tr.slug, sid, who, only, hold
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.mine = mine
-        # Why a `mine` look ends the watch: MINE_MOVED (the session is off this tracker) or MINE_DONE (no ticket of it
+        # Why a `mine` look ends the watch: MINE_LEFT (the session is off this tracker) or MINE_DONE (no ticket of it
         # is open); "": it goes on
         self.ended = ""
         self.untold: News | None = None  # a `mine` look's news, told once its lines are printed (`printed`)
@@ -507,7 +506,7 @@ class Watcher:
         it is printed (`printed`). It marks the end (`ended`) when the session is on another tracker or none, or has
         no open subscribed ticket, with the news of a ticket that closed before the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
-            self.ended = MINE_MOVED
+            self.ended = MINE_LEFT
             return []  # its cursor is another tracker's now: it is not this watch's to move
         # A change waits to settle, the end too: a hand edit is written before its hook counts it as the session's
         # own (`own_edit`).
