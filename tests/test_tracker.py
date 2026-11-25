@@ -1490,6 +1490,16 @@ class Upgrade(unittest.TestCase):
         self.assertEqual([model.log_line(e) for e in legacy],
                          [ln for ln in self.OLD_LOG.splitlines() if ln.startswith("- ")])
 
+    def test_a_log_md_that_is_not_utf8_still_migrates(self):
+        s, t, root = self.format_5_log()
+        (root / "log.md").write_bytes(b"# Log\n\n- 2026-01-02 [T-1] caf\xe9 in Latin-1\n")
+        run(*t, "log", "after")  # a write: the tracker migrated, and takes it
+        tr = model.tracker_at(s)
+        self.assertEqual(tr.schema, schema.SCHEMA)
+        [legacy] = [e for e in model.read_events(tr) if e["kind"] == "legacy"]
+        self.assertEqual(legacy["text"], "caf\ufffd in Latin-1")  # the bytes it cannot read, marked
+        self.assertTrue((root / "log.md").read_bytes().startswith(b"# Log\n\n- 2026-01-02 [T-1] caf\xe9"))
+
     def test_migration_runs_once(self):
         s, t, root = self.format_5_log()
         run(*t, "index")

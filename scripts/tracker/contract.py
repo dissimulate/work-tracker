@@ -383,14 +383,16 @@ OPENED, DECIDED = (re.compile(rf"{verb} ({DECISION_ID})\b") for verb in ("Opened
 
 def legacy_events(tr: Tracker) -> None:
     """Format 6 keeps the log as events: each `- ` line of log.md becomes a legacy event, oldest first, with its day
-    and ids, and the decision it opened or settled. A line of no known form is kept whole, with no day. All in one
-    write, so a run that stops leaves no event file or the whole of it; an event file with events stays as it is.
-    log.md stays too: it reads the same."""
+    and ids, and the decision it opened or settled. A line of no known form is kept whole, with no day. Bytes that are
+    not UTF-8 (a hand edit in another encoding) read as U+FFFD: a log.md that cannot be read whole would leave the
+    tracker unmigrated, taking no writes. All in one write, so a run that stops leaves no event file or the whole of
+    it; an event file with events stays as it is. log.md stays too: it reads the same."""
     path = tr.root / EVENTS_FILE
     if path.exists() and path.stat().st_size:
         return
     log = tr.root / "log.md"
-    lines = [ln for ln in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []) if ln.startswith("- ")]
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    lines = [ln for ln in text.splitlines() if ln.startswith("- ")]
     events = []
     for seq, line in enumerate(lines, 1):
         e = {"seq": seq, "kind": "legacy", "session": "", "via": "", "version": "", "repo": ""}
