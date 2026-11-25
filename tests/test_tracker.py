@@ -3306,9 +3306,19 @@ class SessionNews(TwoSessions):
 
     def hand_edit_next(self, ident: str) -> None:
         """A hand edit of `next` in a ticket file, and its hook."""
+        self.hand_edit(ident, "next", "Split the parser")
+
+    def hand_edit(self, ident: str, key: str, value: str) -> None:
+        """A's hand edit of one frontmatter key in a ticket file, and its hook."""
         path = store.HOME / self.s / f"tickets/{ident}.md"
-        path.write_text(re.sub(r"^next:.*", "next: Split the parser", path.read_text(), flags=re.M))
+        path.write_text(re.sub(rf"^{key}:.*", f"{key}: {value}", path.read_text(), flags=re.M))
         tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+
+    def test_what_a_hand_edit_changes_on_other_records_is_told_once(self):
+        self.message()
+        self.hand_edit("T-1", "depends_on", "[T-2]")  # its own change, which the hook cannot tell from another's
+        self.assertIn("now waits on T-2 (todo)", self.message())
+        self.assertNotIn("Changed on", self.message())
 
     def test_a_hand_edit_that_starts_a_ticket_tells_its_move_once(self):
         self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on todo T-2 too
