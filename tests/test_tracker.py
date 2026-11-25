@@ -2672,7 +2672,6 @@ class Hooks(unittest.TestCase):
                 path.write_text(re.sub(r"^next:.*", f"next: {step}", path.read_text(), flags=re.M))
                 tool("apply_patch" if "command" in used else "Edit", sid, cwd, tool_input=used)
                 self.assertNotEqual(session.load_session(sid)["seen"], before)
-                self.assertNotIn("Changed on ", said(hook("prompt", sid, work, prompt="next")))
 
     def test_session_identity(self):
         cases = [({}, ""), ({"CODEX_THREAD_ID": "codex"}, "codex"),
@@ -3311,6 +3310,15 @@ class SessionNews(TwoSessions):
         path = store.HOME / self.s / f"tickets/{ident}.md"
         path.write_text(re.sub(r"^next:.*", "next: Split the parser", path.read_text(), flags=re.M))
         tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+
+    def test_a_hand_edit_that_starts_a_ticket_tells_its_move_once(self):
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on todo T-2 too
+        self.message()
+        path = store.HOME / self.s / "tickets/T-2.md"
+        path.write_text(re.sub(r"^status: .*", "status: in-progress", path.read_text(), flags=re.M))
+        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+        self.assertIn("T-2 move now: you", self.message())  # the hook cannot tell it from another's
+        self.assertNotIn("Changed on", self.message())
 
     def test_a_hand_edit_counts_only_its_own_record_as_seen(self):
         for edited in ("T-1", "T-2"):
