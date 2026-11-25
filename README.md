@@ -82,7 +82,7 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
-`events.jsonl` restored from an older copy numbers its new events again. A session's news and a watch notice that only while the file holds fewer events than they had read; an event written past that point before they next look can be missed once.
+`events.jsonl` restored from an older copy numbers its new events again. At their next look, a session's news and a watch count all the file then holds as told, so an event written between the restore and that look is missed; once the file holds more events than they had read, they cannot tell it was restored, and an event can be missed then too.
 
 `tracker rules` prints the full format: every key and what writes it, and each rule below in full.
 
