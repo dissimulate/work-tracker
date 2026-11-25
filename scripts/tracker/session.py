@@ -974,7 +974,9 @@ def news(sid: str, tr: Tracker) -> News:
             known = [t.id for t in about]
             said = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before], set(known)))
             # An event file shorter than the cursor (restored from a backup) numbers its new events again: what it
-            # holds now counts as told, as the watch does.
+            # holds now counts as told, as the watch does. A look finds the restore only while the file is still
+            # shorter: once others write past the old cursor, nothing tells the numberings apart, and an event can
+            # then be missed once, or hidden by a seen mark of the old numbering (`told`).
             fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))
                      if e["kind"] not in NEWS_LEFT_OUT and any(i in known for i in e["refs"])
                      and e["seq"] not in shown and (e["kind"] in GITHUB_KINDS or not own_event(e, sid))]
@@ -998,8 +1000,8 @@ def told(sid: str, found: News) -> None:
     with locked():
         state = state_on(load_session(sid), found.slug)
         if (state["seen"], state["seen_seq"]) == found.read:
-            # An event file shorter than the cursor (restored from a backup) numbers its events again: the seen
-            # events are of the old numbering. Else those past the new cursor stay, as a sync wrote them since.
+            # A restore `news` found (see there): the seen events are of the old numbering. Else those past the new
+            # cursor stay, as a sync wrote them since.
             restored = (found.read[1] or 0) > found.seq
             past = [] if restored else [x for x in state["seen_events"] or [] if x > found.seq]
             save_state(sid, found.slug, seen=found.seen, seen_seq=found.seq, seen_events=past or None)

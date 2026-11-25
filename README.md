@@ -82,6 +82,8 @@ Each tracker is a folder in `~/.claude/trackers/<slug>/` (`TRACKER_HOME` changes
 | `evidence/` | files the records cite: runs, measurements |
 | `.state.json` | machine state. Do not edit |
 
+`events.jsonl` restored from an older copy numbers its new events again. A session's news and a watch notice that only while the file holds fewer events than they had read; an event written past that point before they next look can be missed once.
+
 `tracker rules` prints the full format: every key and what writes it, and each rule below in full.
 
 - **Who decided.** A decision's resolution says who settled it and how it was entered: you in the view; you through an agent, which names you (`--by`) and can cite the message you said it in (`--cite "<a few words from its start>"`: the session keeps the start of the last 5 things you said in it, messages and, in Claude Code, answers to its questions, and only a cited one reaches the log); an agent that names the source that already answered it (`--source`: the spec, a settled decision, the code); or, from a terminal with no session, unattributed, never taken for a person. An agent that resolves a decision must name one of the two. Who entered it comes from the session's environment, so it guards against mistakes, not against an agent that sets out to deceive.
