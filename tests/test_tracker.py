@@ -2931,6 +2931,39 @@ class TwoSessions(unittest.TestCase):
         run("--tracker", other, "new", "T-1", "--title", "Other one", "--branch", "other")
         return other
 
+    def reviewed(self, review: bool = True, merged: bool = False):
+        """GitHub as it answers for PR #11, of branch f1: rev requested changes on it, or, with no `review`, none;
+        open, or `merged`."""
+        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")] if review else []
+        state = {"state": "MERGED", "merged_at": "2026-09-04T01:00:00Z"} if merged else {}
+        return mock.patch.object(github, "gh", answers([pull(11, branch="f1", rounds=rounds, **state,
+                                                            decision="CHANGES_REQUESTED" if review else None)]))
+
+    def push(self, review: bool = True, command: str = "git push", merged: bool = False, **extra) -> str:
+        """A's `command` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
+        process (`reviewed`): what the hook tells the agent."""
+        with self.reviewed(review, merged):
+            return self.post_bash(command, **extra)
+
+    def post_bash(self, command: str = "git push", **extra) -> str:
+        """The post-bash hook after A's (or, with `agent_id`, its subagent's) `command`, in this process, against
+        GitHub as the caller fakes it: what the hook tells the agent."""
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
+            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
+                                           "tool_input": {"command": command}, **extra})
+        return out.getvalue()
+
+    def hand_edit_next(self, ident: str) -> None:
+        """A hand edit of `next` in a ticket file, and its hook."""
+        self.hand_edit(ident, "next", "Split the parser")
+
+    def hand_edit(self, ident: str, key: str, value: str) -> None:
+        """A's hand edit of one frontmatter key in a ticket file, and its hook."""
+        path = store.HOME / self.s / f"tickets/{ident}.md"
+        path.write_text(re.sub(rf"^{key}:.*", f"{key}: {value}", path.read_text(), flags=re.M))
+        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+
     def run_watch(self, w: watcher.Watcher, once: bool = False, during=None) -> tuple[str, int]:
         """`Watcher.run` in this process: its output, and how many looks it slept before; `during` runs at the first
         sleep. Each sleep is short, so a change still takes SETTLE_S to settle."""
@@ -2992,29 +3025,6 @@ class SessionNews(TwoSessions):
         self.assertIn("PR #11 open for review", told)
         self.assertIn("PR #11 review by rev: changes requested", told)
         self.assertIn("T-1 move now: you", told)  # the review made it A's
-
-    def reviewed(self, review: bool = True, merged: bool = False):
-        """GitHub as it answers for PR #11, of branch f1: rev requested changes on it, or, with no `review`, none;
-        open, or `merged`."""
-        rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")] if review else []
-        state = {"state": "MERGED", "merged_at": "2026-09-04T01:00:00Z"} if merged else {}
-        return mock.patch.object(github, "gh", answers([pull(11, branch="f1", rounds=rounds, **state,
-                                                            decision="CHANGES_REQUESTED" if review else None)]))
-
-    def push(self, review: bool = True, command: str = "git push", merged: bool = False, **extra) -> str:
-        """A's `command` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
-        process (`reviewed`): what the hook tells the agent."""
-        with self.reviewed(review, merged):
-            return self.post_bash(command, **extra)
-
-    def post_bash(self, command: str = "git push", **extra) -> str:
-        """The post-bash hook after A's (or, with `agent_id`, its subagent's) `command`, in this process, against
-        GitHub as the caller fakes it: what the hook tells the agent."""
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
-            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
-                                           "tool_input": {"command": command}, **extra})
-        return out.getvalue()
 
     def test_what_a_post_bash_sync_read_stays_news_when_the_hook_is_cut_short(self):
         cases = [(merged, at) for merged in (False, True) for at in ("record_commits", "emit_context")]
@@ -3285,9 +3295,7 @@ class SessionNews(TwoSessions):
                 if how == "command":
                     self.as_a(*self.t, "step", "T-1", "--next", "Split the parser")  # its own write on T-1
                 else:
-                    path = store.HOME / self.s / "tickets/T-1.md"
-                    path.write_text(re.sub(r"^next: .*", "next: Split the parser", path.read_text(), flags=re.M))
-                    tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+                    self.hand_edit_next("T-1")
                 self.assertIn("T-1 move now: you", self.message())  # the review made it A's: not A's own doing
 
     def test_a_ticket_i_closed_that_someone_reopens_before_my_next_message_tells_its_move(self):
@@ -3304,16 +3312,6 @@ class SessionNews(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "postmortem note")
         self.assertNotIn("postmortem note", self.message())
 
-    def hand_edit_next(self, ident: str) -> None:
-        """A hand edit of `next` in a ticket file, and its hook."""
-        self.hand_edit(ident, "next", "Split the parser")
-
-    def hand_edit(self, ident: str, key: str, value: str) -> None:
-        """A's hand edit of one frontmatter key in a ticket file, and its hook."""
-        path = store.HOME / self.s / f"tickets/{ident}.md"
-        path.write_text(re.sub(rf"^{key}:.*", f"{key}: {value}", path.read_text(), flags=re.M))
-        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
-
     def test_what_a_hand_edit_changes_on_other_records_is_told_once(self):
         self.message()
         self.hand_edit("T-1", "depends_on", "[T-2]")  # its own change, which the hook cannot tell from another's
@@ -3323,9 +3321,7 @@ class SessionNews(TwoSessions):
     def test_a_hand_edit_that_starts_a_ticket_tells_its_move_once(self):
         self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on todo T-2 too
         self.message()
-        path = store.HOME / self.s / "tickets/T-2.md"
-        path.write_text(re.sub(r"^status: .*", "status: in-progress", path.read_text(), flags=re.M))
-        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+        self.hand_edit("T-2", "status", "in-progress")
         self.assertIn("T-2 move now: you", self.message())  # the hook cannot tell it from another's
         self.assertNotIn("Changed on", self.message())
 
@@ -3337,10 +3333,9 @@ class SessionNews(TwoSessions):
                 self.as_b(*self.t, "decide", "Pick a store", "--refs", "T-1")
                 self.hand_edit_next(edited)
                 self.assertIn("D-01 open now touches this work", self.message())
-        self.message()
-        self.as_b(*self.t, "decide", "D-01", "--resolve", "Postgres", "--source", "the spec")
-        self.hand_edit_next("T-1")
-        self.assertIn("D-01 settled: ", self.message())
+                self.as_b(*self.t, "decide", "D-01", "--resolve", "Postgres", "--source", "the spec")
+                self.hand_edit_next(edited)
+                self.assertIn("D-01 settled: ", self.message())
 
     def test_my_own_writes_after_my_tickets_changed_are_no_news(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
@@ -3372,9 +3367,7 @@ class SessionNews(TwoSessions):
 
     def test_my_own_hand_edit_of_my_last_ticket_is_no_news(self):
         self.message()
-        path = store.HOME / self.s / "tickets/T-1.md"
-        path.write_text(re.sub(r"^status: .*", "status: done", path.read_text(), flags=re.M))
-        tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+        self.hand_edit("T-1", "status", "done")
         self.assertNotIn("Changed on", self.message())
 
     def test_a_compaction_in_the_tracker_folder_keeps_the_sessions_ticket(self):
@@ -5869,14 +5862,8 @@ class MineWatch(TwoSessions):
         self.setUp("a/x")
         w = self.mine()
         self.claim(w)
-        self.assertIn("Synced PR state", SessionNews.push(self, review=False))
+        self.assertIn("Synced PR state", self.push(review=False))
         self.assertEqual(self.look(w), [])
-
-    def reviewed(self, review: bool = True, merged: bool = False):
-        return SessionNews.reviewed(self, review, merged)
-
-    def post_bash(self, command: str = "git push", **extra) -> str:
-        return SessionNews.post_bash(self, command, **extra)
 
     def test_a_sync_that_fails_is_said_once_also_across_restarts(self):
         self.setUp("a/x")
