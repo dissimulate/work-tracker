@@ -41,6 +41,8 @@ CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what cha
 MOVE_URGENT = 8
 LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
+# A `mine` watch's line for a sync that fails: what it no longer brings, and who can fix it
+MINE_SYNC_FAILED = "{}: no PR review, check or merge reaches this session until a sync works again; tell the user"
 REFUSED = 4  # exit code of a refusal, not a failure: this caller may not run the command, or not now (a tracker in use)
 
 # ---------------------------------------------------------------- the grant
@@ -389,8 +391,8 @@ class Watcher:
             write_json(state_path(self.slug, self.sid), self.with_role({**st, "pid": os.getpid(), "started": started}))
         if self.mine:
             # A restart (`--once`, the host tool's timeout) says only what is new: the same first line each time would
-            # wake the session for nothing.
-            self.st = {}  # its first look (`force`) takes the files' signature
+            # wake the session for nothing, and so would a sync failure it told already.
+            self.st = {k: st[k] for k in ("sync_failed",) if again and k in st}  # its first look takes the signature
             lines = ([] if again else [self.first_line(now)]) + self.news_lines(self.batch(now, force=True), now)
         elif again:
             if "seq" not in st:  # saved by a version that read log.md: none of the events is new to it
@@ -424,8 +426,16 @@ class Watcher:
                      + ("; ".join(tickets) or "none open"), LINE_MAX)
 
     def news_lines(self, events: list[Event], now: float) -> list[str]:
-        """A `mine` watch's lines: the session's news as it is, with the time: no merging by key, no `!`, no holding."""
-        return [short(f"{time.strftime('%H:%M', time.localtime(now))} {e.text}", LINE_MAX) for e in events]
+        """A `mine` watch's lines: the session's news as it is, with the time: no merging by key, no `!`, no holding.
+        A sync that fails is said once (`sync_told`), as nothing else would tell the session that GitHub's part of its
+        news stopped."""
+        def text(e: Event) -> str:
+            if e.kind != "github":
+                return e.text
+            return "github: " + (MINE_SYNC_FAILED.format(e.text) if e.urgent else e.text)
+
+        clock = time.strftime('%H:%M', time.localtime(now))
+        return [short(f"{clock} {text(e)}", LINE_MAX) for e in events]
 
     def poll(self, now: float) -> list[str]:
         forget()  # git as it is now: this process runs on
@@ -460,7 +470,7 @@ class Watcher:
             self.changed = now
         settled = force or bool(self.changed) and now - self.changed >= SETTLE_S
         if self.mine:
-            return self.mine_batch(tr, sig, settled)
+            return events + self.mine_batch(tr, sig, settled)
         if settled:
             self.sig, self.changed = sig, 0.0
             new = snapshot(tr)
@@ -483,9 +493,8 @@ class Watcher:
 
     def mine_batch(self, tr: Tracker, sig: str, settled: bool) -> list[Event]:
         """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle, told once
-        it is printed (`printed`). A sync that fails is not said: a human fixes it, and the full watch says it. It marks
-        the end (`ended`) when the session is on another tracker or none, or has no open subscribed ticket, with the
-        news of a ticket that closed before the end."""
+        it is printed (`printed`). It marks the end (`ended`) when the session is on another tracker or none, or has
+        no open subscribed ticket, with the news of a ticket that closed before the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
             self.ended = True
             return []  # its cursor is another tracker's now: it is not this watch's to move

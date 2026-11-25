@@ -14,7 +14,7 @@ Use the command prefix from the session's `[work-tracker]` hook when supplied. I
 
 ## Watch your own tickets
 
-When the arguments are `mine`, or the turn-end hook asked: run exactly `tracker watch --mine`. It prints only what others change on this session's own tickets (a move that becomes yours, a review, a note, a PR's state), and takes no `--hold`, `--only` or `--as`.
+When the arguments are `mine`, or the turn-end hook asked: run exactly `tracker watch --mine`. It prints only what others change on this session's own tickets (a move that becomes yours, a review, a note, a PR's state), and a `github:` line when a sync fails or works again, and takes no `--hold`, `--only` or `--as`.
 
 - When the host has a tool that turns each line a background command prints into an event (in Claude Code: Monitor), run it with that tool at its longest timeout, and start it again when the timeout stops it.
 - Else run `tracker watch --mine --once` with the host's background command tool, and start it again after each batch.

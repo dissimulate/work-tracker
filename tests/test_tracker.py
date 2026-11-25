@@ -5599,6 +5599,27 @@ class MineWatch(TwoSessions):
     def reviewed(self, review: bool = True):
         return SessionNews.reviewed(self, review)
 
+    def test_a_sync_that_fails_is_said_once_also_across_restarts(self):
+        self.setUp("a/x")
+        failed = ["sync skipped: gh failed or timed out for a/x"]
+        with mock.patch.object(watcher, "sync", return_value=failed):
+            w = self.mine()
+            self.claim(w)  # its first look starts the sync
+            w.job.join()
+            [line] = self.texts(self.look(w))
+            self.assertTrue(line.startswith("github: sync skipped: gh failed or timed out for a/x: no PR review"), line)
+            w.release(self.clock)
+            again = self.mine()  # `--once`, or the host tool's timeout, starts it again
+            self.assertEqual(self.claim(again), [])
+            again.job.join()
+            self.assertEqual(self.look(again), [])
+        self.clock += schema.LIVE_SYNC_S
+        with mock.patch.object(watcher, "sync", return_value=[]):
+            again.poll(self.clock)  # a sync that works
+            again.job.join()
+            model.tracker_at(self.s).save_state({"last_sync": time.time() + 1})
+            self.assertEqual(self.texts(self.look(again)), ["github: sync works again"])
+
     def test_my_own_step_prints_nothing(self):
         w = self.mine()
         self.claim(w)
