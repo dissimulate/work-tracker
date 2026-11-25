@@ -213,7 +213,7 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
     the post-bash filter did not let through); the model records only what git does not hold, when `next_request`
     asks. Then, at a turn's end (`ask`), the reminder to watch (`watch_ask`): the one time a hook holds a session
     back, once per wait. Claude Code's answer that holds the turn is `decision` "block", with the text as `reason`.
-    Whether it held the turn, which then goes on. The commits are this checkout's; the waits are the session's
+    Returns whether it held the turn, which then goes on. The commits are this checkout's; the waits are the session's
     subscription's (`subscribed`)."""
     m, cwd, sid = session_match(data)
     if not m:
@@ -232,11 +232,11 @@ def hook_stop(data: dict, ask: bool = True) -> bool:
 def watch_ask(data: dict, tr: Tracker, sid: str) -> str:
     """The reminder to a session whose tickets (its subscription) wait on someone else (their move is not its own:
     `session_owns`), with no watch of its own running on the tracker: WATCH_ASK, once per wait (`told_watch`: each
-    ticket and whose move it waits on, as last seen), else "". Only where someone can act on it: the host says the hook
-    does not hold the session already (`stop_hook_active` false: a host that sends no such key cannot say so, and is
-    never asked), not a subagent's stop, a session a person attends, a tracker in this code's format (no `refusal_told`
-    covers Stop), and not after the user stopped the session's watch (`no_watch`). A stop where it is not free to ask
-    uses up nothing."""
+    ticket and whose move it waits on, as last seen), else "". Only where someone can act on it, which is when all of
+    these hold: the host says the hook does not hold the session already (`stop_hook_active` false: a host that sends
+    no such key cannot say so, and is never asked); the stop is not a subagent's; a person attends the session; the
+    tracker takes writes from this code (no `refusal_told` covers Stop); and the user has not stopped the session's
+    watch (`no_watch`). A stop where it is not free to ask uses up nothing."""
     if data.get("stop_hook_active") is not False or data.get("agent_id") \
             or os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "0" or other_format(tr.root):
         return ""

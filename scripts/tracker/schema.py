@@ -538,9 +538,9 @@ def resolution_who(text: str | None) -> str | None:
 
 # A decision's owner that names the session watching the tracker in that role (`tracker watch --as coordinator`)
 COORDINATOR = "coordinator"
-# A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
 # The human's message a resolution rests on: optional, as only a message this session kept can be cited
 CITE = '[--cite "<a few words from the start of what they said in this session>"]'
+# A decision answered; how an answer the spec, a settled decision or the code already gave is resolved
 RESOLVE = (f'`tracker decide D-<n> --resolve "..." --by <who decided> {CITE}` (`--source "<where>"` instead, when the '
            'spec, a settled decision or the code already answered it)')
 DECIDED = f'`tracker decide "<title>" --resolve "..." --by <who decided> {CITE}`'  # a choice made on the spot
