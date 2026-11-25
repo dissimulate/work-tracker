@@ -5693,7 +5693,8 @@ class MineWatch(TwoSessions):
             self.claim(w)  # its first look starts the sync
             w.job.join()
             [line] = self.texts(self.look(w))
-            self.assertTrue(line.startswith("github: sync skipped: gh failed or timed out for a/x: no PR review"), line)
+            self.assertTrue(line.startswith("github: tell the user: GitHub sync fails, so no PR review"), line)
+            self.assertIn("(sync skipped: gh failed or timed out for a/x)", line)
             w.release(self.clock)
             again = self.mine()  # `--once`, or the host tool's timeout, starts it again
             self.assertEqual(self.claim(again), [])
@@ -5705,6 +5706,26 @@ class MineWatch(TwoSessions):
             again.job.join()
             model.tracker_at(self.s).save_state({"last_sync": time.time() + 1})
             self.assertEqual(self.texts(self.look(again)), ["github: sync works again"])
+
+    def test_a_sync_that_could_not_write_is_no_github_failure(self):
+        self.setUp("a/x")
+        with mock.patch.object(watcher, "sync", side_effect=store.Busy("another tracker command has held the lock")):
+            w = self.mine()
+            self.claim(w)
+            w.job.join()
+            self.assertEqual(self.look(w), [])  # it tries again at its next sync
+
+    def test_a_long_sync_failure_still_says_what_to_do(self):
+        self.setUp("a/x")
+        failed = ["sync skipped: gh failed or timed out for " + ", ".join(f"an-org/a-long-repo-name-{i}"
+                                                                         for i in range(3))]
+        with mock.patch.object(watcher, "sync", return_value=failed):
+            w = self.mine()
+            self.claim(w)
+            w.job.join()
+            [line] = self.look(w)
+        self.assertLessEqual(len(line), watcher.LINE_MAX)
+        self.assertIn("tell the user", line)
 
     def test_my_own_step_prints_nothing(self):
         w = self.mine()

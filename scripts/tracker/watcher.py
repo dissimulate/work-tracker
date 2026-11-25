@@ -41,8 +41,10 @@ CATCH_UP_S = 12 * 3600  # a watcher that starts again this soon reports what cha
 MOVE_URGENT = 8
 LINE_MAX = 200
 GH_BUDGET_S = 20  # all gh calls of one sync
-# A `mine` watch's line for a sync that fails: what it no longer brings, and who can fix it
-MINE_SYNC_FAILED = "{}: no PR review, check or merge reaches this session until a sync works again; tell the user"
+# A `mine` watch's line for a sync that fails: who can fix it, and what no longer comes; the reason last, as a long one
+# is cut (LINE_MAX)
+MINE_SYNC_FAILED = ("tell the user: GitHub sync fails, so no PR review, check or merge reaches this session until it "
+                    "works again ({})")
 # A `mine` watch's last line: no ticket of the session is open, which the watch skill says to start no watch after; or
 # the session is on another tracker, where the turn-end hook asks for a watch of its own when one is needed.
 MINE_DONE = "no ticket of this session is open: the watch has ended"
@@ -328,13 +330,14 @@ class SyncJob(threading.Thread):
     def __init__(self, tr: Tracker):
         super().__init__(daemon=True)
         self.tr, self.changes = tr, []
+        self.raised = False  # it could not run here (a busy lock, a bad file): GitHub is not what failed
 
     def run(self) -> None:
         budget(GH_BUDGET_S)
         try:
             self.changes = sync(self.tr, every=LIVE_SYNC_S)
         except (Exception, SystemExit) as exc:  # a busy lock, a bad file: try again next time
-            self.changes = [f"{SKIPPED}: {exc}"]
+            self.changes, self.raised = [f"{SKIPPED}: {exc}"], True
         finally:
             budget(None)
 
@@ -532,7 +535,10 @@ class Watcher:
         it failed, and once when it works again. What it changes shows as the files change."""
         if self.job and self.job.is_alive():
             return []
-        out = self.sync_told(self.job.changes, now) if self.job else []
+        # A `mine` watch says only a failure of GitHub's: the session can do nothing about a sync that could not run
+        # here, and the next one tries again.
+        told = self.job and not (self.mine and self.job.raised)
+        out = self.sync_told(self.job.changes, now) if told else []
         self.job = None
         if self.tracker().repos and now - self.synced >= LIVE_SYNC_S:
             self.synced = now
