@@ -721,8 +721,8 @@ def session_owns(move: Move, tickets: set[str]) -> bool:
     return move.mine or move.ticket in tickets
 
 
-# What `ticket_facts` keeps of a ticket's move: worked out from the log, the PRs and the clock, none of it from the
-# ticket's file (`own_edit`).
+# What `ticket_facts` keeps of a ticket's move, which the log, the PRs and the clock make. The other facts are the
+# record's own, which a hand edit of it counts (`own_edit`): its file's, and the stage, which its PRs can overlay.
 MOVE_FACTS = ("move", "rank", "mine", "human", "stuck_from")
 
 
@@ -1051,9 +1051,10 @@ def own_change(sid: str, tr: Tracker, before: dict) -> None:
 
 
 def own_edit(sid: str, tr: Tracker, ident: str) -> None:
-    """A tracker file this session edited by hand: count the facts its record's file holds (all but MOVE_FACTS) as seen,
-    or the whole record when the session was not told of it yet. Every other record stays news, as does a move that
-    changed with the edit: neither can be told apart from what others did."""
+    """A tracker file this session edited by hand: count the record's own facts (all but MOVE_FACTS) as seen, or the
+    whole record when the session was not told of it yet. Every other record stays news, as does a move that changed
+    with the edit: neither can be told apart from what others did. The stage counts too, with what its PRs make of it:
+    a merge that ended the ticket before the edit is not told."""
     def merge(key: str, told: dict | None, now: dict) -> dict | None:
         if key != ident:
             return None
