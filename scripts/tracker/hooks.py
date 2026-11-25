@@ -20,7 +20,7 @@ from .git import cwd_repo, default_branches
 from .session import (behind, branch_matches, context_tracker, declined, ensure_subscription, get_mark, hand_over,
     in_repos, keep_folder, keep_told_next, keep_word, lag, load_session, match_cwd, move_of, news, own_edit,
     record_commits, relink_session, save_session, save_state, session_activity, shown_tickets, state_on, subscribed,
-    take_over, told_about, watch_running, work_dir, Lag, Match)
+    take_over, told, told_about, watch_running, work_dir, Lag, Match)
 from .contract import other_format, prune_backups, refuse_other_format, upgrade_trackers
 from .views import brief, issue_request, issue_update_request, updates_told
 from .github import PR_COMMAND, budget, match_pr, sync
@@ -393,15 +393,15 @@ def hook_prompt(data: dict) -> None:
     entry = load_session(sid)
     n = entry.get("prompts", 0)
     ids = [t.id for t in told_about(entry, m.tracker)]
-    told = news(sid, m.tracker)
+    found = news(sid, m.tracker)
     fields = {"prompts": n + 1}
     lines = []
     # A session whose full watch of this tracker runs has them from that watch; a watch of its own tickets shares this
     # baseline, so what it printed is not here, and a watch of another tracker shows none of them.
     watched = load_state(m.tracker.slug, sid)
-    if told and not (watch_running(watched) and not watched.get("mine")):
+    if found.lines and not (watch_running(watched) and not watched.get("mine")):
         lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
-                     "another session, a terminal, the user in the view or a PR sync): " + "; ".join(told) + ".")
+                     "another session, a terminal, the user in the view or a PR sync): " + "; ".join(found.lines) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say
@@ -415,8 +415,8 @@ def hook_prompt(data: dict) -> None:
     fields["told_updates"] = updates
     idle = not m.active and bool(m.branch) and in_repos(m.tracker, cwd)
     mark = get_mark(m.tracker, cwd, m.branch) if idle else None
-    told = bool(mark) and entry.get("idle_told") == (mark.get("at") or 0)  # said for this mark: no git until the next
-    work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle and not told) else None
+    said = bool(mark) and entry.get("idle_told") == (mark.get("at") or 0)  # said for this mark: no git until the next
+    work = lag(m, cwd) if not ask and (n % NUDGE_EVERY == 0 or idle and not said) else None
     new = work is not None and bool(work.commits or work.files)
     # With no ticket under way, the brief named what can start: the line comes back only for work since the mark.
     due = n % NUDGE_EVERY == 0 and (m.active or new)
@@ -430,6 +430,7 @@ def hook_prompt(data: dict) -> None:
         save_session(sid, **fields)
     if lines:
         emit_context("UserPromptSubmit", "\n".join(lines))
+    told(sid, m.tracker, found)  # after the output: a hook cut short before it leaves the news to the next message
 
 
 # An option that only says go or stop. A question whose options are all such asks for approval, not for a direction.

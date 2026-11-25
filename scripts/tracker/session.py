@@ -910,15 +910,25 @@ def keep_folder(sid: str, tr: Tracker, folder: str | Path) -> None:
         save_session(sid, **fields)
 
 
-def news(sid: str, tr: Tracker) -> list[str]:
-    """What the session has not been told yet about its tickets (`told_about`), one line each, and now counts as told.
-    Of those it was told of before (the `own` entries of `seen`): what `changes_since` finds. Then each event since its
-    cursor (`seen_seq`) on any of its tickets that someone else wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX:
-    another session, a terminal, a human in the view (whose commands carry the session's id with `via` view), or
-    GitHub. A ticket newly subscribed is told what others wrote on it since the cursor, and its state from now. With
-    no cursor yet, nothing: it starts from now. The prompt hook and the session's own watch (`tracker
-    watch --mine`) both call it, so each thing is told once, by whichever comes first."""
-    with locked():  # read and save as one step: the two callers and `count_own` do not overwrite each other
+@dataclass
+class News:
+    """What `news` found to tell a session, and the state that counts it as told, which `told` saves."""
+    lines: list[str]
+    seen: dict  # `watch` of the session's subscription now
+    seq: int  # the event file's last seq now
+    read: tuple  # the session's `seen` and `seen_seq` as `news` read them
+
+
+def news(sid: str, tr: Tracker) -> News:
+    """What the session has not been told yet about its tickets (`told_about`), one line each. Of those it was told of
+    before (the `own` entries of `seen`): what `changes_since` finds. Then each event since its cursor (`seen_seq`) on
+    any of its tickets that someone else wrote (not of NEWS_LEFT_OUT), the newest NEWS_MAX: another session, a
+    terminal, a human in the view (whose commands carry the session's id with `via` view), or GitHub. A ticket newly
+    subscribed is told what others wrote on it since the cursor, and its state from now. With no cursor yet, nothing:
+    it starts from now. Nothing counts as told until the caller has passed the lines on and calls `told`. The prompt
+    hook and the session's own watch (`tracker watch --mine`) both call it, so each thing is told once, by whichever
+    comes first."""
+    with locked():  # one read of the session's state and the tracker
         entry = load_session(sid)
         state = state_on(entry, tr.slug)
         seen, before = told_before(state)
@@ -940,8 +950,18 @@ def news(sid: str, tr: Tracker) -> list[str]:
             for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
                 lines.append(text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}")
-        save_state(sid, tr.slug, seen=watch(tr, subscribed(entry, tr)), seen_seq=last)
-    return lines
+        return News(lines, watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
+
+
+def told(sid: str, tr: Tracker, found: News) -> None:
+    """Count what `news` found as told, once its lines are out: a hook or a watch cut short before them tells them
+    next time. Nothing is saved when another caller saved the session's `seen` or cursor since `news` read them (the
+    other of the prompt hook and the watch, or `count_own`): what it saved is kept, and a line told twice beats one
+    lost."""
+    with locked():
+        state = state_on(load_session(sid), tr.slug)
+        if (state["seen"], state["seen_seq"]) == found.read:
+            save_state(sid, tr.slug, seen=found.seen, seen_seq=found.seq)
 
 
 def shown_tickets(m: Match, sid: str) -> list[Record]:
@@ -981,7 +1001,7 @@ def own_edit(sid: str, tr: Tracker, ident: str) -> None:
 def count_own(sid: str, tr: Tracker, picked) -> None:
     """Count the session's own change as seen, so that `news` reports only what others did: the entries of `watch` of
     `told_about` now that `picked(key, value, seen)` names."""
-    with locked():  # read and save as one step, so as not to overwrite what `news` saved
+    with locked():  # read and save as one step, so as not to overwrite what `told` saved
         entry = load_session(sid)
         tr = Tracker(tr.root)
         now = watch(tr, told_about(entry, tr))

@@ -2981,6 +2981,16 @@ class SessionNews(TwoSessions):
         run(*self.t, "log", "--ref", "T-1", "from a terminal")
         self.assertIn("T-1: from a terminal", self.message())
 
+    def test_news_of_a_prompt_hook_cut_short_before_its_output_comes_again(self):
+        self.message()
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        data = {"session_id": self.a, "cwd": str(self.work), "prompt": "go on"}
+        # The hook is killed after it read the news and before its output: in its git or lock waits, say.
+        with mock.patch.object(hooks, "next_request", side_effect=SystemExit(1)), \
+                mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), self.assertRaises(SystemExit):
+            hooks.hook_prompt(data)
+        self.assertIn("T-1: base branch moved", self.message())
+
     def test_news_survives_a_ticket_of_mine_closing(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         run(*self.t, "set", "T-3", "status=in-progress")
@@ -5452,12 +5462,20 @@ class MineWatch(TwoSessions):
     def mine(self) -> watcher.Watcher:
         return watcher.Watcher(model.tracker_at(self.s), self.a, "session sa", mine=True)
 
+    def claim(self, w: watcher.Watcher) -> list[str]:
+        """A watch's first lines, printed as `run` does."""
+        lines = w.claim(self.clock)
+        w.printed()
+        return lines
+
     def look(self, w: watcher.Watcher) -> list[str]:
-        """What one change prints: a look now, and one once the change has settled."""
-        self.clock += 1
-        lines = w.poll(self.clock)
-        self.clock += watcher.SETTLE_S
-        return lines + w.poll(self.clock)
+        """What one change prints: a look now, and one once the change has settled, each printed as `run` does."""
+        lines = []
+        for step in (1, watcher.SETTLE_S):
+            self.clock += step
+            lines += w.poll(self.clock)
+            w.printed()
+        return lines
 
     def texts(self, lines: list[str]) -> list[str]:
         return [x.split(" ", 1)[1] for x in lines]
@@ -5475,7 +5493,7 @@ class MineWatch(TwoSessions):
 
     def test_a_note_on_my_ticket_wakes_me(self):
         w = self.mine()
-        first = w.claim(self.clock)
+        first = self.claim(w)
         self.assertEqual(self.texts(first), [f"watching your tickets on {self.s}: T-1 in-progress · move: you — no "
                                              "PR yet"])
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
@@ -5485,7 +5503,7 @@ class MineWatch(TwoSessions):
 
     def test_a_review_wakes_me_with_my_move(self):
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
         self.assertEqual(self.look(w), [])  # its own: the move goes to a reviewer
         self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
@@ -5499,7 +5517,7 @@ class MineWatch(TwoSessions):
         fake = answers([pull(11, branch="f1", decision="CHANGES_REQUESTED", rounds=rounds)])
         with mock.patch.object(github, "gh", fake), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}):
             w = self.mine()
-            first = w.claim(self.clock)  # its first look starts the sync, under this session's id: in a thread, which
+            first = self.claim(w)  # its first look starts the sync, under this session's id: in a thread, which
             w.job.join()  # may write before that look reads the tracker
             told = self.texts(first[1:] + self.look(w))
         mine = [e for e in model.read_events(model.tracker_at(self.s)) if e["kind"] == "pr.review"]
@@ -5509,14 +5527,14 @@ class MineWatch(TwoSessions):
 
     def test_my_own_step_prints_nothing(self):
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_a(*self.t, "step", "T-1", "Built the parser", "--next", "Test it")
         self.as_a(*self.t, "log", "--ref", "T-1", "my own note")
         self.assertEqual(self.look(w), [])
 
     def test_another_tickets_events_agents_and_stuck_items_print_nothing(self):
         w, full = self.mine(), watcher.Watcher(model.tracker_at(self.s))
-        w.claim(self.clock)
+        self.claim(w)
         full.claim(self.clock)
         self.as_b("start", self.s)  # B on T-1 too: an agent the full watch reports
         hook("prompt", self.b, self.work, env=no_gh(), prompt="go")
@@ -5534,14 +5552,41 @@ class MineWatch(TwoSessions):
 
     def test_what_the_watch_printed_is_not_in_the_next_message(self):
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertEqual(self.texts(self.look(w)), ["T-1: base branch moved"])
         self.assertNotIn("base branch moved", self.message())
 
+    def test_news_a_watch_could_not_print_is_in_the_next_message(self):
+        class Gone(io.StringIO):  # the host's end of the pipe, gone as the news line goes out
+            def write(self, s):
+                if "base branch moved" in s:
+                    raise BrokenPipeError
+                return super().write(s)
+
+        with mock.patch.object(watcher.time, "sleep", lambda _: None), contextlib.redirect_stdout(Gone()), \
+                self.assertRaises(BrokenPipeError):
+            w = self.mine()
+            self.claim(w)
+            self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+            w.run(once=True)
+        self.assertIn("T-1: base branch moved", self.message())
+
+    def test_a_watch_that_prints_after_a_message_told_more_does_not_tell_it_again(self):
+        w = self.mine()
+        self.claim(w)
+        self.as_b(*self.t, "log", "--ref", "T-1", "first note")
+        self.clock += 1
+        looked = w.poll(self.clock) + w.poll(self.clock + watcher.SETTLE_S)
+        self.assertEqual(self.texts(looked), ["T-1: first note"])  # not printed yet
+        self.as_b(*self.t, "log", "--ref", "T-1", "second note")
+        self.assertIn("T-1: second note", self.message())  # the message tells both, and counts them as told
+        w.printed()  # the watch's older count is not saved over it
+        self.assertNotIn("second note", self.message())
+
     def test_what_a_message_told_is_not_printed(self):
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.assertIn("T-1: base branch moved", self.message())  # a session watching its own tickets is told too
         self.assertEqual(self.look(w), [])
@@ -5553,7 +5598,7 @@ class MineWatch(TwoSessions):
 
     def test_a_start_on_other_tickets_adds_them_to_the_watch(self):
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         run(*self.t, "set", "T-2", "status=in-progress")
         self.as_a("start", self.s, "--on", "T-2")
         self.assertEqual(self.look(w), [])  # the change of tickets is no news
@@ -5567,7 +5612,7 @@ class MineWatch(TwoSessions):
         run(*self.t, "set", "T-3", "status=in-progress")
         self.as_a("start", self.s)  # on T-1 and T-3
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")
         self.assertEqual(sorted(self.texts(self.look(w))), ["T-1: base branch moved", "T-3 is now done"])
@@ -5607,7 +5652,7 @@ class MineWatch(TwoSessions):
     def test_a_note_on_a_ticket_i_join_wakes_me(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         run(*self.t, "set", "T-3", "status=in-progress")  # a terminal starts it on A's branch: not A's
         self.as_b(*self.t, "log", "--ref", "T-3", "before A joined")
         self.assertEqual(self.look(w), [])
@@ -5626,7 +5671,7 @@ class MineWatch(TwoSessions):
         if not watcher.SETTLE_S:
             self.skipTest("with no settle time, a look can fall between the edit and its hook")
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         path = store.HOME / self.s / "tickets/T-1.md"
         path.write_text(re.sub(r"^status: .*", "status: done", path.read_text(), flags=re.M))
         self.clock += 1
@@ -5640,7 +5685,7 @@ class MineWatch(TwoSessions):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f3")
         run(*self.t, "set", "T-3", "status=in-progress")
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         other = repo("f3")  # the session works there now, in this turn: no message of the user's has seen it
         self.as_a(*self.t, "submit", "T-3", "--what", "plan", cwd=other)
         self.assertIsNone(self.stop(other))  # its watch runs: nothing to ask
@@ -5650,7 +5695,7 @@ class MineWatch(TwoSessions):
     def test_a_humans_answer_in_the_view_wakes_the_session_that_opened_it(self):
         self.as_a(*self.t, "decide", "Pick a store", "--blocks", "T-1")
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         with mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a, system.VIA_ENV: "view"}):
             run(*self.t, "decide", "D-01", "--resolve", "Postgres", cwd=self.work)
         self.assertTrue(any(x.startswith("D-01 settled: ") for x in self.texts(self.look(w))))
@@ -5662,7 +5707,7 @@ class MineWatch(TwoSessions):
         self.as_a(*self.t, "set", "T-2", "status=in-progress", cwd=f2)
         hook("prompt", self.a, f2, env=no_gh(), prompt="go on")
         w = self.mine()
-        w.claim(self.clock)
+        self.claim(w)
         self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
         self.as_b(*self.t, "log", "--ref", "T-2", "base branch moved")
         told = self.texts(self.look(w))
@@ -5697,7 +5742,7 @@ class MineWatch(TwoSessions):
 
     def test_a_restarted_mine_watch_repeats_no_first_line(self):
         w = self.mine()
-        self.assertTrue(w.claim(self.clock))
+        self.assertTrue(self.claim(w))
         w.release(self.clock)
         again = self.mine()
         self.assertEqual(again.claim(self.clock + 1), [])  # nothing new: no line wakes the session

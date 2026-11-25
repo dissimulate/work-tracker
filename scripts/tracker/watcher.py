@@ -22,7 +22,7 @@ from .model import last_seq, read_events, short, Tracker
 from .moves import decision_move
 from .session import (GRANTS, SESSIONS_DIR, WATCH_DIR, agent_tickets, claude_sessions, context_tracker, coordinated,
     grant_path, granted, is_time, items_of, load_session, move_of, news, save_session, session_path, subscribed,
-    state_pid, live_sessions, session_id, ticket_facts, watch_running, Live)
+    state_pid, live_sessions, session_id, ticket_facts, told, watch_running, Live, News)
 from .contract import check
 from .views import start_text
 from .github import SKIPPED, budget, skipped, sync
@@ -347,6 +347,7 @@ class Watcher:
         self.role = role  # COORDINATOR: this watch holds the tracker's coordinator role (`session.coordinated`)
         self.mine = mine
         self.ended = False  # a `mine` look found the session off this tracker, or with no open ticket: it ends
+        self.untold: News | None = None  # a `mine` look's news, told once its lines are printed (`printed`)
         self.st: dict = {}
         self.sig = ""  # the files' signature the snapshot was taken at
         self.changed = 0.0  # when the files changed after it; 0: they did not
@@ -481,10 +482,10 @@ class Watcher:
         return events
 
     def mine_batch(self, tr: Tracker, sig: str, settled: bool) -> list[Event]:
-        """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle. A sync that
-        fails is not said: a human fixes it, and the full watch says it. It marks the end (`ended`) when the session is
-        on another tracker or none, or has no open subscribed ticket, with the news of a ticket that closed before
-        the end."""
+        """A `mine` look: the session's news (`session.news`, over its subscription) once the files settle, told once
+        it is printed (`printed`). A sync that fails is not said: a human fixes it, and the full watch says it. It marks
+        the end (`ended`) when the session is on another tracker or none, or has no open subscribed ticket, with the
+        news of a ticket that closed before the end."""
         if (own := context_tracker(self.sid)) is None or own.slug != self.slug:
             self.ended = True
             return []  # its cursor is another tracker's now: it is not this watch's to move
@@ -496,7 +497,18 @@ class Watcher:
             return []
         self.sig, self.changed = sig, 0.0
         self.ended = not subscribed(load_session(self.sid), tr)
-        return [Event("log", "", False, x) for x in news(self.sid, tr)]
+        found = news(self.sid, tr)
+        if found.lines:
+            self.untold = found
+        else:
+            told(self.sid, tr, found)
+        return [Event("log", "", False, x) for x in found.lines]
+
+    def printed(self) -> None:
+        """The lines so far are printed: the news they hold counts as told (`session.told`)."""
+        if self.untold:
+            told(self.sid, self.tracker(), self.untold)
+            self.untold = None
 
     def github(self, now: float) -> list[Event]:
         """Start a SyncJob at most every LIVE_SYNC_S (a UI's or a hook's sync counts), and once it ends, say once when
@@ -611,6 +623,7 @@ class Watcher:
             while not (once and lines) and not self.ended:
                 if lines:
                     print("\n".join(lines), flush=True)
+                    self.printed()
                 time.sleep(POLL_S)
                 if self.sid and not granted(self.sid):
                     print("The watch has ended (`tracker watch --stop`): do not start it again unless told to.",
@@ -618,7 +631,8 @@ class Watcher:
                     sys.exit(REFUSED)
                 lines = self.poll(time.time())
             if lines:
-                print("\n".join(lines))
+                print("\n".join(lines), flush=True)  # flushed before its news counts as told
+                self.printed()
             if self.ended:  # a `mine` watch with nothing left to watch: an end, not a refusal
                 print(f"{time.strftime('%H:%M')} no ticket of this session is open: the watch has ended",
                       flush=True)
