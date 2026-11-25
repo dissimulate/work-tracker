@@ -751,9 +751,10 @@ def own_move(facts: dict) -> str:
     return facts.get("move", "") if facts.get("mine") else ""
 
 
-def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
+def changes_since(tr: Tracker, old: dict, new: dict) -> list[tuple[str, str]]:
     """What another session or GitHub changed since `old` (`watch`): of the session's own tickets a move that becomes
-    its own and their end; of their dependencies the stage and Carry forward; of their decisions the status."""
+    its own and their end; of their dependencies the stage and Carry forward; of their decisions the status. Each line
+    with the record it is about."""
     out = []
     for ident, now in new.items():
         was = old.get(ident)
@@ -762,22 +763,22 @@ def changes_since(tr: Tracker, old: dict, new: dict) -> list[str]:
         role = now["role"]
         if role == "decision":
             if not was:
-                out.append(f"{ident} {now['status']} now touches this work: {tr.lookup(ident).get('title')}")
+                out.append((ident, f"{ident} {now['status']} now touches this work: {tr.lookup(ident).get('title')}"))
             elif stage_of("decision", now["status"]).closed:
                 again = "re-" if stage_of("decision", was.get("status")).closed else ""
-                out.append(f"{ident} {again}settled: {now['answer']}")
+                out.append((ident, f"{ident} {again}settled: {now['answer']}"))
             else:
-                out.append(f"{ident} is {now['status']} again")
+                out.append((ident, f"{ident} is {now['status']} again"))
         elif not was:
-            out.append(f"now waits on {ident} ({now['stage']})")
+            out.append((ident, f"now waits on {ident} ({now['stage']})"))
         else:
             # The session's own ticket changes stage by its own doing, or sync's: only its end is news.
             if was.get("stage") != now["stage"] and (role != "own" or stage_of("ticket", now["stage"]).closed):
-                out.append(f"{ident} is now {now['stage']}")
+                out.append((ident, f"{ident} is now {now['stage']}"))
             if role == "own" and own_move(now) and own_move(now) != own_move(was):
-                out.append(f"{ident} move now: {own_move(now)}")
+                out.append((ident, f"{ident} move now: {own_move(now)}"))
             if role == "dep" and was.get("carry") != now["carry"]:
-                out.append(f"{ident} Carry forward changed (`tracker context {ident}`)")
+                out.append((ident, f"{ident} Carry forward changed (`tracker context {ident}`)"))
     return out
 
 
@@ -933,6 +934,7 @@ def keep_folder(sid: str, tr: Tracker, folder: str | Path) -> None:
 class News:
     """What `news` found to tell a session, and the state that counts it as told, which `told` saves."""
     lines: list[str]
+    about: list[str]  # the records the lines are about, in their order
     seen: dict  # `watch` of the session's subscription now
     seq: int  # the event file's last seq now
     read: tuple  # the session's `seen` and `seen_seq` as `news` read them
@@ -953,10 +955,10 @@ def news(sid: str, tr: Tracker) -> News:
         seen, before = told_before(state)
         about = told_about(entry, tr)
         base, last = state["seen_seq"], last_seq(tr)
-        lines = []
+        said: list[tuple[str, str]] = []  # each line, with the record it is about
         if base is not None:
             known = [t.id for t in about]
-            lines = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before], set(known)))
+            said = changes_since(tr, seen, watch(tr, [t for t in about if t.id in before], set(known)))
             # An event file shorter than the cursor (restored from a backup) numbers its new events again: what it
             # holds now counts as told, as the watch does.
             fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))
@@ -964,12 +966,13 @@ def news(sid: str, tr: Tracker) -> News:
                      and (e["kind"] in GITHUB_REVIEWS or not own_event(e, sid))]
             cut = dict(fresh[:-NEWS_MAX])
             if cut:
-                lines.append(f"(+{len(fresh) - NEWS_MAX} earlier: `tracker history --ref "
-                             f"{next(i for i in known if i in cut)}`)")
+                first = next(i for i in known if i in cut)
+                said.append((first, f"(+{len(fresh) - NEWS_MAX} earlier: `tracker history --ref {first}`)"))
             for key, e in fresh[-NEWS_MAX:]:
                 text = short(e["text"], 120)
-                lines.append(text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}")
-        return News(lines, watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
+                said.append((key, text if text.split(" ", 1)[0].rstrip(":") == key else f"{key}: {text}"))
+        return News([line for _, line in said], list(dict.fromkeys(key for key, _ in said)),
+                    watch(tr, subscribed(entry, tr)), last, (state["seen"], base))
 
 
 def told(sid: str, tr: Tracker, found: News) -> None:

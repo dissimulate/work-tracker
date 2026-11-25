@@ -304,7 +304,7 @@ def synced(tr: Tracker, sid: str) -> list[str]:
     before = watch(tr, told_about(load_session(sid), tr))
     changes = sync(tr, every=0)
     now = Tracker(tr.root)
-    changes += changes_since(now, before, watch(now, told_about(load_session(sid), now)))
+    changes += [line for _, line in changes_since(now, before, watch(now, told_about(load_session(sid), now)))]
     own_change(sid, now, before)
     return changes
 
@@ -408,7 +408,6 @@ def hook_prompt(data: dict) -> None:
     record_version()
     entry = load_session(sid)
     n = entry.get("prompts", 0)
-    ids = [t.id for t in told_about(entry, m.tracker)]
     found = news(sid, m.tracker)
     fields = {"prompts": n + 1}
     lines = []
@@ -416,8 +415,8 @@ def hook_prompt(data: dict) -> None:
     # baseline, so what it printed is not here, and a watch of another tracker shows none of them.
     watched = load_state(m.tracker.slug, sid)
     if found.lines and not (watch_running(watched) and not watched.get("mine")):
-        lines.append(f"[work-tracker] Changed on {', '.join(ids)} since the brief or the user's previous message (by "
-                     "another session, a terminal, the user in the view or a PR sync): " + "; ".join(found.lines) + ".")
+        lines.append(f"[work-tracker] Changed on {', '.join(found.about)} since the brief or the user's previous "
+                     "message: " + "; ".join(found.lines) + ".")
     ask = next_request(m, cwd, sid)
     if ask:
         lines.append(ask)  # it holds what the state line would say

@@ -611,16 +611,16 @@ class Moves(unittest.TestCase):
             self.assertIn('pullRequests(headRefName: "f1"', fake.queries[1])  # and its branch, for another PR from it
             tr = model.tracker_at(s)
             self.assertEqual(session.changes_since(tr, seen, session.watch(tr, [tr.lookup("S-1")])),
-                             ["S-1 move now: you — approved by rev; ready to merge"])
+                             [("S-1", "S-1 move now: you — approved by rev; ready to merge")])
         # A repo GitHub does not answer for: nothing is written
         with mock.patch.object(github, "gh", lambda *args, fields=None, partial=False: {"data": {"r0": None}}):
             self.assertEqual(run(*t, "sync"), "sync skipped: gh failed or timed out for a/x\n")
         self.assertEqual(set(model.tracker_at(s).prs), {"a/x#11", "a/x#12"})
         # Of the session's own tickets, only a move that becomes its own and a ticket's end are news.
         own = {"S-1": {"role": "own", "stage": "in-progress", "move": "rev — review requested", "mine": False}}
-        for now, said_ in (({"stage": "in-review"}, []), ({"stage": "done"}, ["S-1 is now done"]),
+        for now, said_ in (({"stage": "in-review"}, []), ({"stage": "done"}, [("S-1", "S-1 is now done")]),
                            ({"stage": "in-progress", "move": "you — checks failing", "mine": True},
-                            ["S-1 move now: you — checks failing"])):
+                            [("S-1", "S-1 move now: you — checks failing")])):
             self.assertEqual(session.changes_since(tr, own, {"S-1": {"role": "own", **now}}), said_)
 
 
@@ -2914,6 +2914,14 @@ class SessionNews(TwoSessions):
         self.assertIn("T-1: base branch moved", self.message())
         self.assertNotIn("base branch moved", self.message())
 
+    def test_the_news_names_only_what_its_lines_are_about(self):
+        self.as_a(*self.t, "set", "T-2", "next=Plan it")  # A is on T-1 and T-2
+        self.message()
+        self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+        self.as_b(*self.t, "decide", "Pick a store", "--refs", "T-1")
+        self.assertIn("[work-tracker] Changed on D-01, T-1 since the brief or the user's previous message: ",
+                      self.message())
+
     def test_a_review_of_my_submission_is_in_my_next_message(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
         self.message()
@@ -3062,7 +3070,7 @@ class SessionNews(TwoSessions):
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
         self.as_b(*self.t, "set", "T-3", "status=done", "summary=Shipped")  # A's focus is now T-1 alone
         told = self.message()
-        self.assertIn("Changed on T-1, T-3 since", told)  # the tickets its lines are about
+        self.assertIn("Changed on T-3, T-1 since", told)  # the tickets its lines are about, in their order
         self.assertIn("T-3 is now done", told)
         self.assertIn("T-1: base branch moved", told)
 
