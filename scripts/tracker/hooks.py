@@ -63,8 +63,9 @@ def finish() -> None:
     after it. A hook cut short before here, in a lock or git wait or by the host's timeout, counts nothing, so what it
     was to say is said again. A host that drops the output of a hook that exits cleanly cannot be told apart."""
     sys.stdout.flush()
-    while AFTER_OUTPUT:
-        AFTER_OUTPUT.pop(0)()
+    for count in AFTER_OUTPUT:
+        count()
+    AFTER_OUTPUT.clear()
 
 
 def emit_context(event: str, text: str, notice: str = "") -> None:

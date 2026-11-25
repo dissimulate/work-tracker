@@ -721,6 +721,11 @@ def session_owns(move: Move, tickets: set[str]) -> bool:
     return move.mine or move.ticket in tickets
 
 
+# What `ticket_facts` keeps of a ticket's move: worked out from the log, the PRs and the clock, none of it from the
+# ticket's file (`own_edit`).
+MOVE_FACTS = ("move", "rank", "mine", "human", "stuck_from")
+
+
 def ticket_facts(tr: Tracker, t: Record, own: set[str] = frozenset()) -> dict:
     """What a change report compares of a ticket: its stage, `next`, Carry forward (a hash) and move (its text, its
     rank in MOVE_RULE, whether it is this side's, also as the session on one of the tickets `own` (`session_owns`),
@@ -728,8 +733,8 @@ def ticket_facts(tr: Tracker, t: Record, own: set[str] = frozenset()) -> dict:
     move = move_of(tr, t)
     return {"stage": t.stage, "next": str(t.get("next") or ""),
             "carry": hashlib.sha1("\n".join(t.carry_forward).encode()).hexdigest()[:10],
-            **({"move": move.text(" — "), "rank": move.rank, "mine": session_owns(move, own), "human": move.human,
-                "stuck_from": move.stuck_from.text(" — ") if move.stuck_from else ""} if move else {})}
+            **(dict(zip(MOVE_FACTS, (move.text(" — "), move.rank, session_owns(move, own), move.human,
+                                     move.stuck_from.text(" — ") if move.stuck_from else ""))) if move else {})}
 
 
 def watch(tr: Tracker, tickets: list[Record], own: set[str] | None = None) -> dict[str, dict]:
@@ -1046,18 +1051,14 @@ def own_change(sid: str, tr: Tracker, before: dict) -> None:
     count_own(sid, tr, merge)
 
 
-# The facts of `watch` that a record's file holds; a move comes from the log, the PRs and the clock too.
-FILE_FACTS = ("role", "stage", "next", "carry", "status", "answer")
-
-
 def own_edit(sid: str, tr: Tracker, ident: str) -> None:
-    """A tracker file this session edited by hand: count the facts its record's file holds (FILE_FACTS) as seen, or
-    the whole record when the session was not told of it yet. Every other record stays news, as does a move that
+    """A tracker file this session edited by hand: count the facts its record's file holds (all but MOVE_FACTS) as seen,
+    or the whole record when the session was not told of it yet. Every other record stays news, as does a move that
     changed with the edit: neither can be told apart from what others did."""
     def merge(key: str, told: dict | None, now: dict) -> dict | None:
         if key != ident:
             return None
-        return now if told is None else {**told, **{f: now[f] for f in FILE_FACTS if f in now}}
+        return now if told is None else {**told, **{f: v for f, v in now.items() if f not in MOVE_FACTS}}
     count_own(sid, tr, merge)
 
 
@@ -1109,7 +1110,7 @@ def saw(sid: str, shown: Shown) -> None:
     count_seen(sid, shown.slug, shown.seen, shown.events)
 
 
-def count_seen(sid: str, slug: str, entries: dict, events: list[int] = ()) -> None:
+def count_seen(sid: str, slug: str, entries: dict, events: list[int] | tuple = ()) -> None:
     """What the session's own action showed it or did: merge `entries` (of `watch`) into its `seen` on `slug`, and
     `events` into its `seen_events`, but those its cursor already covers."""
     if not (entries or events):
