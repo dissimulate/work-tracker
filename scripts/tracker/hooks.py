@@ -192,7 +192,7 @@ def next_request(m: Match, cwd: str | Path, sid: str) -> str:
 
 WATCH_ASK = ("[work-tracker] {waits}. Nothing wakes this session when that changes. Start a watch of your tickets, "
              "then end the turn: `tracker watch --mine`, run as the work-tracker:watch skill says for `mine`. If the "
-             "user told you not to watch, end the turn.")
+             "user told you not to watch, run `tracker watch --stop`, which asks no more, then end the turn.")
 
 
 def session_match(data: dict) -> tuple[Match | None, Path, str]:
