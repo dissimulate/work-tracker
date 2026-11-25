@@ -406,8 +406,8 @@ def hook_prompt(data: dict) -> None:
     way, the first message and every NUDGE_EVERY-th after it get the state line, so it stays a reminder, not noise. With
     none, only work since the branch's mark brings it: at once, once per mark, then on those messages while the work
     stays. With a ticket of the session open, a stale GitHub sync starts in the background (`sync_later`). run_hook
-    handles a watch request first. The state line is this checkout's; the news is the session's subscription's
-    (`subscribed`)."""
+    handles a watch request first. The state line is this checkout's; the news is about the session's tickets
+    (`session.told_about`: its subscription, and those that closed since it was last told, once)."""
     m, cwd, sid = session_match(data)
     if not m:
         return
@@ -418,11 +418,10 @@ def hook_prompt(data: dict) -> None:
     found = news(sid, m.tracker)
     fields = {"prompts": n + 1}
     lines = []
-    # A session whose full watch of this tracker runs, of every kind, has them from that watch; a watch of its own
-    # tickets shares this baseline, so what it printed is not here; a watch that keeps only some kinds (`--only`) and
-    # a watch of another tracker show none of them.
+    # A full watch of this tracker that keeps every kind prints the news; `--mine` shares this baseline instead.
     watched = load_state(m.tracker.slug, sid)
-    if found.lines and not (watch_running(watched) and not watched.get("mine") and not watched.get("only")):
+    full = watch_running(watched) and not (watched.get("mine") or watched.get("only"))
+    if found.lines and not full:
         lines.append(f"[work-tracker] Changed on {', '.join(found.about)} since the brief or the user's previous "
                      "message: " + "; ".join(found.lines) + ".")
     ask = next_request(m, cwd, sid)
