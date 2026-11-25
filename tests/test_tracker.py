@@ -3143,6 +3143,15 @@ class SessionNews(TwoSessions):
         for i in range(len(lines)):
             self.assertIn(f"T-1: note {i}", told)
 
+    def test_my_own_sync_that_changes_nothing_counts_nothing_as_seen(self):
+        self.setUp("a/x")
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.message()
+        self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+        with mock.patch.object(github, "gh", answers([])):
+            self.assertEqual(self.as_a(*self.t, "sync"), "no changes\n")
+        self.assertIn("T-1 move now: you", self.message())  # the review's, which the sync did not touch
+
     def test_what_my_subagents_sync_read_is_news(self):
         self.setUp("a/x")
         self.message()
