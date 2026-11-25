@@ -755,7 +755,7 @@ class Moves(unittest.TestCase):
             hooks.sync_later(model.tracker_at(s), {}, fields)
             hooks.sync_later(model.tracker_at(s), fields, {})  # asked already: not again within the interval
             hooks.sync_later(model.tracker_at(local), {}, {})  # no repo: nothing to ask
-        spawn.assert_called_once_with("--tracker", s, "sync", "--unseen")
+        spawn.assert_called_once_with("--tracker", s, "sync", "--live")
 
     def test_session_start_does_not_wait_for_github(self):
         (s, _), sid, work = new_tracker("Starts fast", "a/x"), f"sid{time.monotonic_ns()}", repo("feat/F-1")
@@ -767,7 +767,7 @@ class Moves(unittest.TestCase):
             hooks.hook_session_start(data)
             hooks.hook_session_start(data)  # asked already: not again within the interval
         gh.assert_not_called()
-        spawn.assert_called_once_with("--tracker", s, "sync", "--unseen")  # the next message reports what it changes
+        spawn.assert_called_once_with("--tracker", s, "sync", "--live")  # the next message reports what it changes
         self.assertIn("Starts fast", out.getvalue())
 
 
@@ -2968,27 +2968,45 @@ class SessionNews(TwoSessions):
         self.setUp("a/x")
         self.message()
         with self.reviewed():
-            self.as_a(*self.t, "sync", "--unseen")  # A's own sync, as its hooks' background sync runs it
+            self.as_a(*self.t, "sync", "--live")  # A's own sync, as its hooks' background sync runs it
         told = self.message()
         self.assertIn("PR #11 open for review", told)
         self.assertIn("PR #11 review by rev: changes requested", told)
         self.assertIn("T-1 move now: you", told)  # the review made it A's
 
-    def reviewed(self, review: bool = True):
-        """GitHub as it answers for PR #11, of branch f1: rev requested changes on it, or, with no `review`, none."""
+    def reviewed(self, review: bool = True, merged: bool = False):
+        """GitHub as it answers for PR #11, of branch f1: rev requested changes on it, or, with no `review`, none;
+        open, or `merged`."""
         rounds = [review_round(101, "rev", "CHANGES_REQUESTED", "2026-09-02T01:02:03Z")] if review else []
-        return mock.patch.object(github, "gh", answers([pull(11, branch="f1", rounds=rounds,
+        state = {"state": "MERGED", "merged_at": "2026-09-04T01:00:00Z"} if merged else {}
+        return mock.patch.object(github, "gh", answers([pull(11, branch="f1", rounds=rounds, **state,
                                                             decision="CHANGES_REQUESTED" if review else None)]))
 
-    def push(self, review: bool = True, **extra) -> str:
-        """A's `git push` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
+    def push(self, review: bool = True, command: str = "git push", merged: bool = False, **extra) -> str:
+        """A's `command` (or its subagent's, with `agent_id`), and the post-bash hook's sync after it, in this
         process (`reviewed`): what the hook tells the agent."""
         out = io.StringIO()
-        with self.reviewed(review), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+        with self.reviewed(review, merged), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(out):
             hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work),
-                                  "tool_input": {"command": "git push"}, **extra})
+                                  "tool_input": {"command": command}, **extra})
         return out.getvalue()
+
+    def test_what_a_post_bash_sync_read_stays_news_when_the_hook_is_cut_short(self):
+        for merged, said_ in ((False, ["PR #11 open for review", "T-1 move now: you"]),
+                              (True, ["PR #11 merged", "T-1 is now done"])):
+            with self.subTest(merged=merged):
+                self.setUp("a/x")
+                self.message()
+                commit(self.work, "x")
+                # It syncs for the push, then logs the commit, and is cut short there (its timeout, a git error).
+                with mock.patch.object(hooks, "record_commits", side_effect=SystemExit(1)), \
+                        self.assertRaises(SystemExit):
+                    self.assertEqual(self.push(review=False, merged=merged, command="git commit -am x && git push"),
+                                     "")
+                told = self.message()
+                for line in said_:
+                    self.assertIn(line, told)
 
     def test_what_my_own_sync_showed_me_is_no_news_and_a_review_is(self):
         for how in ("hook", "command"):
@@ -3000,11 +3018,27 @@ class SessionNews(TwoSessions):
                     self.assertIn("Synced PR state: T-1: PRs 11:open; T-1 move now: you", shown)  # told at once
                 else:
                     with self.reviewed():
-                        self.assertIn("T-1: PRs 11:open", self.as_a(*self.t, "sync"))
+                        shown = self.as_a(*self.t, "sync")
+                    self.assertIn("T-1: PRs 11:open\nT-1 move now: you", shown)
                 told = self.message()
                 self.assertNotIn("PR #11 open for review", told)  # its own sync showed it the PR
                 self.assertIn("PR #11 review by rev: changes requested", told)  # a reviewer's: no sync line shows it
-                (self.assertNotIn if how == "hook" else self.assertIn)("move now", told)
+                self.assertNotIn("move now", told)
+
+    def test_what_my_own_tracker_sync_could_not_print_stays_news(self):
+        self.setUp("a/x")
+        self.message()
+
+        class Gone(io.StringIO):  # the agent's end of the pipe, gone as the lines go out
+            def write(self, s):
+                raise BrokenPipeError
+
+        with self.reviewed(review=False), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
+                contextlib.redirect_stdout(Gone()), self.assertRaises(BrokenPipeError):
+            cli.main([*self.t, "sync"])
+        told = self.message()
+        self.assertIn("PR #11 open for review", told)
+        self.assertIn("T-1 move now: you", told)
 
     def test_what_my_subagents_sync_read_is_news(self):
         self.setUp("a/x")
@@ -3323,7 +3357,7 @@ class SessionNews(TwoSessions):
         with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
             hooks.hook_prompt({"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
-        spawn.assert_called_once_with("--tracker", self.s, "sync", "--unseen")
+        spawn.assert_called_once_with("--tracker", self.s, "sync", "--live")
 
     def as_released(self, sid: str, base: bool = False) -> None:
         """Rewrite a session file as the released plugin (upstream 9d5cd64) wrote it, or, with `base`, as
@@ -5631,8 +5665,8 @@ class MineWatch(TwoSessions):
         self.assertIn("Synced PR state", SessionNews.push(self, review=False))
         self.assertEqual(self.look(w), [])
 
-    def reviewed(self, review: bool = True):
-        return SessionNews.reviewed(self, review)
+    def reviewed(self, review: bool = True, merged: bool = False):
+        return SessionNews.reviewed(self, review, merged)
 
     def test_a_sync_that_fails_is_said_once_also_across_restarts(self):
         self.setUp("a/x")

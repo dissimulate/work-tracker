@@ -25,10 +25,11 @@ from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, app
     sort_key, tracker_at, unknown_dep, Record, Tracker)
 from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, cited_word, decline, find_tracker,
-    context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date, match_cwd,
-    matched, no_tracker, on_branch, record_commits, relink_session, keep_told_next, resolve, save_session, session_id,
-    session_tracker, start_subscription, subscribe, trackers_for_repo, unlink_session, work_dir)
+from .session import (DECLINE_S, NO_TRACKERS, agent_sid, attached_tracker, branch_matches, cited_word, decline,
+    find_tracker, context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date,
+    match_cwd, matched, no_tracker, on_branch, record_commits, relink_session, keep_told_next, resolve, save_session,
+    session_id, own_sync, saw, session_tracker, start_subscription, subscribe, trackers_for_repo, unlink_session,
+    work_dir)
 from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
@@ -951,9 +952,18 @@ def cmd_check(args):
 
 
 def cmd_sync(args):
+    """A sync whose lines are its agent's to read also says what it changed of the session's tickets, which then count
+    as seen (`own_sync`). A `--live` one's are no one's, and one at a terminal or in the view is no session's: what
+    those read is news."""
     tr = resolve(args)
-    changes = sync(tr, every=LIVE_SYNC_S if args.live else 0, unseen=args.unseen)
-    print("\n".join(changes) if changes else "no changes")
+    sid = "" if args.live else agent_sid()
+    if not sid:
+        changes = sync(tr, every=LIVE_SYNC_S if args.live else 0)
+        print("\n".join(changes) if changes else "no changes")
+        return
+    shown = own_sync(sid, tr, lambda: sync(tr, every=0))
+    print("\n".join(shown.lines) if shown.lines else "no changes", flush=True)
+    saw(sid, tr, shown)  # after the output
 
 
 def cmd_issue(args):

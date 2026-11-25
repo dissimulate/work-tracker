@@ -952,15 +952,13 @@ REVIEW_EVENT = {"approved": "approved", "changes": "changes requested"}  # a rev
 
 
 def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict[str, dict] | None,
-              reviews: dict[str, list[dict]], unseen: bool = False) -> list[str]:
+              reviews: dict[str, list[dict]]) -> list[str]:
     """Write what a forge's `sync` read, in the tracker's words: per ticket id its repo and PRs (each with `number`;
     `state`: one of PR_EVENT; `title`; `merged_at`, UTC), each PR's new state an event; the open PRs' PR_FACTS by
     pr_key (None: the forge did not answer, so the last ones stay); and by pr_key each PR's reviews, oldest first
     (each with the forge's `id`, `by`, `result`: one of REVIEW_EVENT, `submitted_at`, `bot`), an event for each one
-    the log does not hold yet: the log, not this machine's state, says which it holds. `unseen`: no agent sees the
-    change lines (EVENTS `pr.review`). Returns the change lines."""
+    the log does not hold yet: the log, not this machine's state, says which it holds. Returns the change lines."""
     changes, events = [], {}
-    seen = {"unseen": True} if unseen else {}
     named: dict[str, tuple[str, list[str]]] = {}  # per PR read, its name in a log line and its tickets
     blocked = {t.id for t in tr.tickets if tr.blockers(t)}
     for t in tr.tickets:
@@ -985,15 +983,14 @@ def apply_prs(tr: Tracker, found: dict[str, tuple[str, list[dict]]], facts: dict
             if old.get(str(x["number"])) != x["state"]:
                 events.setdefault((key, x["state"]), (named[key][0], x.get("title", ""), []))[2].append(t.id)
     for (pr, pr_state), (name, title, ids) in events.items():
-        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state, title=title,
-                     **seen)
+        append_event(tr, "pr.state", f"PR {name} {PR_EVENT[pr_state]}", ids, pr=pr, state=pr_state, title=title)
     logged = {(e.get("pr"), e.get("review")) for e in read_events(tr) if e["kind"] == "pr.review"}
     for pr, (name, ids) in named.items():
         for r in reviews.get(pr, []):
             if (pr, r["id"]) not in logged:
                 append_event(tr, "pr.review", f"PR {name} review by {r['by']}: {REVIEW_EVENT[r['result']]}", ids,
                              pr=pr, review=r["id"], by=r["by"], result=r["result"], submitted_at=r["submitted_at"],
-                             bot=r["bot"], **seen)
+                             bot=r["bot"])
     changes += unblocked(tr, blocked)
     state = tr.state()
     state["last_sync"] = time.time()

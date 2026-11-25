@@ -210,8 +210,8 @@ def build_parser():
                             f"{DEADLINE_S['wait']} s); exit 1 on errors")
     sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
                                "base, reviews, checks and merge state, from which each ticket's move is computed")
-    sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
-    sp.add_argument("--unseen", action="store_true", help=argparse.SUPPRESS)  # a hook's, in the background (`sync`)
+    sp.add_argument("--live", action="store_true", help="only if no sync ran lately, for no one to read: what a UI "
+                                                         "runs on a timer, and a session's hooks in the background")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with --written that its issue now shows "
                                  "the tracker's changes; with no id, list the tickets whose fields are to read and, "

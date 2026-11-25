@@ -148,24 +148,27 @@ def unlink_session(sid: str) -> None:
 # the user's stop of its watch (`no_watch`).
 CARRIED = ("words", "no_watch")
 # A session's state on one tracker, which `tickets_on` names: its subscription (`tickets`), what it was told of it
-# (`seen`), its cursor in that tracker's events (`seen_seq`), and the waits the turn-end hook asked it to watch for
-# (`told_watch`). Ids such as T-1 and event numbers repeat across trackers, so none of it is read on another tracker,
-# and a save on another replaces all of it. Only `state_on` reads these fields and only `save_state` writes them.
-PER_TRACKER = ("tickets", "tickets_on", "seen", "seen_seq", "told_watch")
+# (`seen`), its cursor in that tracker's events (`seen_seq`), the events past that cursor that a sync it saw wrote
+# (`seen_events`, `saw`), and the waits the turn-end hook asked it to watch for (`told_watch`). Ids such as T-1 and
+# event numbers repeat across trackers, so none of it is read on another tracker, and a save on another replaces all
+# of it. Only `state_on` reads these fields and only `save_state` writes them.
+PER_TRACKER = ("tickets", "tickets_on", "seen", "seen_seq", "seen_events", "told_watch")
 
 
 def state_on(entry: dict, slug: str | None = None) -> dict:
     """The one reader of a session entry's state on the tracker `slug` (PER_TRACKER), or with None on the tracker it
     is on: `tickets_on`, else, in a file from before subscriptions, the session's `tracker`. Every field is None when
     the state is on another tracker or none, and so is a field of the wrong type: `tickets` is a list of ids, `seen`
-    a dict, `seen_seq` a whole number, `told_watch` a list. What a field holds is not checked: a damaged entry inside
-    `seen` still raises in `changes_since`."""
+    a dict, `seen_seq` a whole number, `seen_events` a list of them, `told_watch` a list. What a field holds is not
+    checked: a damaged entry inside `seen` still raises in `changes_since`."""
     on = str(entry.get("tickets_on") or entry.get("tracker") or "")
     if not on or slug not in (None, on):
         return dict.fromkeys(PER_TRACKER)
-    tickets, seen, seq, told = (entry.get(k) for k in ("tickets", "seen", "seen_seq", "told_watch"))
+    tickets, seen, seq, shown, told = (entry.get(k) for k in ("tickets", "seen", "seen_seq", "seen_events",
+                                                                "told_watch"))
     return {"tickets": [str(i) for i in tickets] if isinstance(tickets, list) else None, "tickets_on": on,
             "seen": seen if isinstance(seen, dict) else None, "seen_seq": seq if type(seq) is int else None,
+            "seen_events": [x for x in shown if type(x) is int] if isinstance(shown, list) else None,
             "told_watch": told if isinstance(told, list) else None}
 
 
@@ -819,8 +822,9 @@ def lag(m: Match, cwd: str | Path) -> Lag:
 # the session; a legacy event is the log from before the event file.
 NEWS_LEFT_OUT = ("legacy", "commits", "decision.opened", "decision.decided", "wait.added", "status", *QUIET_KINDS)
 NEWS_MAX = 5  # events a session's news names; the older ones as a count
-# A PR's review is a reviewer's: news whichever session's sync read it, as no sync's change lines show it.
-GITHUB_REVIEWS = ("pr.review",)
+# What `sync` read on GitHub: news, whichever session's sync read it, but a PR's state that a sync the session saw
+# wrote (`saw`). A review always is: no sync's lines show it.
+GITHUB_KINDS = ("pr.state", "pr.review")
 
 
 def subscribed(entry: dict, tr: Tracker) -> list[Record]:
@@ -955,6 +959,7 @@ def news(sid: str, tr: Tracker) -> News:
         seen, before = told_before(state)
         about = told_about(entry, tr)
         base, last = state["seen_seq"], last_seq(tr)
+        shown = set(state["seen_events"] or [])
         said: list[tuple[str, str]] = []  # each line, with the record it is about
         if base is not None:
             known = [t.id for t in about]
@@ -963,7 +968,7 @@ def news(sid: str, tr: Tracker) -> News:
             # holds now counts as told, as the watch does.
             fresh = [(next(i for i in e["refs"] if i in known), e) for e in read_events(tr, min(base, last))
                      if e["kind"] not in NEWS_LEFT_OUT and any(i in known for i in e["refs"])
-                     and (e["kind"] in GITHUB_REVIEWS or not own_event(e, sid))]
+                     and e["seq"] not in shown and (e["kind"] in GITHUB_KINDS or not own_event(e, sid))]
             cut = dict(fresh[:-NEWS_MAX])
             if cut:
                 first = next(i for i in known if i in cut)
@@ -996,9 +1001,8 @@ def shown_tickets(m: Match, sid: str) -> list[Record]:
 
 
 def own_event(e: dict, sid: str) -> bool:
-    """An event the session's agent wrote, and saw: one entered in the view or at a terminal is someone else's, and
-    one a sync wrote where no agent saw its lines (`unseen`) is news to the session it ran for."""
-    return e.get("session") == sid and e.get("via") == "agent" and not e.get("unseen")
+    """An event the session's agent wrote: one entered in the view or at a terminal is someone else's."""
+    return e.get("session") == sid and e.get("via") == "agent"
 
 
 def keep_told_next(sid: str, m: Match, cwd: str | Path) -> None:
@@ -1033,6 +1037,41 @@ def count_own(sid: str, tr: Tracker, picked) -> None:
         seen = told_before(state_on(entry, tr.slug))[0]
         seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
         save_state(sid, tr.slug, seen=seen)
+
+
+@dataclass
+class Shown:
+    """What a sync for the session's own command read (`own_sync`), and what counts as seen once its lines are out."""
+    lines: list[str]  # the sync's change lines, then what it changed of the session's tickets (`changes_since`)
+    seen: dict  # those entries of `watch`, as they are now
+    events: list[int]  # the seqs of the PR states it wrote under the session's id
+
+
+def own_sync(sid: str, tr: Tracker, run) -> Shown:
+    """Run `run`, a sync whose lines the session's agent will see, and give those lines with what it changed of the
+    session's tickets: a move a review or a PR's new state made, a ticket that ended. Nothing counts as seen until the
+    caller has passed them on and calls `saw`. The PR states are those written under the session's id since the sync
+    began: its own, or a background one's of the same session meanwhile, whose effect these lines show too."""
+    before, first = watch(tr, told_about(load_session(sid), tr)), last_seq(tr)
+    lines = run()
+    tr = Tracker(tr.root)
+    now = watch(tr, told_about(load_session(sid), tr))
+    events = [e["seq"] for e in read_events(tr, first) if e["kind"] == "pr.state" and own_event(e, sid)]
+    return Shown(lines + [line for _, line in changes_since(tr, before, now)],
+                 {k: v for k, v in now.items() if before.get(k) != v}, events)
+
+
+def saw(sid: str, tr: Tracker, shown: Shown) -> None:
+    """Count what `own_sync` found as seen, once its lines are out, so that `news` does not repeat it: a hook or a
+    command cut short before them leaves it all news."""
+    if not (shown.seen or shown.events):
+        return
+    with locked():
+        state = state_on(load_session(sid), tr.slug)
+        seen = {**(state["seen"] or {}), **shown.seen}
+        cursor = state["seen_seq"] or 0  # what the cursor covers needs no mark
+        events = sorted(x for x in {*(state["seen_events"] or []), *shown.events} if x > cursor)
+        save_state(sid, tr.slug, seen=seen, seen_events=events or None)
 
 
 # ---------------------------------------------------------------- live sessions

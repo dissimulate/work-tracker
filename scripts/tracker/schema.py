@@ -200,13 +200,12 @@ EVENTS = {
     "action.added": "an action for the user added (`action`, its id)",
     "action.updated": "an action renamed, its due day or its notes changed (`action`)",
     "action.closed": "an action done or dropped (`action`, `status`)",
-    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`; `unseen`, see `pr.review`)",
+    "pr.state": "a PR's new state, as `sync` read it (`pr`, `state`, `title`)",
     "pr.opened": "a PR a session on the tracker opened (`gh pr create`), once (`pr`); `check` warns while no ticket "
                  "claims it",
     "pr.review": "a review of a PR that approved it or requested changes, as `sync` read it, once each (`pr`; "
                  "`review`: the forge's id for it; `by`; `result`: approved or changes; `submitted_at`: the forge's "
-                 "time for it; `bot`: whether a bot wrote it; `unseen`: true when the sync ran where no agent saw its "
-                 "lines: a hook's in the background, a watch's, the one after a subagent's command)",
+                 "time for it; `bot`: whether a bot wrote it)",
     "branch.set": "the branch a ticket is built on (`branch`)",
     "commits": "a branch's new commits, as the hooks or a step found them (`branch`, `count`: all of them)",
     "paused": "a handoff left on a branch (`branch`)",
