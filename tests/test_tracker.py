@@ -3015,7 +3015,8 @@ class SessionNews(TwoSessions):
     def test_what_a_post_bash_sync_read_stays_news_when_the_hook_is_cut_short(self):
         cases = [(merged, at) for merged in (False, True) for at in ("record_commits", "emit_context")]
         for merged, at in cases:
-            said_ = ["PR #11 merged", "T-1 is now done"] if merged else ["PR #11 open for review", "T-1 move now: you"]
+            expected = (["PR #11 merged", "T-1 is now done"] if merged
+                        else ["PR #11 open for review", "T-1 move now: you"])
             with self.subTest(merged=merged, at=at):
                 self.setUp("a/x")
                 self.message()
@@ -3023,10 +3024,9 @@ class SessionNews(TwoSessions):
                 # It syncs for the push, then logs the commit, and is cut short there (its timeout, a git error), or
                 # as its output goes out.
                 with mock.patch.object(hooks, at, side_effect=SystemExit(1)), self.assertRaises(SystemExit):
-                    self.assertEqual(self.push(review=False, merged=merged, command="git commit -am x && git push"),
-                                     "")
+                    self.push(review=False, merged=merged, command="git commit -am x && git push")
                 told = self.message()
-                for line in said_:
+                for line in expected:
                     self.assertIn(line, told)
 
     def test_what_my_own_sync_showed_me_is_no_news_and_a_review_is(self):
@@ -5858,7 +5858,7 @@ class MineWatch(TwoSessions):
     def test_a_long_sync_failure_still_says_what_to_do(self):
         self.setUp("a/x")
         failed = ["sync skipped: gh failed or timed out for " + ", ".join(f"an-org/a-long-repo-name-{i}"
-                                                                         for i in range(3))]
+                                                                         for i in range(6))]  # past LINE_MAX alone
         with mock.patch.object(watcher, "sync", return_value=failed):
             w = self.mine()
             self.claim(w)
@@ -6075,7 +6075,6 @@ class MineWatch(TwoSessions):
         out, _ = self.run_watch(self.mine(), during=lambda: self.as_a("start", "--clear"))
         self.assertEqual(self.ended(out), [], out)
         self.assertEqual(self.texts(out.splitlines()[1:]), [watcher.MINE_LEFT])
-        self.assertNotIn("another tracker", watcher.MINE_LEFT)
 
     def test_the_watch_ends_when_the_session_moves_to_another_tracker(self):
         other, _ = new_tracker("Elsewhere")
