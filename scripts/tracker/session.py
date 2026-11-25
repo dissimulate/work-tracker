@@ -1023,28 +1023,47 @@ def keep_told_next(sid: str, m: Match, cwd: str | Path) -> None:
 
 def own_change(sid: str, tr: Tracker, before: dict) -> None:
     """A write command this session's agent ran: count what it changed (`before`: `watch` of `told_about` before it) as
-    seen."""
-    count_own(sid, tr, lambda k, v, seen: before.get(k) != v)
+    seen, field by field, so what others changed on the same record before it stays news."""
+    def merge(key: str, told: dict | None, now: dict) -> dict | None:
+        was = before.get(key)
+        if told is None or was is None:
+            return now if was != now else None  # an entry it made the session watch: from now
+        out = dict(told)
+        for f in was.keys() | now.keys():
+            if f not in now:
+                out.pop(f, None)
+            elif was.get(f) != now[f]:
+                out[f] = now[f]
+        return out
+    count_own(sid, tr, merge)
+
+
+# The facts of `watch` that a record's file holds; a move comes from the log, the PRs and the clock too.
+FILE_FACTS = ("role", "stage", "next", "carry", "status", "answer")
 
 
 def own_edit(sid: str, tr: Tracker, ident: str) -> None:
-    """A tracker file this session edited by hand: count its record's change, and anything it newly makes the session
-    watch, as seen."""
-    count_own(sid, tr, lambda k, v, seen: k == ident or k not in seen)
+    """A tracker file this session edited by hand: count the facts its record's file holds (FILE_FACTS) as seen, and
+    whatever it newly makes the session watch; a move that changed with it stays news, as the edit cannot be told
+    apart from what others did."""
+    def merge(key: str, told: dict | None, now: dict) -> dict | None:
+        if told is None:
+            return now
+        return {**told, **{f: now[f] for f in FILE_FACTS if f in now}} if key == ident else None
+    count_own(sid, tr, merge)
 
 
-def count_own(sid: str, tr: Tracker, picked) -> None:
-    """Count the session's own change as seen, so that `news` reports only what others did: the entries of `watch` of
-    `told_about` now that `picked(key, value, seen)` names."""
+def count_own(sid: str, tr: Tracker, merge) -> None:
+    """Count the session's own change as seen, so that `news` reports only what others did: of each entry of `watch`
+    of `told_about` now, `merge(key, told, now)` gives what the session counts as told (`told`: its entry in `seen`,
+    or None), or None to leave it."""
     with locked():  # read and save as one step, so as not to overwrite what `told` saved
         entry = load_session(sid)
         tr = Tracker(tr.root)
-        now = watch(tr, told_about(entry, tr))
-        if not now:
-            return
-        seen = told_before(state_on(entry, tr.slug))[0]
-        seen.update({k: v for k, v in now.items() if picked(k, v, seen)})
-        save_state(sid, tr.slug, seen=seen)
+        seen = state_on(entry, tr.slug)["seen"] or {}
+        merged = {k: merge(k, seen.get(k) if isinstance(seen.get(k), dict) else None, v)
+                  for k, v in watch(tr, told_about(entry, tr)).items()}
+        count_seen(sid, tr.slug, {k: v for k, v in merged.items() if v is not None})
 
 
 @dataclass

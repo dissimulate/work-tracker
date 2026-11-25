@@ -3183,6 +3183,27 @@ class SessionNews(TwoSessions):
         self.assertIn("T-3 is now done", told)
         self.assertIn("T-1: base branch moved", told)
 
+    def test_my_own_write_on_a_ticket_keeps_what_others_changed_on_it_news(self):
+        for how in ("command", "hand edit"):
+            with self.subTest(how):
+                self.setUp()
+                self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+                self.message()
+                self.as_b(*self.t, "review", "T-1", "--what", "plan", "--verdict", "changes", "--finding", "Split it")
+                if how == "command":
+                    self.as_a(*self.t, "step", "T-1", "--next", "Split the parser")  # its own write on T-1
+                else:
+                    path = store.HOME / self.s / "tickets/T-1.md"
+                    path.write_text(re.sub(r"^next: .*", "next: Split the parser", path.read_text(), flags=re.M))
+                    tool("Edit", self.a, self.work, env=no_gh(), tool_input={"file_path": str(path)})
+                self.assertIn("T-1 move now: you", self.message())  # the review made it A's: not A's own doing
+
+    def test_a_ticket_i_closed_that_someone_reopens_tells_its_move_again(self):
+        self.message()
+        self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")  # its own close: its move goes
+        run(*self.t, "set", "T-1", "status=in-progress")  # a terminal reopens it, with the move it had
+        self.assertIn("T-1 move now: you", self.message())
+
     def test_my_own_writes_after_my_tickets_changed_are_no_news(self):
         run(*self.t, "new", "T-3", "--title", "Three", "--branch", "f1")
         run(*self.t, "set", "T-3", "status=in-progress")
