@@ -54,6 +54,19 @@ def where(data: dict) -> tuple[str, str]:
     return data.get("cwd") or os.getcwd(), str(data.get("session_id") or "")
 
 
+# What a handler counts as told or seen once its output is out (`told`, `saw`): `finish` runs it, last.
+AFTER_OUTPUT: list = []
+
+
+def finish() -> None:
+    """The hook's end: flush its output, then count as told what it said (AFTER_OUTPUT), with nothing that can block
+    after it. A hook cut short before here, in a lock or git wait or by the host's timeout, counts nothing, so what it
+    was to say is said again. A host that drops the output of a hook that exits cleanly cannot be told apart."""
+    sys.stdout.flush()
+    while AFTER_OUTPUT:
+        AFTER_OUTPUT.pop(0)()
+
+
 def emit_context(event: str, text: str, notice: str = "") -> None:
     """`text` goes to the model; `notice`, if any, is shown to the user in the transcript."""
     if event in ("SessionStart", "SubagentStart"):
@@ -295,7 +308,7 @@ def hook_post_bash(data: dict) -> None:
     if out:
         emit_context("PostToolUse", "\n".join(out))
     if shown:
-        saw(sid, shown)  # after the output: a hook cut short before it leaves the sync's changes news
+        AFTER_OUTPUT.append(lambda: saw(sid, shown))  # after the output (`finish`)
 
 
 PR_CREATE = re.compile(r"\bgh\s+pr\s+(create|new)\b")  # `new` is gh's own alias of `create`
@@ -438,7 +451,7 @@ def hook_prompt(data: dict) -> None:
         save_session(sid, **fields)
     if lines:
         emit_context("UserPromptSubmit", "\n".join(lines))
-    told(sid, found)  # after the output: a hook cut short before it leaves the news to the next message
+    AFTER_OUTPUT.append(lambda: told(sid, found))  # after the output (`finish`)
 
 
 # An option that only says go or stop. A question whose options are all such asks for approval, not for a direction.
@@ -562,6 +575,7 @@ def run_hook(*events: str) -> None:
     data = hook_input()
     budget(HOOK_GH_BUDGET_S)
     event = events[0] if events else ""
+    AFTER_OUTPUT.clear()
     try:
         upgrade_trackers()
         sid = where(data)[1]
@@ -583,6 +597,7 @@ def run_hook(*events: str) -> None:
                     "transcript": str(data.get("transcript_path") or ""), "terminal": os.environ.get("HC_TERMINAL_ID")}
                 failed = str(data.get("error") or "") if data.get("hook_event_name") == "PostToolUseFailure" else ""
                 session_activity(sid, status, asker, places, str(data.get("tool_name") or ""), failed)
+        finish()  # after every handler and session_activity, which can wait on the lock
     except (Exception, SystemExit) as exc:  # a hook must never break the session; exit 2 would block it
         warn(f"hook {event} failed: {exc}")
         sys.exit(0)

@@ -2272,6 +2272,14 @@ class Events(unittest.TestCase):
         self.assertTrue(e["text"].endswith("and 3 more"), e["text"])
 
 
+def handled(handler, data: dict) -> None:
+    """One hook handler in this process, then the hook's end, as `run_hook` runs them: what the handler counts as told
+    is counted only when it returns."""
+    hooks.AFTER_OUTPUT.clear()
+    handler(data)
+    hooks.finish()
+
+
 def move_of_ticket(s: str, ident: str) -> moves.Move | None:
     tr = model.tracker_at(s)
     return session.move_of(tr, tr.lookup(ident))
@@ -2770,7 +2778,7 @@ class Hooks(unittest.TestCase):
         self.assertIn("No ticket in progress on feat/W-1; 1 commit(s) not logged",
                       said(hook("prompt", sid, work, prompt="go")))
         with mock.patch.object(hooks, "lag") as look, contextlib.redirect_stdout(io.StringIO()) as out:
-            hooks.hook_prompt({"session_id": sid, "cwd": str(work), "prompt": "more"})
+            handled(hooks.hook_prompt, {"session_id": sid, "cwd": str(work), "prompt": "more"})
         look.assert_not_called()  # said for this mark: no git until the next state line
         self.assertEqual(out.getvalue(), "")
         run("--tracker", s, "set", "W-1", "status=in-progress", cwd=work)
@@ -2999,7 +3007,7 @@ class SessionNews(TwoSessions):
         out = io.StringIO()
         with self.reviewed(review, merged), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(out):
-            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work),
+            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
                                   "tool_input": {"command": command}, **extra})
         return out.getvalue()
 
@@ -3071,7 +3079,8 @@ class SessionNews(TwoSessions):
         out = io.StringIO()
         with mock.patch.object(github, "gh", answers(prs)), mock.patch.object(hooks, "sync", racing), \
                 mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), contextlib.redirect_stdout(out):
-            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
+                                           "tool_input": {"command": "git push"}})
         self.assertNotIn("PR #12", out.getvalue())
         self.assertIn("PR #12 open for review", self.message())
 
@@ -3098,7 +3107,8 @@ class SessionNews(TwoSessions):
         out = io.StringIO()
         with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(out):
-            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
+                                           "tool_input": {"command": "git push"}})
         self.assertIn("T-1: PRs 11:open, 12:open, 13:merged", out.getvalue())
         self.assertNotIn("move now", out.getvalue())  # nothing of T-1 changed but its PRs
         self.assertNotIn("PR #13", self.message())
@@ -3112,7 +3122,8 @@ class SessionNews(TwoSessions):
         w.claim(time.time())  # its first look read the news, none new, and has not printed its first line yet
         with self.three_prs(merged=True), mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
-            hooks.hook_post_bash({"session_id": self.a, "cwd": str(self.work), "tool_input": {"command": "git push"}})
+            handled(hooks.hook_post_bash, {"session_id": self.a, "cwd": str(self.work),
+                                           "tool_input": {"command": "git push"}})
         w.printed()  # its count, from before the push, is saved now
         self.assertNotIn("PR #13", self.message())
 
@@ -3209,6 +3220,34 @@ class SessionNews(TwoSessions):
         run(*self.t, "log", "--ref", "T-1", "from a terminal")
         self.assertIn("T-1: from a terminal", self.message())
 
+    def test_a_hook_flushes_its_output_then_counts_it_as_told_last(self):
+        self.setUp("a/x")
+        for event, data, counted in (
+                ("prompt", {"prompt": "go on"}, "told"),
+                ("post-bash", {"tool_name": "Bash", "tool_input": {"command": "git push"}}, "saw")):
+            with self.subTest(event):
+                self.message()
+                self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
+                order = []
+
+                class Out(io.StringIO):
+                    def flush(self):
+                        order.append("flush")
+                        super().flush()
+
+                def noted(name, real):
+                    return lambda *a, **k: (order.append(name), real(*a, **k))[1]
+
+                data = {"session_id": self.a, "cwd": str(self.work), **data}
+                with mock.patch.object(hooks, "hook_input", return_value=data), \
+                        mock.patch.object(hooks, "session_activity", noted("activity", hooks.session_activity)), \
+                        mock.patch.object(hooks, counted, noted(counted, getattr(hooks, counted))), \
+                        mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), self.reviewed(review=False), \
+                        contextlib.redirect_stdout(Out()):
+                    hooks.run_hook(event, *(["resumed"] if event == "post-bash" else []))
+                self.assertIn("activity", order)
+                self.assertEqual(order[-2:], ["flush", counted], order)  # nothing that can wait comes after it
+
     def test_news_of_a_prompt_hook_cut_short_before_its_output_comes_again(self):
         self.message()
         self.as_b(*self.t, "log", "--ref", "T-1", "base branch moved")
@@ -3216,7 +3255,7 @@ class SessionNews(TwoSessions):
         # The hook is killed as its output goes out, the last step before it counts the news as told.
         with mock.patch.object(hooks, "emit_context", side_effect=SystemExit(1)), \
                 mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), self.assertRaises(SystemExit):
-            hooks.hook_prompt(data)
+            handled(hooks.hook_prompt, data)
         self.assertIn("T-1: base branch moved", self.message())
 
     def test_news_survives_a_ticket_of_mine_closing(self):
@@ -3473,7 +3512,7 @@ class SessionNews(TwoSessions):
         plain = Path(tempfile.mkdtemp(dir=BASE))
         with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
-            hooks.hook_prompt({"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
+            handled(hooks.hook_prompt, {"session_id": self.a, "cwd": str(plain), "prompt": "go on"})
         spawn.assert_called_once_with("--tracker", self.s, "sync", "--live")
 
     def as_released(self, sid: str, base: bool = False) -> None:
@@ -3893,7 +3932,7 @@ class SessionNews(TwoSessions):
         self.as_a(*self.t, "set", "T-1", "status=done", "summary=Shipped")
         with mock.patch.object(hooks, "spawn") as spawn, mock.patch.dict(os.environ, {"TRACKER_SESSION": self.a}), \
                 contextlib.redirect_stdout(io.StringIO()):
-            hooks.hook_prompt({"session_id": self.a, "cwd": str(self.work), "prompt": "go on"})
+            handled(hooks.hook_prompt, {"session_id": self.a, "cwd": str(self.work), "prompt": "go on"})
         spawn.assert_not_called()
 
     def test_a_deleted_saved_folder_gives_no_branch(self):
