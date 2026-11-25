@@ -2658,10 +2658,10 @@ class Hooks(unittest.TestCase):
         cases = [(work, {"file_path": str(path)}),
                  (work, {"command": f"*** Begin Patch\n*** Update File: {path}\n*** End Patch"}),
                  (root, {"command": "*** Begin Patch\n*** Update File: tickets/E-1.md\n*** End Patch"})]
-        for (cwd, used), status in zip(cases, ("in-progress", "todo", "in-progress")):
+        for (cwd, used), step in zip(cases, ("Plan it", "Build it", "Test it")):
             with self.subTest(tool=used):
                 before = session.load_session(sid)["seen"]
-                path.write_text(re.sub(r"^status: .*", f"status: {status}", path.read_text(), flags=re.M))
+                path.write_text(re.sub(r"^next:.*", f"next: {step}", path.read_text(), flags=re.M))
                 tool("apply_patch" if "command" in used else "Edit", sid, cwd, tool_input=used)
                 self.assertNotEqual(session.load_session(sid)["seen"], before)
                 self.assertNotIn("Changed on ", said(hook("prompt", sid, work, prompt="next")))
