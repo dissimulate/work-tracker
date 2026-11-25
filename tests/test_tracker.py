@@ -6062,6 +6062,13 @@ class WatchAsk(TwoSessions):
         self.asked(self.stop(), "T-1")
         coordinator.release(time.time() - session.REARM_S - 1)
 
+    def test_the_ask_survives_a_resume(self):
+        self.as_a(*self.t, "submit", "T-1", "--what", "plan")
+        self.asked(self.stop(), "T-1")
+        hook("session-end", self.a, self.work, env=no_gh(), reason="prompt_input_exit")
+        hook("session-start", self.a, self.work, env=no_gh(), source="resume")  # the same conversation goes on
+        self.assertIsNone(self.stop())
+
     def test_the_ask_survives_tracker_start(self):
         self.as_a(*self.t, "submit", "T-1", "--what", "plan")
         self.asked(self.stop(), "T-1")
