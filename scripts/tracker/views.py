@@ -325,10 +325,11 @@ def protocol(slug: str) -> str:
         "compaction, the session's end): `step <id> \"...\" --pause \"<state and next step>\"`",
         "- a ticket's plan is ready: `submit <id> --what plan`; its code is built: `submit <id> --what code`; then "
         "wait for the review. Fix or answer each finding (`history --ref <id>` lists them), mark it "
-        "`review <id> --what <plan|code> --fixed <n>`, and submit again. Reviewing: "
-        "`review <id> --what <plan|code> --verdict pass`, or `--verdict changes` with a `--finding \"...\"` per "
-        "change. Tell another session something with `log \"...\" --ref <id>` only when no command records it",
-        "- as they happen: a direction choice `decide`, each choice an `--option`; an order or blocker `wait`; a "
+        "`review <id> --what <plan|code> --fixed <n>`, and submit again. Tell another session something with "
+        "`log \"...\" --ref <id>` only when no command records it",
+        "- as they happen: a direction choice `decide`, each choice an `--option` (for a human: one thing, in plain "
+        "words, one `--recommend`), settled with `decide D-<n> --resolve \"...\"` and `--by <who decided>` or "
+        "`--source \"<where>\"`; an order or blocker `wait`; a "
         "result file `attach <file> --ref <ids>`; a task only the user should do (talk to a person, an access, a "
         "sign-off): ask them, then `act \"<what, with whom>\" --refs <ids>`",
         "- a subagent writes no tracker (a hook tells it): put what it needs in its prompt (`context <id> --brief`), "
