@@ -11,28 +11,31 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from .system import ROOT, die, open_with_system
+from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
 from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
-from .schema import (BLOCKER, DEFAULT_LABELS, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS, KINDS, LIVE_SYNC_S,
-    MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET, SCALES, SCHEMA,
-    STAGES, STATUSES, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names, options_problems,
-    parse_options, read_value, stage_of, today, utc_now, Option)
-from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_log, append_notes, append_to_section, archived_at,
-    archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record, names,
-    put_section, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short, sort_key, tracker_at,
-    unknown_dep, Record, Tracker)
+from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS,
+    KINDS, LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET,
+    SCALES, SCHEMA, STAGES, STATUSES, WORDS_KEPT, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
+    options_problems, parse_options, read_value, resolution_who, stage_of, today, utc_now, Option)
+from .model import (LOG, SAFE_NAME, all_trackers, any_tracker, append_event, append_notes, append_to_section,
+    archived_at, archived_trackers, blocker_link, close_action, drop_from_section, id_list, link_url, load_record,
+    names, put_section, read_events, relabel, replace_in_section, resolution, same_repo, sequence, set_branch, short,
+    sort_key, tracker_at, unknown_dep, Record, Tracker)
+from .moves import HANDED, count, finding_numbers, last_review, last_submission
 from .git import branch_of, contains, default_branches, worktree_key
-from .session import (DECLINE_S, NO_TRACKERS, attached_tracker, branch_matches, decline, drop_session, find_tracker,
-    in_repos, load_session, locate, mark_up_to_date, match_cwd, matched, no_tracker, on_branch, record_commits,
-    remember, resolve, save_session, session_id, session_tracker, trackers_for_repo, work_dir)
-from .contract import check, newer_format, refuse_newer, rules_lines
+from .session import (DECLINE_S, NO_TRACKERS, agent_sid, attached_tracker, branch_matches, cited_word, decline,
+    find_tracker, context_tracker, in_repos, items_of, keep_folder, kept_words, load_session, locate, mark_up_to_date,
+    match_cwd, matched, no_tracker, on_branch, record_commits, relink_session, keep_told_next, resolve, save_session,
+    session_id, own_sync, saw, session_tracker, start_subscription, subscribe, trackers_for_repo, unlink_session,
+    work_dir)
+from .contract import check, other_format, refuse_other_format, rules_lines
 from .views import (HISTORY_LAST, ISSUE_HOW, ISSUE_WRITE_HOW, brief, context_lines, dep_lines, history_lines,
     index_lines, levels_text, order_lines, span_lines, start_text, updates_told)
 from .github import match_pr, sync
 from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, grant_path,
-                      session_name, set_grant, Watcher)
+                      session_name, stop_watch, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
 from .viewmodel import trackers_view, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
@@ -108,6 +111,7 @@ def cmd_init(args):
             "owner": args.owner, "created_at": utc_now(), "schema": SCHEMA}
     create(root / "README.md", from_template("README", meta, DEFAULT_LABELS))
     create(root / "log.md", f"# Log — {args.title}\n\nAppend-only. Newest at the bottom.\n\n")
+    create(root / EVENTS_FILE, "")
     create(root / ".gitignore", ".state.json\n*.tmp\n")
     print(f"created {root}. Next: `tracker start {args.slug}` ties this session to it (in a terminal, pass "
           f"`--tracker {args.slug}` to each command), then `tracker new <ID> --title \"...\"` adds tickets")
@@ -133,7 +137,7 @@ def cmd_here(args):
               + ". `tracker start <name>` ties this session to a tracker.")
         return
     print(brief(m, cwd, full=args.full, with_protocol=False))
-    if why := newer_format(m.tracker.root):  # as a bare `start` says it (cmd_start)
+    if why := other_format(m.tracker.root):  # as a bare `start` says it (cmd_start)
         print(f"{why}.")
 
 
@@ -165,6 +169,8 @@ def cmd_decisions(args):
 
 
 def cmd_find(args):
+    """Each line of the tracker's files that holds the text, ignoring case. A byte that is not UTF-8 (a hand edit in
+    another encoding) reads as U+FFFD: one such file stops no search."""
     trackers = all_trackers() if args.all else [resolve(args)]
     pat = re.compile(re.escape(args.text), re.I)
     hits = 0
@@ -173,7 +179,7 @@ def cmd_find(args):
         for p in files:
             if not p.exists():
                 continue
-            for n, line in enumerate(p.read_text().splitlines(), 1):
+            for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if pat.search(line):
                     where = p.relative_to(HOME if args.all else tr.root)
                     print(f"{where}:{n}: {line.strip()[:160]}")
@@ -231,7 +237,10 @@ def cmd_set(args):
     if updates.get("issue_updates") == "on":
         tr.start_issue_updates()
     if moved:
-        append_log(tr, status_line(rec), [] if rec.kind == "tracker" else [rec.id])
+        append_event(tr, "status", status_line(rec), [] if rec.kind == "tracker" else [rec.id],
+                     status=str(rec.get("status")))
+    if rec.kind == "ticket" and ("next" in updates or "status" in updates and not to.closed):
+        subscribe(tr, [rec.id])  # its work: also a status it already had, which writes nothing
     print(f"{rec.id}: " + ", ".join(k if len(str(v)) > 40 else f"{k}={format_value(v)}"
                                     for k, v in updates.items() if KEYS[rec.kind][k][0] != "auto"))
     if starts:
@@ -291,7 +300,7 @@ def base_notes(tr: Tracker, t: Record) -> list[str]:
 def cmd_log(args):
     tr = resolve(args)
     refs = [tr.find(r).id for r in id_list(args.ref)]
-    append_log(tr, args.message, refs)
+    append_event(tr, "note", args.message, refs)
     print("logged" + (f" [{' '.join(refs)}]" if refs else ""))
 
 
@@ -299,7 +308,10 @@ def cmd_history(args):
     tr = resolve(args)
     if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
         die("--since takes a date: YYYY-MM-DD")
-    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last)
+    kinds = csv(args.kind)
+    if unknown := [k for k in kinds if k not in EVENTS]:
+        die(f"no event kind {', '.join(unknown)}: the kinds are {', '.join(EVENTS)}")
+    lines = history_lines(tr, [tr.find(r).id for r in id_list(args.ref)], args.since or "", args.last, kinds=kinds)
     print("\n".join(lines) if lines else "no log lines")
 
 
@@ -331,16 +343,66 @@ def cmd_new(args):
     if (args.plan or "").strip():
         put_section(t, "Plan", args.plan.strip("\n"))
     add_waits(tr, t, deps)
-    append_log(tr, f"Added {args.id} {args.title}" + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
+    append_event(tr, "ticket.added", f"Added {args.id} {args.title}"
+                 + (f"; waits on {', '.join(deps)}" if deps else ""), [args.id])
     print(f"created {args.id}: {t.path}")
 
 
-def resolve_decision(tr: Tracker, rec: Record, answer: str, by: str | None) -> str:
-    who = f" ({by})" if by else ""
+SAY_WHO = ('say who decided: --by <name> when a human told you, or --source "<where>" when the spec, a settled '
+           "decision or the code already answers it")
+
+
+def who_settled(by: str | None, source: str | None, cite: str | None = None) -> tuple[str, dict]:
+    """Who settled a decision and how it was entered, from `--by` or `--source` and `entered_via`: the `<who>` of
+    its resolution line and its `decision.decided` event's data. In the view, a human (`by`, else "human"); through an
+    agent, the human it names or the source it names, and one of them it must name; at a terminal, unattributed, with
+    what it names kept as said. A human named through an agent is cited when `cite` quotes a message the
+    session kept of theirs (`session.cited_word`), which the event then holds. Dies on flags that cannot say it: the
+    caller writes nothing before."""
+    by, source = resolution_who(by), resolution_who(source)
+    if by is None or source is None:
+        die('--by and --source take no ": " or ")": the resolution line is "<day> (<who>): <answer>"')
+    if by and source:
+        die("--by and --source: a human decided or a source did, not both")
+    via = entered_via()
+    if cite is not None:  # `cmd_decide` refused it outside an agent session
+        if not by:
+            die("--cite quotes the human who decided: it goes with --by <name>"
+                + (", in place of --source" if source else ""))
+        word = cited_word(session_id(), cite)
+        if not kept_words(load_session(session_id())):
+            die("--cite: this session kept no message of the human's; leave --cite out to enter the resolution "
+                "uncited")
+        if not word:
+            die(f'--cite "{short(cite, 40)}": no message of the human\'s that this session kept (its last '
+                f"{WORDS_KEPT}) holds it. Quote a few words from the start of what they said, or leave --cite out to "
+                "enter the resolution uncited")
+        return f"{by}, entered by an agent on their word", {"decided": "human", "by": by, "cited": True, "word": word}
+    if via == "view":
+        by = by or "human"
+        return f"{by}, in the view", {"decided": "human", "by": by}
+    if via == "agent":
+        if by:
+            return f"{by}, entered by an agent", {"decided": "human", "by": by, "cited": False}
+        if source:
+            return f"from {source}, entered by an agent", {"decided": "source", "source": source}
+        die(SAY_WHO)
+    data, said = {"decided": "unattributed"}, ""
+    if by:
+        data["by"], said = by, f", said {by}"
+    elif source:
+        data["source"], said = source, f", from {source}"
+    return f"unattributed{said}", data
+
+
+def resolve_decision(tr: Tracker, rec: Record, answer: str, settled: tuple[str, dict]) -> str:
+    """Close a decision with its answer and who settled it (`who_settled`)."""
+    who, data = settled
     rec.change(rec.status_update("closed"))
-    append_to_section(rec, "Resolution", f"{today()}{who}: {answer.strip()}")
-    append_log(tr, LOG["decided"].text(id=rec.id, title=rec.get("title"), who=who, answer=short(answer)),
-               [rec.id, *tr.touched_by(rec)])
+    append_to_section(rec, "Resolution", f"{today()} ({who}): {answer.strip()}")
+    append_event(tr, "decision.decided", LOG["decided"].format(id=rec.id, title=rec.get("title"), who=f" ({who})",
+                                                               answer=short(answer)),
+                 [rec.id, *tr.touched_by(rec)], decision=rec.id, **data)
     return f"{rec.id} closed"
 
 
@@ -377,7 +439,8 @@ def cmd_wait(args):
             link = None if tr.lookup(x) else blocker_link(t, x)
             if link:
                 relabel(t, link, "Related")
-        append_log(tr, f"{t.id} no longer waits on {', '.join(args.items)}", [t.id])
+        append_event(tr, "wait.removed", f"{t.id} no longer waits on {', '.join(args.items)}", [t.id],
+                     on=[tr.canonical(x) for x in args.items])
     else:
         items = []
         external = [x for x in args.items if not tr.lookup(x) and not blocker_link(t, x)]
@@ -404,7 +467,7 @@ def cmd_wait(args):
         for d in (tr.lookup(x) for x in added):
             if d and t.id in d.list("refs"):  # a decision's or action's: depends_on now says so
                 d.change({"refs": [r for r in d.list("refs") if r != t.id]})
-        append_log(tr, f"{t.id} now waits on {', '.join(added)}", [t.id])
+        append_event(tr, "wait.added", f"{t.id} now waits on {', '.join(added)}", [t.id], on=added)
     print("\n".join(dep_lines(tr, t)) or f"{t.id} waits on nothing")
 
 
@@ -507,7 +570,8 @@ def section_done(tr: Tracker, rec: Record, heading: str, why: str | None, did: s
     rec.change()
     if why:
         readme = rec.kind == "tracker"
-        append_log(tr, f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id])
+        append_event(tr, "body.changed", f"{'README ' * readme}{heading} changed: {why}", [] if readme else [rec.id],
+                     heading=heading)
     print(f"{rec.id} {heading}: {did}")
 
 
@@ -609,7 +673,8 @@ def cmd_attach(args):
             append_to_section(rec, "Notes", f"- {today()}: {EVIDENCE}: {link}")
         rec.change()
         refs.append(rec.id)
-    append_log(tr, f"{attached} {EVIDENCE_DIR}/{name}" + (f": {short(args.note)}" if args.note else ""), refs)
+    append_event(tr, "evidence.attached", f"{attached} {EVIDENCE_DIR}/{name}"
+                 + (f": {short(args.note)}" if args.note else ""), refs, file=f"{EVIDENCE_DIR}/{name}")
     print(f"{folder / name}" + (f" · linked from {', '.join(refs)}" if refs else ""))
 
 
@@ -688,7 +753,7 @@ def blocks_line(tr: Tracker, rec: Record, blocks: list[str]) -> str:
     if not newly:
         return ""
     msg = f"{', '.join(newly)} now {'waits' if len(newly) == 1 else 'wait'} on {rec.id}"
-    append_log(tr, msg, [rec.id, *newly])
+    append_event(tr, "wait.added", msg, [rec.id, *newly], on=[rec.id])
     return msg
 
 
@@ -707,12 +772,18 @@ def choice(text: str) -> Option:
     return found[0]
 
 
-def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
-    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
-    changed, for the log."""
+def options_of(d: Record) -> list[Option]:
+    """A decision's choices; dies when ## Options holds a line that is no choice, which a person fixes first."""
     options, bad = parse_options(strip_comments(section(d.body, "Options")))
     if bad:
         die(f"{d.id} ## Options holds a line that is no choice ({short(bad[0], 60)}): fix it first. {OPTION_RULE}")
+    return options
+
+
+def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str]:
+    """Add the choices a decision's ## Options lacks, and mark the one recommended, which is added when new; what
+    changed, for the log."""
+    options = options_of(d)
     known = {o.text.lower() for o in options}
     said = []
     for o in [*given, *([pick] if pick else [])]:
@@ -730,6 +801,16 @@ def add_choices(d: Record, given: list[Option], pick: Option | None) -> list[str
 
 def cmd_decide(args):
     tr = resolve(args)
+    if (args.by or args.source) and not args.resolve:
+        die("--by and --source say who settled it: pass them with --resolve")
+    if args.cite is not None and entered_via() != "agent":
+        die("--cite quotes the human's message that an agent session kept: here there is none; leave --cite out")
+    if args.cite is not None and not args.resolve:
+        die("--cite quotes the human who settled it: pass it with --resolve and --by")
+    settled = who_settled(args.by, args.source, args.cite) if args.resolve else ("", {})
+    owner = resolution_who(args.owner)  # the view answers as the owner it names (`--by`)
+    if owner is None:
+        die('--owner takes no ": " or ")": the view gives the owner as who decided, in "<day> (<who>): <answer>"')
     refs, unrefs, blocks = link_args(tr, "decision", args)
     if blocks and args.resolve:
         die("--blocks with --resolve: a settled decision blocks nothing")
@@ -737,39 +818,50 @@ def cmd_decide(args):
     pick = choice(args.recommend) if args.recommend else None
     d = existing(tr, "decision", args.target)
     if d:
-        if not (args.note or given or pick or args.resolve or refs or unrefs or blocks or args.owner or args.question):
+        others = args.note or given or pick or args.resolve or refs or unrefs or blocks or args.question
+        if owner and owner == str(d.get("owner") or "").strip():
+            if not others:
+                die(f"{d.id}'s owner is {owner} already")
+            owner = ""  # no change to write or log
+        if not (others or owner):
             die("nothing to change: pass --note, --option, --recommend, --resolve, --refs, --unref, --blocks, --owner "
                 "or --question")
+        if given or pick:
+            options_of(d)  # a refusal writes nothing: before the first write
         upd = {"refs": refs_after(tr, d, refs, unrefs, blocks)} if refs or unrefs or blocks else {}
-        d.change({**upd, **({"owner": args.owner} if args.owner else {})})
+        owned = {"owner": owner} if owner else {}
+        d.change({**upd, **owned})
         if args.question:
             append_to_section(d, "Question", dated(args.question))
-        said = add_choices(d, given, pick) if given or pick else []
+        said = [f"owner {owner}"] if owner else []  # whose move it is changes: a watch reads it from the event
+        said += add_choices(d, given, pick) if given or pick else []
         if args.note:
             append_to_section(d, "Notes", f"- {dated(args.note)}")
             said.append(short(args.note))
         if said:
-            append_log(tr, f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)])
+            append_event(tr, "decision.updated", f"Updated {d.id}: {'; '.join(said)}", [d.id, *tr.touched_by(d)],
+                         decision=d.id, **owned)
         if msg := blocks_line(tr, d, blocks):
             print(msg)
-        print(resolve_decision(tr, d, args.resolve, args.by) if args.resolve else f"{d.id} updated")
+        print(resolve_decision(tr, d, args.resolve, settled) if args.resolve else f"{d.id} updated")
         return
     if unrefs:
         die("--unref changes an existing decision; pass its D-id")
     refuse_similar(tr, "decision", args.target, args.force)
-    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=args.owner or "")
+    d = new_record(tr, "decision", tr.next_id("decision"), args.target, refs=refs, owner=owner)
     append_to_section(d, "Question", args.question or args.target)
     if given or pick:
         add_choices(d, given, pick)
     if args.note:
         append_to_section(d, "Notes", f"- {dated(args.note)}")
     if args.resolve:
-        resolve_decision(tr, d, args.resolve, args.by)
+        resolve_decision(tr, d, args.resolve, settled)
         print(f"{d.id} recorded as settled: {d.path}")
     else:
         newly = block_tickets(tr, d.id, blocks)
-        append_log(tr, LOG["opened"].text(id=d.id, title=args.target)
-                   + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly])
+        append_event(tr, "decision.opened", LOG["opened"].format(id=d.id, title=args.target)
+                     + (f"; blocks {', '.join(newly)}" if newly else ""), [d.id, *refs, *newly], decision=d.id,
+                     **({"owner": owner} if owner else {}))
         print(f"{d.id} opened" + (f", blocks {', '.join(newly)}" if newly else "") + f": {d.path}")
 
 
@@ -789,21 +881,24 @@ def cmd_act(args):
         if args.title:
             old = a.get("title")
             a.change({"title": " ".join(args.title.split())})
-            append_log(tr, f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"{a.id} renamed: {old} → {a.get('title')}", [a.id, *a.list("refs")],
+                         action=a.id)
         if refs or unrefs or blocks:
             a.change({"refs": refs_after(tr, a, refs, unrefs, blocks)})
         if msg := blocks_line(tr, a, blocks):
             print(msg)
         if due is not None:
             a.change({"due": due})
-            append_log(tr, f"{a.id} due {due}" if due else f"{a.id} has no due date now", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"{a.id} due {due}" if due else f"{a.id} has no due date now",
+                         [a.id, *a.list("refs")], action=a.id)
         if args.done or args.drop:
             print(close_action(tr, a, "done" if args.done else "dropped", notes))
             return
         if notes:
             append_notes(a, notes)
             a.change()
-            append_log(tr, f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")])
+            append_event(tr, "action.updated", f"Updated {a.id}: {short('; '.join(notes))}", [a.id, *a.list("refs")],
+                         action=a.id)
         print(f"{a.id} updated")
         return
     if args.done or args.drop or args.title or unrefs:
@@ -812,8 +907,8 @@ def cmd_act(args):
     a = new_record(tr, "action", tr.next_id("action"), args.target, refs=refs, due=due or "")
     append_notes(a, notes)
     newly = block_tickets(tr, a.id, blocks)
-    append_log(tr, LOG["action"].text(title=args.target) + (f" (due {due})" if due else "")
-               + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly])
+    append_event(tr, "action.added", LOG["action"].format(title=args.target) + (f" (due {due})" if due else "")
+                 + (f"; blocks {', '.join(newly)}" if newly else ""), [a.id, *refs, *newly], action=a.id)
     print(f"{a.id} added" + (f", blocks {', '.join(newly)}" if newly else "") + f": {a.path}")
 
 
@@ -846,16 +941,28 @@ def problem_lines(tr: Tracker) -> list[str]:
 
 
 def cmd_check(args):
+    """The tracker's problems (`contract.check`), then the open items that are stuck (`items_of`): those are no
+    problem in its files, so neither a write's report nor a brief, which ask the agent to fix what `check` finds,
+    shows them."""
     tr = resolve(args)
     lines = problem_lines(tr)
     print("\n".join(lines) or " · ".join(["ok", *(f"{len(tr.records_of(k))} {KINDS[k].folder}" for k in KINDS)]))
+    stuck = [f"stuck: {i.what}" for i in items_of(tr) if i.stuck]
+    if stuck:
+        print("\n".join(stuck))
     sys.exit(1 if any(x.startswith("✗") for x in lines) else 0)
 
 
 def cmd_sync(args):
+    """A sync whose lines its agent reads also says what it changed of the session's tickets, which then count as seen
+    (`own_sync`). A `--live` one is a UI's, a `--quiet` one prints nothing, and one at a terminal is no session's:
+    what those read is news."""
     tr = resolve(args)
-    changes = sync(tr, every=LIVE_SYNC_S if args.live else 0)
-    print("\n".join(changes) if changes else "no changes")
+    sid = "" if args.live or args.quiet else agent_sid()
+    shown = own_sync(sid, tr, lambda states: sync(tr, every=LIVE_SYNC_S if args.live else 0, states=states))
+    if not args.quiet:
+        print("\n".join(shown.lines) if shown.lines else "no changes", flush=True)
+    saw(sid, shown)  # after the output
 
 
 def cmd_issue(args):
@@ -901,6 +1008,76 @@ def issue_urls(t: Record) -> str:
     return ", ".join(link_url(x) for x in t.links if x.label == ISSUE)
 
 
+def only_tickets(r: Record) -> None:
+    """Refuse a record that is no ticket, naming the command that takes a note on it."""
+    if r.kind != "ticket":
+        die(f"{r.id} is {a_kind(r.kind)}: `tracker {KINDS[r.kind].command} {r.id} --note \"...\"`")
+
+
+def open_ticket(args) -> tuple[Tracker, Record]:
+    """The ticket a submission or review is about: refused when it is no ticket or is closed."""
+    tr, t = locate(args, args.id)
+    only_tickets(t)
+    if t.closed:
+        die(f"{t.id} is closed: a closed ticket takes no submission or review")
+    return tr, t
+
+
+def cmd_submit(args):
+    """Hand a ticket's plan or built code to its reviewer: an event on the ticket, which its move then shows."""
+    tr, t = open_ticket(args)
+    note = f": {args.note}" if args.note else ""
+    append_event(tr, "submission", f"{t.id} {HANDED[args.what].ready}{note}", [t.id], what=args.what)
+    subscribe(tr, [t.id])
+    print(f"submitted {t.id}'s {args.what}")
+
+
+def numbered(word: str, numbers: list[int]) -> str:
+    """`finding 2`, `findings 1, 3`."""
+    return f"{word}{'s' * (len(numbers) > 1)} {', '.join(map(str, numbers))}"
+
+
+def cmd_review(args):
+    """Record a review of a ticket's plan or built code, with its numbered findings, answering the submission before it
+    (`last_submission`); or, with --fixed, mark findings of the latest review fixed. Every check runs before the
+    write."""
+    if args.fixed is not None and (args.verdict or args.finding):
+        die("--fixed marks findings of the latest review fixed, and a new review takes --verdict (with --finding): "
+            "pass one or the other")
+    if args.fixed is None and not args.verdict:
+        die("give the review's --verdict pass|changes, or --fixed <numbers> to mark its findings fixed")
+    if args.verdict == "changes" and not args.finding:
+        die("a review that asks for changes lists them: one --finding per change")
+    if args.verdict == "pass" and args.finding:
+        die("a finding is a change asked for: use --verdict changes, or leave the finding out")
+    if empty := [i for i, x in enumerate(args.finding or [], 1) if not x.strip()]:
+        die(f"a finding says what to change: {numbered('finding', empty)} {'are' if len(empty) > 1 else 'is'} empty")
+    tr, t = open_ticket(args)
+    events, name = read_events(tr), HANDED[args.what].review
+    if args.fixed is not None:
+        review = last_review(events, t.id, args.what) or die(f"{t.id} has no {name} whose findings to mark fixed")
+        have = finding_numbers(review)
+        given = csv(args.fixed)
+        if not given or any(not x.isdigit() or int(x) not in have for x in given):
+            die(f"{t.id}'s latest {name} has " + (f"{numbered('finding', have)}: --fixed takes "
+                                                    f"{'those numbers' if len(have) > 1 else 'that number'}"
+                                                    if have else "no findings"))
+        fixed = list(dict.fromkeys(int(x) for x in given))
+        listed = numbered("finding", fixed)
+        append_event(tr, "finding.fixed", f"{t.id} fixed {listed} of the {name}", [t.id], what=args.what,
+                     of=review["seq"], findings=fixed)
+        subscribe(tr, [t.id])
+        print(f"marked {listed} of {t.id}'s {name} fixed")
+        return
+    findings = [{"n": i, "text": " ".join(x.split())} for i, x in enumerate(args.finding or [], 1)]
+    said = f"{args.verdict}, {count(len(findings), 'finding')}" if findings else args.verdict
+    listed = "; ".join(f"{f['n']}. {f['text']}" for f in findings)
+    submission = last_submission(events, t.id, args.what)
+    append_event(tr, "review", f"{t.id} {name}: {said}" + (f": {listed}" if listed else ""), [t.id], what=args.what,
+                 verdict=args.verdict, findings=findings, of=submission["seq"] if submission else 0)
+    print(f"reviewed {t.id}'s {args.what}: {said}")
+
+
 def cmd_step(args):
     """A step in one command: the ticket's next action (or its close), Carry forward and a log line; then, when the
     ticket is on the current branch, the branch's commits that the hooks have not logged are logged, its mark moves
@@ -912,8 +1089,7 @@ def cmd_step(args):
         return
     fit("next", args.next)
     tr, t = named_or_own(args)
-    if t.kind != "ticket":
-        die(f"{t.id} is {a_kind(t.kind)}: `tracker {KINDS[t.kind].command} {t.id} --note \"...\"`")
+    only_tickets(t)
     if args.done and (args.next or args.pause):
         die("--done closes the ticket: a closed ticket has no next action, and its branch keeps no handoff. Pass "
             "--next or --pause without --done")
@@ -936,10 +1112,11 @@ def cmd_step(args):
     if updates or args.carry:
         t.change(updates)
     if args.message:
-        append_log(tr, args.message, [t.id])
+        append_event(tr, "step", args.message, [t.id])
         done.append("logged")
     if args.done:
-        append_log(tr, status_line(t), [t.id])
+        append_event(tr, "status", status_line(t), [t.id], status=str(t.get("status")))
+    subscribe(tr, [t.id])
     parts = [f"{t.id}: {', '.join(done) or 'nothing recorded'}"]
     if here:
         parts += mark_up_to_date(here, cwd, args.pause, list(dict.fromkeys([t.id, *(x.id for x in here.focus)])))
@@ -987,13 +1164,19 @@ def one_tracker(hits: list[Tracker], sure: bool, head: str, cmd: str) -> Tracker
 def cmd_start(args):
     """Tie a tracker to this agent session: its commands and hooks then use it; `--on` puts the session on some of
     its tickets alone. With no name: the tracker that holds the `--on` tickets, else the tracker with an open ticket
-    on this branch; in a session that has a tracker, its brief, then the `newer_format` sentence when this code may
+    on this branch; in a session that has a tracker, its brief, then the `other_format` sentence when this code may
     not write it. Never changes git; writes the tracker only to record a branch that its PR ties to one ticket, and to
-    log the branch's new commits, as the hooks do. Refuses a tracker in a newer format (`refuse_newer`) before the
-    session moves."""
+    log the branch's new commits, as the hooks do. Refuses a tracker in another format (`refuse_other_format`) before
+    the session moves."""
     sid, cwd = session_id(), work_dir()
     if args.clear:
-        drop_session(sid)
+        with locked():  # one step: a hook between the unlink and the empty subscription would seed it
+            unlink_session(sid)
+            named = match_cwd(cwd, sid) if sid else None  # TRACKER names a tracker: its hooks still run there
+            if named:
+                start_subscription(sid, named, [])  # on none of its tickets, which no hook seeds again
+                print(f"this session is on no ticket of {named.tracker.slug} now (TRACKER names it)")
+                return
         print("this session is on no tracker now" + ("" if sid else " (no session id: nothing to clear)"))
         return
     if args.decline:
@@ -1001,21 +1184,21 @@ def cmd_start(args):
         decline(cwd)
         own = session_tracker(sid)
         if own:  # any link goes; most often one the session start made (AUTO_LINKED)
-            drop_session(sid)
+            unlink_session(sid)
         print((f"this session is off {own.slug} now; " if own else "") + f"branch '{branch}': no link or offer of a "
               f"tracker for {DECLINE_S // 3600} h; `tracker start <name>` links one now")
         return
     focus = id_list(args.on)
     if not args.name and not focus and session_tracker(sid):
         m = match_cwd(cwd, sid)
-        why = newer_format(m.tracker.root)
-        # A session told of a newer tracker got that line in place of its brief (hooks.tell_newer), so it has no
-        # protocol: the first brief once this code may write the tracker brings it.
+        why = other_format(m.tracker.root)
+        # A session told its tracker takes no write got that line in place of its brief (hooks.tell_refusal), so it
+        # has no protocol: the first brief once this code may write the tracker brings it.
         told = bool(load_session(sid).get("told_refusal")) and not why
         print(brief(m, cwd, with_protocol=told))
         if told:
             save_session(sid, told_refusal=None)
-        if why:  # the brief asks for writes that refuse_newer refuses
+        if why:  # the brief asks for writes that refuse_other_format refuses
             print(f"{why}.")
         tell_updates(m.tracker)
         return
@@ -1037,27 +1220,37 @@ def cmd_start(args):
     if not sid:
         die("no agent session id: set TRACKER_SESSION, or pass --tracker "
             f"{tr.slug} to each command, or set TRACKER={tr.slug}")
-    refuse_newer(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
-    drop_session(sid)  # a new start: nothing seen yet
-    save_session(sid, tracker=tr.slug, focus=[r.id for r in picks] or None)
-    m, found = match_pr(match_cwd(cwd, sid), cwd)
+    refuse_other_format(tr.root)  # before the session moves: a start writes tr's mark and commits (record_commits)
+    ids = [r.id for r in picks] or None
+    with locked():  # one step: a hook between the link and the subscription would seed its own folder into it
+        relink_session(sid, tracker=tr.slug, focus=ids)
+        linked = match_cwd(cwd, sid)
+        start_subscription(sid, linked, ids)  # on its own tracker it adds, and keeps what it was told
+    m, found = match_pr(linked, cwd)  # outside the lock: it may ask GitHub
+    if m is not linked:  # it tied the branch to a ticket, which the session starts on too
+        start_subscription(sid, m, ids)
+    keep_folder(sid, m.tracker, cwd)
     record_commits(m, cwd)
-    remember(sid, m, cwd)
+    keep_told_next(sid, m, cwd)
     print(brief(m, cwd, note=found))
     tell_updates(m.tracker)
 
 
 def cmd_watch(args):
     """A watch, in a terminal or in an agent session, which it gives the grant (the hooks and the UIs know a watching
-    session by it); `--stop` ends the session's watches. The model runs it only when told to: its help and the watch
-    skill say so."""
+    session by it); `--stop` ends the session's watches. The model runs it only when told to, or, for its own tickets
+    (`--mine`), when the turn-end hook asks: its help and the watch skill say so."""
     inside, sid = agent_session()
+    if args.role and not inside:
+        die(f"--as {args.role}: a session takes the role, not a terminal")
+    if args.mine and not inside:
+        die("--mine watches an agent session's own tickets: a terminal has none")
     if inside and not grant_path(sid):
         die("this session has no id the tracker knows (its hooks did not run): it cannot watch", REFUSED)
     if args.stop:
         if not inside:
             die("a terminal's watch ends with Ctrl-C")
-        set_grant(sid, False)
+        stop_watch(sid)
         print("The watch has ended: a `tracker watch` of this session still running stops within seconds.")
         return
     only = frozenset(k.strip() for k in (args.only or "").split(",") if k.strip())
@@ -1065,11 +1258,17 @@ def cmd_watch(args):
         die(f"--only takes {', '.join([*EVENT_KINDS, URGENT])}")
     if args.hold < 0:
         die("--hold takes seconds: 0 or more")
+    if args.mine and (args.role or only or args.hold):
+        die("--mine takes no --as, --only or --hold: it prints each change to this session's tickets at once")
+    own = context_tracker(sid) if args.mine else None
+    if args.mine and not own:  # before a tracker is named: a list of them would offer one it then refuses
+        die("--mine watches this session's tickets, and it is on no tracker: `tracker start <name>` puts it on one")
     tr = named_tracker(args, "watch")
-    if inside:
-        set_grant(sid, True)
+    if args.mine and own.slug != tr.slug:
+        die(f"--mine watches this session's tickets on its own tracker: {own.slug}, which `tracker watch --mine` with "
+            "no name watches")
     Watcher(tr, sid if inside else "", f"session {session_name(sid)}" if inside else "terminal", only,
-            args.hold).run(args.once)
+            args.hold, args.role or "", args.mine).run(args.once)
 
 
 def cmd_agents(args):
@@ -1129,7 +1328,7 @@ def cmd_use(args):
     if args.clear:
         chose = [(t, state) for t in all_trackers() if (state := t.state()).get("use", {}).pop(key, None) is not None]
         for t, _ in chose:  # a refusal changes nothing: each tracker is checked before any is written
-            refuse_newer(t.root)
+            refuse_other_format(t.root)
         for t, state in chose:
             t.save_state(state)
             print(f"{branch}: cleared the choice in {t.slug}")
@@ -1141,6 +1340,7 @@ def cmd_use(args):
     recs = [first, *(tr.find(i) for i in ids[1:])]
     if any(r.kind != "ticket" for r in recs):
         die("`use` takes ticket ids")
+    subscribe(tr, [r.id for r in recs])
     if branch not in default_branches(cwd):
         # Recorded on each ticket (set_branch); the branch keeps its other tickets.
         for t in recs:

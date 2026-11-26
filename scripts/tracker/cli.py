@@ -11,11 +11,12 @@ import sys
 from pathlib import Path
 
 from .system import die
-from .store import first_writes, locked, Busy
-from .schema import BLOCKER, DEFAULT_LABELS, EVIDENCE_DIR, SCALES, STAGES, STATUSES
+from .store import first_writes, locked, Busy, OtherFormat
+from .schema import (BLOCKER, COORDINATOR, DEADLINE_S, DEFAULT_LABELS, EVENTS, EVIDENCE_DIR, QUIET_KINDS, SCALES,
+    STAGES, STATUSES, SUBMIT_WHAT, VERDICTS)
 from .model import unblocked, Tracker
-from .session import match_cwd, own_change, session_id, watch, work_dir
-from .contract import upgrade_trackers, NewerFormat
+from .session import agent_sid, context_tracker, own_change, own_watch
+from .contract import upgrade_trackers
 from .views import CHAIN_CARRY_FORWARD_MAX, CONTEXT_LOG, HISTORY_LAST, issue_update_request
 from .github import NAME as FORGE
 from .watcher import EVENT_KINDS, REFUSED, URGENT
@@ -23,8 +24,9 @@ from .ui import GPUI_SHELL_VERSION
 from .commands import (cmd_act, cmd_actions, cmd_add, cmd_agents, cmd_archive, cmd_attach, cmd_attached,
     cmd_await_change, cmd_check, cmd_context, cmd_data, cmd_decide, cmd_decisions, cmd_delete, cmd_drop, cmd_evidence,
     cmd_find, cmd_here, cmd_history, cmd_index, cmd_init, cmd_install_mod, cmd_install_window, cmd_issue, cmd_list,
-    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_rules, cmd_seq, cmd_set, cmd_show, cmd_start,
-    cmd_step, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates, tracker_matches)
+    cmd_log, cmd_new, cmd_open, cmd_put, cmd_ready, cmd_refresh, cmd_review, cmd_rules, cmd_seq, cmd_set, cmd_show,
+    cmd_start, cmd_step, cmd_submit, cmd_sync, cmd_unarchive, cmd_use, cmd_wait, cmd_watch, problem_lines, tell_updates,
+    tracker_matches)
 
 # ---------------------------------------------------------------- main
 
@@ -90,7 +92,7 @@ def build_parser():
     sp.add_argument("id", nargs="?", help="ticket or decision id, or `tracker` for the work itself; left out: this "
                                           "session's one ticket")
     sp.add_argument("pairs", nargs="+", metavar="key=value")
-    sp = add("log", cmd_log, "append a dated line to log.md: log \"<what changed and why>\" --ref T-8 D-2")
+    sp = add("log", cmd_log, "add a dated note to the log: log \"<what changed and why>\" --ref T-8 D-2")
     sp.add_argument("message", nargs="?")
     sp.add_argument("--ref", **IDS, help="ids it concerns")
     sp = add("add", cmd_add, "add a line to a section of a ticket, decision or the README (`tracker`): "
@@ -130,6 +132,8 @@ def build_parser():
     sp.add_argument("--since", metavar="YYYY-MM-DD", help="only the lines dated this day or later")
     sp.add_argument("--last", type=int, default=HISTORY_LAST, metavar="N",
                     help=f"the last N lines (default {HISTORY_LAST}; 0 for all)")
+    sp.add_argument("--kind", metavar="KINDS", help="only the events of these kinds, comma-separated: "
+                    f"{', '.join(EVENTS)}. A wait on a human ({', '.join(QUIET_KINDS)}) shows only when named")
     sp = add("attach", cmd_attach, f"keep a file in the tracker's {EVIDENCE_DIR}/ folder and link it from the "
                                    "tickets and decisions it supports")
     sp.add_argument("file", nargs="?")
@@ -161,7 +165,12 @@ def build_parser():
     sp.add_argument("--recommend", metavar="CHOICE", help="the choice you recommend; added when it is new")
     sp.add_argument("--note", help="a fact, proposal or finding; a dated line in ## Notes")
     sp.add_argument("--resolve", help="the answer; closes the decision")
-    sp.add_argument("--by", help="who decided")
+    sp.add_argument("--by", metavar="NAME", help="with --resolve: the human who decided")
+    sp.add_argument("--source", metavar="WHERE", help="with --resolve: where the answer already is, when no human "
+                                                      "decided it (the spec, a settled decision's id, a file)")
+    sp.add_argument("--cite", metavar="QUOTE", help="with --resolve and --by: a few words from the start of the "
+                                                   "human's message or answer that decided it, kept by this session; "
+                                                   "the resolution cites that message")
     sp.add_argument("--refs", **IDS, help="ticket ids it touches but does not block")
     sp.add_argument("--unref", **IDS, help="ticket ids to drop from refs")
     sp.add_argument("--blocks", **IDS, help="ticket ids that cannot proceed until it is settled (adds it to their "
@@ -196,10 +205,14 @@ def build_parser():
     add("ready", cmd_ready, "the todo tickets that can start now, the most urgent first: nothing blocks them (from "
                             "the default branch), or they wait only on tickets under way and stack on the branch "
                             "named; with their priority and size and what each unblocks")
-    add("check", cmd_check, "validate the tracker; exit 1 on errors")
+    add("check", cmd_check, "validate the tracker, then list what is stuck (a submission or a question left too long "
+                            "or on a ticket under way that no session is on, a wait on a human past "
+                            f"{DEADLINE_S['wait']} s); exit 1 on errors")
     sp = add("sync", cmd_sync, f"pull each ticket's PRs (number, state, merge time) from {FORGE}, and the open PRs' "
                                "base, reviews, checks and merge state, from which each ticket's move is computed")
     sp.add_argument("--live", action="store_true", help="only if no sync ran lately: what a UI runs on a timer")
+    sp.add_argument("--quiet", action="store_true", help="print nothing: what a session's hooks run in the "
+                                                          "background, whose changes the session hears as news")
     sp = add("issue", cmd_issue, "record a ticket's issue fields as read from its issue tracker (priority, size, "
                                  "due day, when the issue was created), or with --written that its issue now shows "
                                  "the tracker's changes; with no id, list the tickets whose fields are to read and, "
@@ -225,6 +238,24 @@ def build_parser():
     sp.add_argument("--done", metavar="SUMMARY", help="close the ticket: what it delivered")
     sp.add_argument("--pause", metavar="HANDOFF", help="stopping mid-work: what is done, what is half-done and "
                                                        "uncommitted, and the next step")
+    sp = add("submit", cmd_submit, "hand a ticket's plan, or its built code, to its reviewer (the coordinator, else "
+                                   "a human), whose review it waits on until `tracker review` answers it")
+    sp.add_argument("id", help="the ticket")
+    sp.add_argument("--what", required=True, choices=SUBMIT_WHAT, help="plan: its plan is ready for review; code: "
+                                                                      "its built code is ready for the plan "
+                                                                      "conformance check")
+    sp.add_argument("--note", help="what the reviewer should know, such as where the plan is")
+    sp = add("review", cmd_review, "record a review of a ticket's plan or built code, with its numbered findings: "
+                                   "review T-8 --what plan --verdict changes --finding \"...\" --finding \"...\"; or "
+                                   "mark findings of the latest review fixed: review T-8 --what plan --fixed 2,3")
+    sp.add_argument("id", help="the ticket")
+    sp.add_argument("--what", required=True, choices=SUBMIT_WHAT, help="what was reviewed: its plan, or its built "
+                                                                      "code (the plan conformance check)")
+    sp.add_argument("--verdict", choices=VERDICTS, help="pass, or changes: the changes it asks for, each a --finding")
+    sp.add_argument("--finding", action="append", metavar="TEXT", help="one change the review asks for; repeat it "
+                                                                     "for each, numbered in that order")
+    sp.add_argument("--fixed", metavar="N,N", help="the numbers of the latest review's findings now fixed, "
+                                                   "comma-separated")
     sp = add("start", cmd_start, "tie a tracker to this agent session, by its slug or words of its title "
                                  "(`start payments rework`); prints the brief. Lists options when unsure (exit 3). "
                                  "Never changes git")
@@ -243,10 +274,10 @@ def build_parser():
     sp.add_argument("ids", nargs="*", help="ticket ids")
     sp.add_argument("--clear", action="store_true", help="forget this worktree and branch's choice")
     sp = add("watch", cmd_watch, "print each change to a tracker, one line per ticket or agent (`!` marks what needs "
-                                 "the user), until stopped: a move, a step, a decision, a PR event, an agent that ends "
-                                 "its turn or waits on the user, a `check` error. One watch per session and tracker. "
-                                 "In an agent session, run it only when the user, or a skill or instruction from "
-                                 "them, tells you to watch: never on your own")
+                                 "a human), until stopped: a move, a step, a decision, a PR event, an agent that ends "
+                                 "its turn or waits on the user, a `check` error, a stuck item. One watch per session "
+                                 "and tracker. In an agent session, run it only when the user, or a skill or "
+                                 "instruction from them, tells you to watch, or when the turn-end hook asks")
     sp.add_argument("name", nargs="*", help="the tracker's slug, or words of its slug or title")
     sp.add_argument("--once", action="store_true", help="print the first batch (at the first run: the state now), "
                                                         "then exit")
@@ -258,6 +289,12 @@ def build_parser():
     sp.add_argument("--hold", type=int, default=0, metavar="SECONDS",
                     help="hold events not marked `!` until the oldest is this old, then print them as one batch; one "
                          "marked `!` prints at once, with those held")
+    sp.add_argument("--as", dest="role", choices=[COORDINATOR], help="in an agent session: take the tracker's "
+                    "coordinator role while this watch runs; an open decision with no owner is then yours to triage "
+                    "before a human's")
+    sp.add_argument("--mine", action="store_true", help="in an agent session: only what others changed on this "
+                    "session's own tickets (a move that becomes yours, a review, a note, a PR's state); ends by itself "
+                    "when none is open")
     sp = add("agents", cmd_agents, "the live agent sessions on a tracker, one line each: name, status and for how "
                                    "long, tickets, branch, folder, Claude Code session name, Herdr terminal and "
                                    "transcript file")
@@ -296,7 +333,7 @@ def build_parser():
 
 
 WRITE_COMMANDS = {"init", "set", "log", "new", "decide", "act", "wait", "step", "use",
-                  "add", "put", "drop", "attach", "issue"}  # `sync` locks itself
+                  "add", "put", "drop", "attach", "issue", "submit", "review"}  # `sync` locks itself
 
 
 def with_check(run, args) -> None:
@@ -334,14 +371,14 @@ def issue_update_items(tr: Tracker) -> set[tuple[str, str]]:
 
 
 def own_changes(run) -> None:
-    """Run a write command, and count what it changed about the session's tickets as seen: the prompt hook reports
-    only what others changed."""
-    sid = session_id()
-    m = match_cwd(work_dir(), sid) if sid else None
-    before = watch(m.tracker, m.focus) if m and m.focus else None
+    """Run a write command, and count what it changed about the session's subscription as seen, so that its news says
+    only what others did. Only a command its agent ran: one entered in the view or at a terminal is someone else's."""
+    sid = agent_sid()
+    tr = context_tracker(sid) if sid else None
+    before = own_watch(sid, tr) if tr else None
     run()
-    if before is not None:
-        own_change(sid, m, before)
+    if before:
+        own_change(sid, tr, before)
 
 
 # The positional that an id list can swallow: `log --ref A B "msg"` gives the list "msg" too, as argparse's usage line
@@ -353,7 +390,7 @@ IDS_DESTS = ("ref", "refs", "unref", "blocks", "depends")
 # The text arguments that take `-`: the text then comes from stdin, so a heredoc (<<'EOF') passes quotes, backticks
 # and lines as they are. `set` takes `key=-`.
 TEXT_DESTS = ("message", "text", "next", "plan", "done", "pause", "carry", "question", "note", "resolve", "replace",
-              "append", "why", "pairs")
+              "append", "why", "pairs", "finding")
 
 
 def no_id(args) -> None:
@@ -434,5 +471,5 @@ def main(argv=None):
             args.fn(args)
     except Busy as exc:
         die(str(exc))
-    except NewerFormat as exc:
+    except OtherFormat as exc:
         die(str(exc), REFUSED)

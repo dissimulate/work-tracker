@@ -8,11 +8,12 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .system import PACKAGE, PYTHON, WINDOWS, cli_for_ui, die, mod_files
+from .system import PACKAGE, PYTHON, UI_START, WINDOWS, cli_for_ui, die, mod_files
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
@@ -33,11 +34,31 @@ def first_writes(callback):
         _first_writes = ()
 
 
+class OtherFormat(Exception):
+    """A write into the tracker at `root` refused, as it is in another format (`contract.refuse_other_format`, which
+    guard_writes runs); the message is `contract.other_format`'s sentence."""
+
+    def __init__(self, why: str, root: Path):
+        super().__init__(why)
+        self.root = root
+
+
 def guard_writes(check) -> None:
     """From now on, run `check` with a tracker's folder before each write in it, a new folder or an appended line too:
     it raises to refuse that write."""
     global _guard
     _guard = check
+
+
+@contextmanager
+def unguarded():
+    """While this lasts, guard_writes' check sees no write."""
+    global _guard
+    check, _guard = _guard, None
+    try:
+        yield
+    finally:
+        _guard = check
 
 
 def tracker_root(path: Path) -> Path | None:
@@ -152,10 +173,11 @@ def files_hash(files: list[Path]) -> str:
 
 def record_cli() -> bool:
     """Say how to start this CLI, for a UI outside any session, where PATH holds no plugin: the plugin's path changes
-    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, or the
-    Herdr mod's files do (an edit in a checkout, whose path stays), as a UI watches this folder. Returns whether it
-    wrote, so that what a new version needs (`hooks.record_version`) can follow this."""
-    start = {"package": str(PACKAGE), "python": PYTHON, "mod": files_hash(mod_files())}
+    with each version, and scripts/python.sh says how Python starts. Writes only when one of them changes, the way a
+    UI starts it does (UI_START), or the Herdr mod's files do (an edit in a checkout, whose path stays), as a UI
+    watches this folder; not when only the environment it carries does. Returns whether it wrote, so that what a new
+    version needs (`hooks.record_version`) can follow this."""
+    start = {"package": str(PACKAGE), "python": PYTHON, "start": UI_START, "mod": files_hash(mod_files())}
     if {k: v for k, v in read_json(CLI_FILE).items() if k in start} == start:
         return False
     write_json(CLI_FILE, {**start, "argv": cli_for_ui()})
@@ -223,6 +245,7 @@ else:
         fcntl.flock(f, fcntl.LOCK_UN)
 
 _depth = 0  # how deep this process holds the lock: a second flock on another open file would block against the first
+_threads = threading.RLock()  # the threads of one process take turns (a watch's sync), as `_depth` is the process's
 
 
 @contextmanager
@@ -230,23 +253,24 @@ def locked():
     """One writer at a time, across every session and worktree: held around each read-modify-write of tracker
     files. Reentrant."""
     global _depth
-    if _depth:
-        _depth += 1
-        try:
-            yield
-        finally:
-            _depth -= 1
-        return
-    HOME.mkdir(parents=True, exist_ok=True)
-    with open(HOME / ".lock", "a") as f:
-        deadline = time.monotonic() + LOCK_TIMEOUT_S
-        while not try_lock(f):
-            if time.monotonic() > deadline:
-                raise Busy(f"another tracker command has held the lock for {LOCK_TIMEOUT_S}s; try again")
-            time.sleep(0.05)
-        _depth = 1
-        try:
-            yield
-        finally:
-            _depth = 0
-            unlock(f)
+    with _threads:
+        if _depth:
+            _depth += 1
+            try:
+                yield
+            finally:
+                _depth -= 1
+            return
+        HOME.mkdir(parents=True, exist_ok=True)
+        with open(HOME / ".lock", "a") as f:
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            while not try_lock(f):
+                if time.monotonic() > deadline:
+                    raise Busy(f"another tracker command has held the lock for {LOCK_TIMEOUT_S}s; try again")
+                time.sleep(0.05)
+            _depth = 1
+            try:
+                yield
+            finally:
+                _depth = 0
+                unlock(f)

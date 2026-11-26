@@ -7,11 +7,12 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
-from .schema import FACTS, LIVE_SYNC_S, README_SECTIONS, SCALES, STAGES, day_text, parse_options, show_value
-from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, sequence,
-    sort_key, span, Dep, Record, Tracker)
-from .moves import is_pr_link, linked_prs, whose_move, Move
-from .session import ago, live_by_tracker, live_sessions, match_cwd, Live
+from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
+    resolution_who, show_value)
+from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
+    log_line, pr_key, read_events, sequence, sort_key, span, Dep, Record, Tracker)
+from .moves import HANDOFF_KINDS, PR_NUMBER, is_pr_link, linked_prs, owner_kind, pr_move, question_key, Move
+from .session import ago, around, items_of, live_by_tracker, live_sessions, load_session, move_of, subscribed, Live
 from .contract import check
 from .views import dep_facts, duration, span_lines
 from .github import pr_url
@@ -94,7 +95,7 @@ def due_text(d: dt.date) -> str:
 
 
 def move_view(move: Move | None) -> dict | None:
-    return {"text": move.text(), "mine": move.mine, "quiet": move.quiet} if move else None
+    return {"text": move.text(), "mine": move.mine, "human": move.human, "quiet": move.quiet} if move else None
 
 
 def dep_view(d: Dep) -> dict:
@@ -116,6 +117,49 @@ def pr_views(tr: Tracker, t: Record) -> list[dict]:
     return list(prs.values())
 
 
+def prs_view(tr: Tracker, events: list[dict]) -> list[dict]:
+    """Every PR a ticket names (the ones `sync` follows, and its `PR:` links), once each by pr_key, open ones first,
+    then by repo and number: its tickets; its state as `sync` read it ("" for a link never read); its title (GitHub's
+    as `sync` last kept it for an open PR, else as its last state event logged it, else its link's text); its move,
+    as a ticket's is worked out (`pr_move`), for an open PR that `sync` has read and a ticket under way names; and
+    its history from the log (`events`, in log order): its own events, and its tickets' plan and code reviews."""
+    rows: dict[str, dict] = {}
+
+    def row(repo: str, number: str, t: Record) -> dict:
+        x = rows.setdefault(pr_key(repo, number), {"repo": repo, "number": number, "state": "", "link": "",
+                                                   "tickets": []})
+        if t.id not in x["tickets"]:
+            x["tickets"].append(t.id)
+        return x
+
+    for t in tr.tickets:
+        for n, state in t.prs.items():
+            if not PR_NUMBER.fullmatch(n):  # a hand edit gone wrong, which `sync` follows no more than this
+                continue
+            x = row(tr.repo_of(t), str(int(n)), t)
+            x["state"] = x["state"] or state
+        for link in linked_prs(t):
+            x = row(link.repo, link.number, t)
+            x["link"] = x["link"] or link_title(link, note=False)
+    coordinated, items = around(tr)[0], items_of(tr)
+    out = []
+    for key, x in rows.items():
+        tickets = sorted(x["tickets"], key=sort_key)
+        ids = set(tickets)
+        own = [e for e in events if e.get("pr") == key or (e["kind"] in HANDOFF_KINDS and ids & set(e["refs"]))]
+        facts = tr.prs.get(key) if x["state"] in OPEN_PR else None
+        under_way = next((t for t in map(tr.lookup, tickets) if t.in_flight), None)
+        move = pr_move(tr, under_way, facts, coordinated, items) if facts is not None and under_way else None
+        logged = next((e.get("title") for e in reversed(own) if e["kind"] == "pr.state" and e.get("title")), "")
+        out.append({
+            "key": key, "repo": x["repo"], "number": x["number"], "url": pr_url(x["repo"], x["number"]),
+            "title": (facts or {}).get("title") or logged or x["link"], "state": x["state"],
+            "move": move_view(move), "tickets": tickets,
+            "history": [{"at": e.get("at", ""), "kind": e["kind"], "text": e["text"]} for e in own],
+        })
+    return sorted(out, key=lambda x: (x["state"] not in OPEN_PR, x["repo"].lower(), int(x["number"])))
+
+
 def link_views(items: list[Link]) -> list[dict]:
     return [{"label": x.label, "text": x.text, "sub": list(x.sub)} for x in items]
 
@@ -128,7 +172,9 @@ def time_view(t: Record) -> list[dict]:
 def record_view(tr: Tracker, r: Record) -> dict:
     """What a record shows when it opens: its lead line (its next or summary), what it waits on and what waits on it
     (dep_facts, as the text views give them), its facts and links, then its body in Markdown. An open decision gives
-    its choices apart (`answer`), for the UI to offer each as the answer, and who answers (its owner)."""
+    its move, and its choices apart (`answer`), for the UI to offer each as the answer, with the name its answer is
+    given by: its owner when that names a person, else `user` (a coordinator or a ticket's session is not who
+    clicked)."""
     g = tr.gate(r)
     deps = [{"label": label, "text": v} if isinstance(v, str) else {"label": label, "items": [dep_view(d) for d in v]}
             for label, v in dep_facts(tr, r)]
@@ -136,9 +182,17 @@ def record_view(tr: Tracker, r: Record) -> dict:
         deps.append({"label": "decisions", "items": [
             {"id": d.id, "done": d.closed, "tone": "done" if d.closed else "blocked", "ref": True, "title": ""}
             for d in tr.decisions_for(r)]})
-    move = whose_move(tr, r) if r.kind == "ticket" else None
-    word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     asks = r.kind == "decision" and not r.closed
+    if r.kind == "ticket":
+        move = move_of(tr, r)
+    elif asks:  # as an open item: a stuck question is a human's
+        move = next(i.move for i in items_of(tr) if i.key == question_key(r.id))
+    else:
+        move = None
+    # The view's answer goes as `--by`: a person the owner names, else `user`, never what would be refused
+    kind, name = owner_kind(tr, r) if asks else ("", "")
+    by = (kind == "human" and resolution_who(name)) or "user"
+    word, line = ("summary", r.get("summary")) if r.closed else ("next", r.get("next"))
     options = parse_options(strip_comments(section(r.body, "Options")))[0] if asks else []
     body = without_section(r.body, "Links")
     return {
@@ -154,7 +208,7 @@ def record_view(tr: Tracker, r: Record) -> dict:
                   for k in FACTS if r.get(k)],
         "links": link_views([x for x in r.links if not is_pr_link(x)]),  # a PR's link shows in its row of `prs`
         "answer": {"options": [{"text": o.text, "cost": o.cost, "recommended": o.recommended} for o in options],
-                   "by": str(r.get("owner") or "user")} if asks else None,
+                   "by": by} if asks else None,
         "body": strip_comments(without_section(body, "Options") if options else body).strip(),
     }
 
@@ -192,16 +246,17 @@ def decision_view(tr: Tracker, d: Record) -> dict:
 
 def now_view(tr: Tracker) -> dict:
     """Work under way (your move first, then the others' by who, then the tickets whose PR GitHub has not been read
-    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, and the
-    watch."""
+    for; in progress before in review within each), each branch's handoff, the agent sessions on no ticket, the
+    watch, and `open`: every open item (`items_of`: a submission, findings, a question, a wait on a human), stuck
+    first, with its move and its age."""
     state = tr.state()
     marks, handoffs = state.get("synced", {}), state.get("handoff", {})
-    moves = {t.id: whose_move(tr, t) for t in tr.tickets if t.in_flight}
+    moves = {t.id: move_of(tr, t) for t in tr.tickets if t.in_flight}
 
-    # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket they have under way; a
-    # session with none gets its own entry.
-    live = [(x, match_cwd(x.cwd, x.sid, tr)) for x in live_sessions(tr.slug)]
-    agents = {i: [x for x, m in live if i in (r.id for r in m.active)] for i in moves}
+    # The tracker's live sessions on this machine (`live_sessions`): a mark by each ticket under way they subscribe
+    # to (`subscribed`); a session with none gets its own entry, with its open subscribed tickets.
+    live = [(x, subscribed(load_session(x.sid), tr)) for x in live_sessions(tr.slug)]
+    agents = {i: [x for x, mine in live if i in (r.id for r in mine)] for i in moves}
 
     def agent_views(sessions: list[Live]) -> list[dict]:
         return [{"status": x.status, "word": agent_word(x), "cwd": x.cwd} for x in sessions]
@@ -223,9 +278,9 @@ def now_view(tr: Tracker) -> dict:
     for key, h in handoffs.items():
         items.append({"key": f"handoff-{key}", "kind": "handoff", "title": "Handoff", "line": h.get("text", ""),
                       "agents": []})
-    for x, m in live:
-        if not m.active:
-            on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in m.focus]
+    for x, mine in live:
+        if not any(t.in_flight for t in mine):
+            on = [{"id": t.id, "stage": t.stage, "state": ticket_state(tr, t)} for t in mine]
             items.append({"key": f"agent-{x.sid}", "kind": "agent", "on": on, "agents": agent_views([x])})
     idle = None
     if not any(t.in_flight for t in tr.tickets) and tr.meta.get("status") == "active":
@@ -233,10 +288,13 @@ def now_view(tr: Tracker) -> dict:
     watches = watches_of(tr)  # `tracker watch`: who watches the tracker, or when the last watch ended
     running = [w for w in watches if w["running"]]
     last = max(watches, key=lambda w: w["ended"], default=None)
-    watch = {"running": True, "text": "Watched by " + ", ".join(f"{w['who']} since {clock(w['since'])}"
-                                                                 for w in running)} if running else \
+    watch = {"running": True, "text": "Watched by " + ", ".join(  # a damaged start names no time
+        f"{w['who']} since {clock(w['since'])}" if w["since"] else w["who"] for w in running)} if running else \
         {"running": False, "text": f"Watch by {last['who']} ended {clock(last['ended'])}"} if last else None
-    return {"items": items, "idle": idle, "watch": watch}
+    now = time.time()
+    opened = [{"kind": i.kind, "refs": i.refs, "what": i.what, "move": move_view(i.move), "stuck": i.stuck,
+               "age_s": int(now - i.at)} for i in items_of(tr, now)]
+    return {"items": items, "idle": idle, "watch": watch, "open": opened}
 
 
 def issue_state(tr: Tracker) -> str:
@@ -255,15 +313,14 @@ def issue_state(tr: Tracker) -> str:
 
 
 def reference_view(tr: Tracker) -> dict:
-    """What is settled or past: closed decisions and actions, the rest of the README, the log."""
+    """What is settled or past: closed decisions and actions, the rest of the README, the log (no QUIET_KINDS)."""
     closed = sorted((a for a in tr.actions if a.closed),
                     key=lambda a: (str(a.get("closed_at")), sort_key(a.id)), reverse=True)
     extra = tr.readme_body
     for h in README_SECTIONS:
         extra = without_section(extra, h)
     extra = strip_comments(extra).strip()
-    log_path = tr.root / "log.md"
-    log = [ln[2:] for ln in log_path.read_text().splitlines() if ln.startswith("- ")] if log_path.exists() else []
+    log = [log_line(e)[2:] for e in read_events(tr) if e["kind"] not in QUIET_KINDS]
     return {"decisions": [decision_view(tr, d) for d in tr.decisions if d.closed],
             "actions": [action_view(tr, a) for a in closed],
             "more": {"body": extra} if headings(extra) else None,
@@ -289,6 +346,7 @@ def view_model(tr: Tracker) -> dict:
         "tickets": [ticket_view(tr, t, i, seq.step[t.id], links[t.id])
                     for i, t in enumerate(graph_order(tr, seq.waits, seq.step))],
         "decisions": [decision_view(tr, d) for d in tr.open_decisions()],
+        "prs": prs_view(tr, read_events(tr)),
         "reference": reference_view(tr),
         "records": {r.id: record_view(tr, r) for r in (*tr.tickets, *tr.decisions, *tr.actions)},
     }
