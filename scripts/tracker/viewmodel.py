@@ -7,6 +7,7 @@ import datetime as dt
 import time
 
 from .markdown import headings, section, section_block, strip_comments, without_section, Link
+from .store import VIEW_FILE, read_json
 from .schema import (FACTS, LIVE_SYNC_S, OPEN_PR, QUIET_KINDS, README_SECTIONS, SCALES, STAGES, day_text, parse_options,
     resolution_who, show_value)
 from .model import (SPANS, all_trackers, archived_trackers, branch_entry, due_date, level, level_name, link_title,
@@ -19,7 +20,19 @@ from .github import pr_url
 from .watcher import watches_of
 from .lifecycle import in_use
 
-VIEW_SCHEMA = 7  # a UI that reads another number says which side is older
+VIEW_SCHEMA = 8  # a UI that reads another number says which side is older
+# The blocks of a tracker's page that a user can order and hide (`tracker blocks`), and the page with no choice made.
+# A new block joins BLOCKS only, so that it changes no one's page until they ask for it.
+BLOCKS = ("brief", "actions", "decisions", "prs", "current", "sequence", "check", "reference")
+DEFAULT_BLOCKS = ("brief", "actions", "current", "sequence", "check", "decisions", "reference")
+
+
+def view_blocks() -> list[str]:
+    """The blocks the user chose for the view, in their order: kept in a file and not a variable, as a UI starts the
+    CLI outside any shell. What a hand edit leaves unknown is left out; with no block left, the page is the default."""
+    chosen = read_json(VIEW_FILE).get("blocks")
+    known = [x for x in chosen if x in BLOCKS] if isinstance(chosen, list) else []
+    return list(dict.fromkeys(known)) or list(DEFAULT_BLOCKS)
 
 
 def ticket_state(tr: Tracker, t: Record) -> str:
@@ -347,6 +360,7 @@ def view_model(tr: Tracker) -> dict:
                     for i, t in enumerate(graph_order(tr, seq.waits, seq.step))],
         "decisions": [decision_view(tr, d) for d in tr.open_decisions()],
         "prs": prs_view(tr, read_events(tr)),
+        "blocks": view_blocks(),
         "reference": reference_view(tr),
         "records": {r.id: record_view(tr, r) for r in (*tr.tickets, *tr.decisions, *tr.actions)},
     }

@@ -17,6 +17,7 @@ from .system import PACKAGE, PYTHON, UI_START, WINDOWS, cli_for_ui, die, mod_fil
 
 HOME = Path(os.environ.get("TRACKER_HOME", Path.home() / ".claude" / "trackers")).expanduser()
 CLI_FILE = HOME / ".cli.json"  # how to start the CLI (record_cli), for a UI outside any session
+VIEW_FILE = HOME / ".view.json"  # the user's choices for the view of every tracker (viewmodel.view_blocks)
 
 _writes = 0  # tracker files this process wrote: a Tracker rebuilds its index after any write (Tracker.index)
 _first_writes: tuple = ()  # while first_writes lasts: its callback, and the tracker folders written so far

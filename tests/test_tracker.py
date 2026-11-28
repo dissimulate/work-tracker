@@ -4991,6 +4991,30 @@ class Ui(unittest.TestCase):
             self.assertNotRegex(listed, rf"(?m)^\s+{name}\s")
         self.assertRegex(listed, r"(?m)^\s+open\s")
 
+    def test_blocks_sets_which_blocks_the_view_shows_and_their_order(self):
+        s, _ = new_tracker("Blocks")
+        self.addCleanup(lambda: store.VIEW_FILE.unlink(missing_ok=True))
+        default = list(viewmodel.DEFAULT_BLOCKS)
+        self.assertEqual(data(s)["blocks"], default)
+        self.assertNotIn("prs", default)  # a new block changes no one's view until they ask for it
+        run("blocks", "actions", "decisions", "prs", "sequence")
+        chosen = ["actions", "decisions", "prs", "sequence"]
+        self.assertEqual(data(s)["blocks"], chosen)
+        self.assertIn("actions decisions prs sequence", run("blocks"))
+        self.assertIn("pulls", run("blocks", "actions", "pulls", code=2))  # an unknown name changes nothing
+        self.assertIn("twice", run("blocks", "actions", "actions", code=2))
+        self.assertEqual(data(s)["blocks"], chosen)
+        run("blocks", "--reset")
+        self.assertEqual(data(s)["blocks"], default)
+        store.write_json(store.VIEW_FILE, {"blocks": ["prs", "gone", 3]})  # a hand edit: what is known stays
+        self.assertEqual(data(s)["blocks"], ["prs"])
+        store.write_json(store.VIEW_FILE, {"blocks": []})
+        self.assertEqual(data(s)["blocks"], default)
+
+    def test_the_ui_draws_every_block_the_cli_names(self):
+        drawn = re.search(r"const blocks = \{(.*?)\n      \};", (ROOT / "ui/view.js").read_text(), re.S).group(1)
+        self.assertEqual(re.findall(r"(?m)^        (\w+): \(\) =>", drawn), list(viewmodel.BLOCKS))
+
     def test_every_status_has_a_meaning_in_the_ui(self):
         table = re.search(r"export const MEANINGS = \{(.*?)\n\};", (ROOT / "ui/model.js").read_text(), re.S).group(1)
         for kind, stages in schema.LIFECYCLES.items():

@@ -4,6 +4,11 @@ The changes a user of the plugin sees, per release. How to add one: CLAUDE.md.
 
 ## Unreleased
 
+### Added
+
+- `tracker blocks <names>` chooses the blocks of the view's page and their order, for every tracker: `tracker blocks actions decisions prs current sequence` puts the open decisions under your actions and hides the rest. `tracker blocks` prints the choice, and `--reset` puts the page back.
+- The view has an Open PRs block: each draft or open PR the tickets name, once, with its state, title, tickets and whose move it waits on. It shows once `tracker blocks` names `prs`.
+
 ## 0.33.0 - 2026-11-26
 
 ### Added
