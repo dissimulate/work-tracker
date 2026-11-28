@@ -26,7 +26,7 @@ import { agentStatus, bodyParts, changesOf, columnsThatFit, filterCounts, filter
   plainInline, rowStatus, rowWord, sessionOn, sortRows, syncDue } from "./model.js";
 import { button, card, cards, chip, chipButton, dropdown, field, modal, RADIUS, rule, SIZE, SPACE, TEXT, toggle, tone } from "./style.js";
 
-const SCHEMA = 7; // viewmodel.VIEW_SCHEMA
+const SCHEMA = 8; // viewmodel.VIEW_SCHEMA
 const TITLE_MIN = 120; // the least width a ticket's title keeps in the sequence before a column leaves
 const FOCUS_MS = 500; // how often the view looks at the focus: no program runs unless it moved
 // The longest the view waits for a change: a session that ends with no hook, and another machine's tracker, change
@@ -381,6 +381,17 @@ export function trackerView(host) {
       ], t);
     }
 
+    // An open PR: its number, which opens its page, its state, title and tickets, and whose move it waits on.
+    prRow(pr, t) {
+      return card(`pr-row-${pr.key}`, [
+        this.prLink(`prs-${pr.key}`, pr, t),
+        chip(pr.state, pr.state, t),
+        div().flex_1().min_w(0).truncate().font_medium().child(pr.title),
+        ...pr.tickets.map(id => this.idLink(`prs-${pr.key}`, id, t)),
+        ...(pr.move ? [div().flex_none().text_color(tone(moveStatus(pr.move), t)).child(pr.move.text)] : []),
+      ], t);
+    }
+
     // A PR by its number: with a page to open, a click opens it in the browser and not the row around it.
     prLink(place, pr, t) {
       const text = div().id(`pr-${place}-${pr.number}`).flex_none().child(`PR #${pr.number}`);
@@ -564,29 +575,36 @@ export function trackerView(host) {
         .when(view.archived, el => el.child(h_flex().mt(SPACE.sm).gap(SPACE.md).items_center().text_size(TEXT.small).text_color(t.muted)
           .child(div().flex_1().min_w(0).child("Archived: out of every list and hook, its PRs never synced."))
           .child(button("unarchive", "Unarchive", t, cx => this.change(cx, ["unarchive", view.slug], { list: true }), { off: this.busy }))));
-      return v_flex().id("page").w_full().flex_1().min_h(0).pb(SPACE.page).overflow_y_scrollbar()
-        .child(top)
-        .when(Boolean(brief), el => el.child(this.section("brief", brief, false,
+      const none = () => div().text_size(TEXT.small).text_color(t.dim).child("None.");
+      const openPrs = view.prs.filter(pr => pr.state === "draft" || pr.state === "open");
+      // Each block of the page by its name in `tracker blocks` (viewmodel.BLOCKS); one with nothing to show gives none.
+      const blocks = {
+        brief: () => brief && this.section("brief", brief, false,
           () => v_flex().pb(SPACE.xs).gap(SPACE.xs)
             .children(bodyParts(view.goal?.body).map((x, i) => this.labelled(x.label, this.md(`goal-${i}`, x.text), t)))
             // A run of links under one label names it once.
             .children(view.links.map((x, i) => this.labelled(x.label === view.links[i - 1]?.label ? "" : x.label,
-              this.linkText(`context-${i}`, x, t), t))), t)))
-        .when(view.actions.length > 0, el => el.child(this.section("actions", "Your actions", true,
-          () => cards(view.actions.map(a => this.actionRow(a, !view.archived, t))), t)))
-        .when(now.items.length > 0 || Boolean(now.idle) || Boolean(now.watch), el => el.child(this.section("now", "Current", true,
+              this.linkText(`context-${i}`, x, t), t))), t),
+        actions: () => view.actions.length > 0 && this.section("actions", "Your actions", true,
+          () => cards(view.actions.map(a => this.actionRow(a, !view.archived, t))), t),
+        decisions: () => this.section("decisions", "Open decisions", true,
+          () => (view.decisions.length ? cards(view.decisions.map(d => this.decisionRow(d, t))) : none()), t),
+        prs: () => this.section("prs", "Open PRs", true,
+          () => (openPrs.length ? cards(openPrs.map(pr => this.prRow(pr, t))) : none()), t),
+        current: () => (now.items.length > 0 || Boolean(now.idle) || Boolean(now.watch)) && this.section("now", "Current", true,
           () => cards(now.items.map(item => this.nowItem(item, t)))
             .when(Boolean(now.idle), box => box.child(h_flex().flex_wrap().gap(SPACE.sm).min_h(SIZE.line).items_center().text_size(TEXT.small).text_color(t.dim)
               .child(div().child(`Nothing in progress.${now.idle.ready.length ? " Ready:" : ""}`))
               .children(now.idle.ready.map(id => this.idLink("idle", id, t)))))
-            .when(Boolean(now.watch), box => box.child(div().text_size(TEXT.tiny).text_color(now.watch.running ? t.muted : t.dim).child(now.watch.text))), t)))
-        .child(this.section("seq", "Sequence", true, () => this.sequence(view, width - 2 * SPACE.page, t), t))
-        .when(problems.length > 0, el => el.child(this.section("check", "Check", false,
-          () => v_flex().gap(SPACE.hair).text_size(TEXT.small).children(problems.map(x => div().child(x))), t)))
-        .child(this.section("decisions", "Open decisions", true, () => (view.decisions.length
-          ? cards(view.decisions.map(d => this.decisionRow(d, t)))
-          : div().text_size(TEXT.small).text_color(t.dim).child("None.")), t))
-        .child(this.section("reference", "Reference", false, () => this.reference(view, t), t));
+            .when(Boolean(now.watch), box => box.child(div().text_size(TEXT.tiny).text_color(now.watch.running ? t.muted : t.dim).child(now.watch.text))), t),
+        sequence: () => this.section("seq", "Sequence", true, () => this.sequence(view, width - 2 * SPACE.page, t), t),
+        check: () => problems.length > 0 && this.section("check", "Check", false,
+          () => v_flex().gap(SPACE.hair).text_size(TEXT.small).children(problems.map(x => div().child(x))), t),
+        reference: () => this.section("reference", "Reference", false, () => this.reference(view, t), t),
+      };
+      return v_flex().id("page").w_full().flex_1().min_h(0).pb(SPACE.page).overflow_y_scrollbar()
+        .child(top)
+        .children(view.blocks.map(name => blocks[name]?.()).filter(Boolean));
     }
 
     labelled(label, value, t) {

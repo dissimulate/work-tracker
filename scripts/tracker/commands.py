@@ -14,7 +14,8 @@ from pathlib import Path
 from .system import ROOT, die, entered_via, open_with_system
 from .markdown import (BULLET, format_value, headings, parse_links, render_frontmatter, section, section_block,
     split_frontmatter, strip_comments)
-from .store import HOME, atomic_file, atomic_write, create, locked, make_folder, record_cli
+from .store import (HOME, VIEW_FILE, atomic_file, atomic_write, create, locked, make_folder, read_json, record_cli,
+    write_json)
 from .schema import (BLOCKER, DEFAULT_LABELS, EVENTS, EVENTS_FILE, EVIDENCE, EVIDENCE_DIR, ISSUE, ISSUE_FIELDS, KEYS,
     KINDS, LIVE_SYNC_S, MERGED_CARRY_FORWARD_MAX, NO_STAGE, OPEN_STAGES, OPTION_RULE, OWNER_HINT, README_TOKEN_BUDGET,
     SCALES, SCHEMA, STAGES, STATUSES, WORDS_KEPT, a_kind, csv, dated, day_text, days_since, fit, id_kind, kind_names,
@@ -37,7 +38,7 @@ from .github import match_pr, sync
 from .watcher import (EVENT_KINDS, REFUSED, URGENT, agent_session, agents_lines, await_change, grant_path,
                       session_name, stop_watch, Watcher)
 from .lifecycle import archive_tracker, delete_tracker, unarchive_tracker
-from .viewmodel import trackers_view, view_model
+from .viewmodel import BLOCKS, trackers_view, view_blocks, view_model
 from .ui import (GPUI_SHELL_VERSION, MOD_OFFER, NO_HOST, herdr_home, install_mod, install_window, mod_dir, open_ui,
     update_mod)
 
@@ -1381,6 +1382,22 @@ def cmd_install_mod(args):
 def shown_tracker(args) -> Tracker:
     """The tracker a UI asks about: an archived one too, as `open` shows it."""
     return (any_tracker(args.slug) or die(f"no tracker '{args.slug}'")) if args.slug else resolve(args)
+
+
+def cmd_blocks(args):
+    """The blocks of the view's page, for every tracker: with names, those blocks in that order and no other."""
+    if args.reset or args.name:
+        unknown = [x for x in args.name if x not in BLOCKS]
+        if unknown:
+            die(f"no block {', '.join(unknown)}: the blocks are {' '.join(BLOCKS)}")
+        if len(set(args.name)) < len(args.name):
+            die("a block is named twice")
+        write_json(VIEW_FILE, {**read_json(VIEW_FILE), "blocks": args.name})
+    shown = view_blocks()
+    print(f"the view shows: {' '.join(shown)}")
+    hidden = [x for x in BLOCKS if x not in shown]
+    if hidden:
+        print(f"hidden: {' '.join(hidden)}")
 
 
 def cmd_data(args):
